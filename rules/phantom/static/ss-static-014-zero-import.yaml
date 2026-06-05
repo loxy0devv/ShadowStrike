@@ -1,0 +1,34 @@
+id: ss-static-014
+detection_name: "Win32/Evasion.ZeroImport"
+description: "PE binary with zero or near-zero import table — all API resolution done dynamically via GetProcAddress/LdrLoadDll to evade static analysis."
+scope: static
+severity: high
+status: stable
+source: native
+confidence: 0.80
+weight: 2.5
+version: 1
+attack:
+  - tactic: TA0005
+    technique: T1027
+    name: "Obfuscated Files or Information"
+  - tactic: TA0005
+    technique: T1106
+    name: "Native API"
+logic:
+  and:
+    - format:
+        value: pe
+    - not:
+        import_count_above:
+          number: 2
+    - or:
+        - string: "GetProcAddress"
+        - string: "LdrLoadDll"
+        - string: "NtQuerySystemInformation"
+    - entropy_above:
+        ratio: 6.5
+fp_guard:
+  notes:
+    - "Shellcode launchers and some packers have empty import tables."
+    - "Delay-load and bound imports can make import count appear near-zero — validate with PEParser."

@@ -1,0 +1,35 @@
+id: ss-static-007
+detection_name: "CoinMiner.Static.Strings"
+description: "Binary contains cryptomining-specific strings — stratum protocol, wallet addresses, or mining configuration."
+scope: static
+severity: high
+status: stable
+source: native
+confidence: 0.80
+weight: 2.2
+version: 1
+attack:
+  - tactic: TA0040
+    technique: T1496
+    name: "Resource Hijacking"
+logic:
+  or:
+    - string: "stratum+tcp"
+    - string: "stratum+ssl"
+    - string: "xmrig"
+    - string: "xmr-stak"
+    - string: "cryptonight"
+    - string: "randomx"
+    - string: "ethminer"
+    - string: "t-rex.exe"
+    - string: "pool.minexmr.com"
+    - string: "supportxmr.com"
+    - string: "--donate-level"
+    - string: "max-cpu-usage"
+    - string: "cuda-devices"
+    - string: "opencl-devices"
+    - string: "coin-algorithm"
+fp_guard:
+  notes:
+    - "Mining pool testing tools and security research tools may contain these strings."
+    - "Require no code-signing or executable from user temp/appdata directories."

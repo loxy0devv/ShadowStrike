@@ -1,0 +1,41 @@
+id: ss-file-006
+detection_name: "Win32/Persist.LNKAbuse"
+description: "Shortcut (.lnk) file created or modified by a non-shell process — common persistence and delivery technique."
+scope: file
+severity: medium
+status: stable
+source: native
+confidence: 0.68
+weight: 1.6
+version: 1
+attack:
+  - tactic: TA0003
+    technique: T1547
+    sub_technique: T1547.009
+logic:
+  and:
+    - field_ends_with:
+        field: file.path
+        value: ".lnk"
+        case_insensitive: true
+    - or:
+        - field_contains:
+            field: file.path
+            value: "\\Startup\\"
+        - field_contains:
+            field: file.path
+            value: "\\Desktop\\"
+        - field_contains:
+            field: file.path
+            value: "\\Recent\\"
+    - field_not_in:
+        field: process.name
+        values:
+          - explorer.exe
+          - msiexec.exe
+          - setup.exe
+          - install.exe
+        case_insensitive: true
+fp_guard:
+  notes:
+    - "Installer software creates shortcuts on the desktop/startup folder."

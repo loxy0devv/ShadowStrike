@@ -1,0 +1,43 @@
+id: ss-proc-010
+detection_name: "Win32/LateralMovement.PSExec"
+description: "PsExec or SMB-based remote execution patterns — lateral movement via admin shares."
+scope: process
+severity: high
+status: stable
+source: native
+confidence: 0.75
+weight: 2.0
+version: 1
+attack:
+  - tactic: TA0008
+    technique: T1021
+    sub_technique: T1021.002
+    name: "Remote Services: SMB/Windows Admin Shares"
+logic:
+  or:
+    - and:
+        - field_in:
+            field: process.name
+            values: [psexec.exe, psexesvc.exe, PAExec.exe, RemCom.exe]
+            case_insensitive: true
+    - and:
+        - field_equals:
+            field: process.parent.name
+            value: "services.exe"
+            case_insensitive: true
+        - field_contains:
+            field: process.command_line
+            value: "ADMIN$"
+    - and:
+        - field_in:
+            field: process.name
+            values: [cmd.exe, powershell.exe]
+            case_insensitive: true
+        - field_equals:
+            field: process.parent.name
+            value: "psexesvc.exe"
+            case_insensitive: true
+fp_guard:
+  notes:
+    - "IT administrators use PSExec for legitimate remote management."
+    - "Suppress for known IT admin workstations and monitoring hosts."

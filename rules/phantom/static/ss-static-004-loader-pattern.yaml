@@ -1,0 +1,47 @@
+id: ss-static-004
+detection_name: "Win32/Loader.Generic"
+description: "Binary statically imports only a small set of APIs consistent with a first-stage loader or dropper."
+scope: static
+severity: high
+status: stable
+source: native
+confidence: 0.70
+weight: 1.8
+version: 1
+attack:
+  - tactic: TA0011
+    technique: T1105
+    name: "Ingress Tool Transfer"
+  - tactic: TA0002
+    technique: T1204
+    name: "User Execution"
+logic:
+  and:
+    - import_count_above:
+        number: 0
+    - unique_api_count_above:
+        number: 1
+    - not:
+        unique_api_count_above:
+          number: 20
+    - or:
+        - api: URLDownloadToFileA
+        - api: URLDownloadToFileW
+        - api: InternetOpenA
+        - api: HttpSendRequestA
+        - api: WinHttpSendRequest
+        - api: socket
+        - api: connect
+    - or:
+        - api: CreateProcessA
+        - api: CreateProcessW
+        - api: ShellExecuteA
+        - api: ShellExecuteW
+        - api: WinExec
+        - api: system
+fp_guard:
+  notes:
+    - "Small standalone download utilities have exactly this pattern. Require unsigned binary."
+  suppress:
+    - field: file.signer.subject
+      regex: "(?i)(Microsoft|Apple|Google|Adobe)"

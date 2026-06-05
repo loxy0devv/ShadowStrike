@@ -1,0 +1,40 @@
+id: ss-proc-008
+detection_name: "Win32/CredTheft.LSASSAccess"
+description: "Non-system process opened LSASS with credential-harvesting access rights."
+scope: process
+severity: critical
+status: stable
+source: native
+confidence: 0.90
+weight: 3.5
+version: 1
+attack:
+  - tactic: TA0006
+    technique: T1003
+    sub_technique: T1003.001
+    name: "OS Credential Dumping: LSASS Memory"
+logic:
+  and:
+    - field_equals:
+        field: process.target.name
+        value: "lsass.exe"
+        case_insensitive: true
+    - field_not_in:
+        field: process.name
+        values:
+          - MsMpEng.exe
+          - WerFault.exe
+          - svchost.exe
+          - System
+          - csrss.exe
+          - services.exe
+          - lsm.exe
+          - wininit.exe
+        case_insensitive: true
+fp_guard:
+  notes:
+    - "Security products legitimately read LSASS for integrity monitoring."
+    - "Suppress when process is signed by a trusted AV/EDR vendor."
+  suppress:
+    - field: file.signer.subject
+      regex: "(?i)(CrowdStrike|Microsoft|Symantec|Sophos|Trend Micro|ESET|Kaspersky|Malwarebytes|SentinelOne)"

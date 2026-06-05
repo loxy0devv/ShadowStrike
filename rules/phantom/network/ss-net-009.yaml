@@ -1,0 +1,51 @@
+id: ss-net-009
+detection_name: "Win32/C2.HTTPS.Beaconing.NewRegisteredDomain"
+description: "Detects HTTPS connections exhibiting C2 beaconing characteristics to newly registered or short-TTL domains. Indicators include periodic connections at regular jitter intervals, low byte-count responses, and domains with registration age under 30 days. This pattern is consistent with malware C2 frameworks using domain generation or freshly-purchased infrastructure."
+scope: network
+severity: high
+status: experimental
+source: native
+confidence: 0.78
+weight: 2.0
+version: 1
+
+attack:
+  - tactic: TA0011
+    technique: T1071.001
+    name: "Application Layer Protocol: Web Protocols"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1071/001/"
+    title: "ATT&CK T1071.001"
+
+logic:
+  and:
+    - field_eq:
+        field: network.destination_port
+        value: 443
+    - field_eq:
+        field: network.protocol
+        value: "https"
+    - field_lt:
+        field: network.dns.domain_age_days
+        value: 30
+    - field_lt:
+        field: network.dns.ttl
+        value: 300
+    - field_gt:
+        field: network.beacon_jitter_score
+        value: 0.85
+    - not:
+        field_regex:
+          field: network.destination_domain
+          pattern: "(?i)\\.(microsoft|windows|office365|windowsupdate|digicert|verisign|google|amazon|akamai|cloudfront)\\.com$"
+
+fp_guard:
+  notes:
+    - "New legitimate services and CDN-backed domains may have low domain age and short TTLs. Validate against threat intelligence feeds."
+    - "Dynamic DNS providers (no-ip.com, dyndns.org) may exhibit similar TTL patterns for legitimate users."
+  suppress:
+    - field: network.destination_domain
+      values:
+        - "windowsupdate.microsoft.com"
+        - "update.microsoft.com"

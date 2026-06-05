@@ -1,0 +1,31 @@
+id: ss-proc-016
+detection_name: "Win32/LateralMovement.DCOM"
+description: "DCOM-based remote process execution pattern — lateral movement via COM activation over network."
+scope: process
+severity: high
+status: stable
+source: native
+confidence: 0.75
+weight: 2.2
+version: 1
+attack:
+  - tactic: TA0008
+    technique: T1021
+    sub_technique: T1021.003
+    name: "Remote Services: Distributed Component Object Model"
+logic:
+  and:
+    - field_equals:
+        field: process.parent.name
+        value: "mmc.exe"
+        case_insensitive: true
+    - field_in:
+        field: process.name
+        values: [cmd.exe, powershell.exe, wscript.exe, cscript.exe]
+        case_insensitive: true
+    - field_not_in:
+        field: process.parent.signature.subject
+        values: ["Microsoft Windows"]
+fp_guard:
+  notes:
+    - "MMC snap-ins legitimately spawn child processes for management tasks."

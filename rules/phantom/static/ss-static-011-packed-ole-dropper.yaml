@@ -1,0 +1,33 @@
+id: ss-static-011
+detection_name: "Trojan.Dropper.OLE"
+description: "Binary embeds an OLE/ActiveX object or document resource that can auto-execute — dropper pattern."
+scope: static
+severity: high
+status: stable
+source: native
+confidence: 0.72
+weight: 2.0
+version: 1
+attack:
+  - tactic: TA0002
+    technique: T1204
+    sub_technique: T1204.002
+    name: "User Execution: Malicious File"
+logic:
+  and:
+    - or:
+        - string: "D0CF11E0"
+        - string: "{D5CDD504-2E9C-101B-9397-08002B2CF9AE}"
+        - string: "Microsoft Compound Document"
+        - string: "OLEObject"
+        - bytes: "d0 cf 11 e0 a1 b1 1a e1"
+    - or:
+        - api: CreateProcessA
+        - api: WinExec
+        - api: ShellExecuteA
+        - api: ShellExecuteW
+    - unsigned
+fp_guard:
+  notes:
+    - "Office file format helpers and document converters embed OLE structures."
+    - "Signed binaries from document processing vendors should be excluded."

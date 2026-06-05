@@ -1,0 +1,271 @@
+/*
+ * ShadowStrike - Enterprise NGAV/EDR Platform
+ * Copyright (C) 2026 ShadowStrike Security
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+/**
+ * @file MessageDispatcher.hpp
+ * @brief Message routing and dispatching for ShadowStrike NGAV
+ *
+ * @deprecated This module is superseded by IPCManager's integrated dispatch.
+ *             IPCManager now handles all 43 message types directly in its
+ *             DispatchMessage() method with per-type handler callbacks,
+ *             handler snapshot under lock, and per-type statistics.
+ *
+ *             MessageDispatcher remains as a reference implementation with
+ *             advanced features (async dispatch, PIMPL, comprehensive stats)
+ *             that may be promoted into IPCManager in a future refactor.
+ *
+ *             DO NOT wire new callers to this module — use IPCManager instead.
+ *
+ * Routes incoming kernel messages to appropriate handlers and
+ * manages the reply pipeline.
+ *
+ * Thread Safety: All public methods are thread-safe.
+ * Pattern: PIMPL
+ *
+ * @copyright ShadowStrike NGAV - Enterprise Security Platform
+ */
+
+#pragma once
+
+#include "Communication.hpp"
+#include "FilterConnection.hpp"
+#include <memory>
+#include <span>
+#include <future>
+
+namespace ShadowStrike {
+namespace Communication {
+
+// Forward declaration for PIMPL
+class MessageDispatcherImpl;
+
+/**
+ * @class MessageDispatcher
+ * @brief Routes kernel messages to registered handlers
+ *
+ * Responsibilities:
+ * - Parse incoming message headers
+ * - Deserialize message payloads to C++ structures
+ * - Route to appropriate callback based on message type
+ * - Serialize and send replies
+ * - Handle unknown message types gracefully
+ * - Track dispatch statistics
+ */
+class MessageDispatcher final {
+public:
+    /**
+     * @brief Construct a new MessageDispatcher
+     * @param connection Filter connection for sending replies
+     */
+    explicit MessageDispatcher(FilterConnection& connection);
+
+    ~MessageDispatcher();
+
+    // Non-copyable
+    MessageDispatcher(const MessageDispatcher&) = delete;
+    MessageDispatcher& operator=(const MessageDispatcher&) = delete;
+
+    //=========================================================================
+    // Callback Registration
+    //=========================================================================
+
+    /**
+     * @brief Register handler for file scan requests
+     * @param callback Handler function
+     */
+    void RegisterFileScanHandler(FileScanCallback callback);
+
+    /**
+     * @brief Register handler for process scan requests
+     * @param callback Handler function
+     */
+    void RegisterProcessScanHandler(ProcessNotifyCallback callback);
+
+    /**
+     * @brief Register handler for registry scan requests
+     * @param callback Handler function
+     */
+    void RegisterRegistryScanHandler(RegistryNotifyCallback callback);
+
+    /**
+     * @brief Register handler for file notifications (no reply)
+     * @param callback Handler function
+     */
+    void RegisterFileNotifyHandler(FileNotifyCallback callback);
+
+    /**
+     * @brief Register handler for process notifications (no reply)
+     * @param callback Handler function
+     */
+    void RegisterProcessNotifyHandler(ProcessEventCallback callback);
+
+    /**
+     * @brief Register handler for registry notifications (no reply)
+     * @param callback Handler function
+     */
+    void RegisterRegistryNotifyHandler(RegistryEventCallback callback);
+
+    //=========================================================================
+    // Message Dispatching
+    //=========================================================================
+
+    /**
+     * @brief Dispatch a raw message buffer
+     * @param messageBuffer Raw message from kernel
+     * @return true if message was handled successfully
+     *
+     * This method:
+     * 1. Validates the message header
+     * 2. Deserializes the payload
+     * 3. Calls the appropriate handler
+     * 4. Sends the reply if required
+     */
+    [[nodiscard]] bool DispatchMessage(std::span<const uint8_t> messageBuffer);
+
+    /**
+     * @brief Dispatch message asynchronously
+     * @param messageBuffer Raw message from kernel
+     * @return Future that completes when dispatch is done
+     */
+    [[nodiscard]] std::future<bool> DispatchMessageAsync(std::span<const uint8_t> messageBuffer);
+
+    //=========================================================================
+    // Message Parsing (Static utilities)
+    //=========================================================================
+
+    /**
+     * @brief Parse a file scan request from raw buffer
+     * @param data Raw payload data
+     * @return Parsed request or nullopt on error
+     */
+    [[nodiscard]] static std::optional<FileScanRequest> ParseFileScanRequest(std::span<const uint8_t> data);
+
+    /**
+     * @brief Parse a process notification from raw buffer
+     * @param data Raw payload data
+     * @return Parsed notification or nullopt on error
+     */
+    [[nodiscard]] static std::optional<ProcessNotification> ParseProcessNotification(std::span<const uint8_t> data);
+
+    /**
+     * @brief Parse a registry notification from raw buffer
+     * @param data Raw payload data
+     * @return Parsed notification or nullopt on error
+     */
+    [[nodiscard]] static std::optional<RegistryNotification> ParseRegistryNotification(std::span<const uint8_t> data);
+
+    /**
+     * @brief Serialize a scan verdict reply to buffer
+     * @param reply Reply structure
+     * @return Serialized buffer
+     */
+    [[nodiscard]] static std::vector<uint8_t> SerializeVerdictReply(const ScanVerdictReply& reply);
+
+    //=========================================================================
+    // Configuration
+    //=========================================================================
+
+    /**
+     * @brief Set the default verdict for unhandled messages
+     * @param verdict Default verdict
+     */
+    void SetDefaultVerdict(ScanVerdict verdict);
+
+    /**
+     * @brief Set whether to block on timeout
+     * @param block true to block, false to allow
+     */
+    void SetBlockOnTimeout(bool block);
+
+    /**
+     * @brief Set whether to block on error
+     * @param block true to block, false to allow
+     */
+    void SetBlockOnError(bool block);
+
+    //=========================================================================
+    // Statistics
+    //=========================================================================
+
+    /**
+     * @brief Get dispatch statistics
+     */
+    struct DispatchStatistics {
+        std::atomic<uint64_t> messagesDispatched{0};
+        std::atomic<uint64_t> fileScanRequests{0};
+        std::atomic<uint64_t> processScanRequests{0};
+        std::atomic<uint64_t> registryScanRequests{0};
+        std::atomic<uint64_t> fileNotifications{0};
+        std::atomic<uint64_t> processNotifications{0};
+        std::atomic<uint64_t> registryNotifications{0};
+        std::atomic<uint64_t> unknownMessages{0};
+        std::atomic<uint64_t> parseErrors{0};
+        std::atomic<uint64_t> handlerErrors{0};
+        std::atomic<uint64_t> repliesSent{0};
+        std::atomic<uint64_t> replyErrors{0};
+        std::atomic<uint64_t> totalProcessingTimeUs{0};
+
+        void Reset() noexcept;
+        [[nodiscard]] std::string ToJson() const;
+        [[nodiscard]] struct DispatchStatisticsSnapshot TakeSnapshot() const noexcept;
+    };
+
+    /**
+     * @brief Get dispatch statistics
+     * @return Reference to statistics
+     */
+    [[nodiscard]] const DispatchStatistics& GetStatistics() const noexcept;
+
+    /**
+     * @brief Reset statistics
+     */
+    void ResetStatistics() noexcept;
+
+    /**
+     * @brief Get status as JSON
+     * @return JSON string
+     */
+    [[nodiscard]] std::string ToJson() const;
+
+private:
+    std::unique_ptr<MessageDispatcherImpl> m_impl;
+};
+
+/**
+ * @brief POD snapshot of DispatchStatistics (no atomics, freely copyable).
+ */
+struct DispatchStatisticsSnapshot {
+    uint64_t messagesDispatched = 0;
+    uint64_t fileScanRequests = 0;
+    uint64_t processScanRequests = 0;
+    uint64_t registryScanRequests = 0;
+    uint64_t fileNotifications = 0;
+    uint64_t processNotifications = 0;
+    uint64_t registryNotifications = 0;
+    uint64_t unknownMessages = 0;
+    uint64_t parseErrors = 0;
+    uint64_t handlerErrors = 0;
+    uint64_t repliesSent = 0;
+    uint64_t replyErrors = 0;
+    uint64_t totalProcessingTimeUs = 0;
+    double avgProcessingTimeUs = 0.0;
+
+    [[nodiscard]] std::string ToJson() const;
+};
+
+} // namespace Communication
+} // namespace ShadowStrike

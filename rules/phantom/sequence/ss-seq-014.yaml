@@ -1,0 +1,93 @@
+id: ss-seq-014
+detection_name: "Win32/Sequence.LSSADump.Mimikatz.LateralMove"
+description: "Detects a credential theft and lateral movement chain: LSASS memory access (dump), followed by execution of Mimikatz-style credential extraction commands, followed by SMB/WMI/RDP connections to other internal hosts using the extracted credentials. This sequence represents a complete pass-the-hash or pass-the-ticket lateral movement chain."
+scope: sequence
+severity: critical
+status: stable
+source: native
+confidence: 0.89
+weight: 4.5
+version: 1
+
+attack:
+  - tactic: TA0006
+    technique: T1003.001
+    name: "OS Credential Dumping: LSASS Memory"
+  - tactic: TA0008
+    technique: T1021
+    name: "Remote Services"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1003/001/"
+    title: "ATT&CK T1003.001"
+  - url: "https://attack.mitre.org/techniques/T1021/"
+    title: "ATT&CK T1021"
+
+logic:
+  sequence:
+    - id: step1_lsass_access
+      within: 300s
+      event:
+        and:
+          - field_eq:
+              field: memory.target_process.name
+              value: "lsass.exe"
+          - field_in:
+              field: memory.operation
+              values:
+                - read_process_memory
+                - open_process
+                - create_dump
+          - not:
+              field_in:
+                field: memory.process.name
+                values:
+                  - MsMpEng.exe
+                  - SentinelAgent.exe
+                  - csrss.exe
+                case_insensitive: true
+    - id: step2_mimikatz_exec
+      within: 600s
+      after: step1_lsass_access
+      event:
+        or:
+          - field_regex:
+              field: process.command_line
+              pattern: "(?i)(sekurlsa::|lsadump::|kerberos::list|privilege::debug|token::elevate)"
+          - field_regex:
+              field: process.command_line
+              pattern: "(?i)(logonpasswords|dcsync|pth|pass-the-hash|hashdump)"
+          - field_regex:
+              field: file.path
+              pattern: "(?i)mimikatz.*\\.exe$"
+    - id: step3_lateral_move
+      within: 900s
+      after: step2_mimikatz_exec
+      event:
+        and:
+          - or:
+              - field_eq:
+                  field: network.destination_port
+                  value: 445
+              - field_eq:
+                  field: network.destination_port
+                  value: 3389
+              - field_eq:
+                  field: network.destination_port
+                  value: 135
+          - field_eq:
+              field: network.direction
+              value: "outbound"
+          - field_regex:
+              field: network.destination_ip
+              pattern: "^(10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)"
+
+fp_guard:
+  notes:
+    - "This three-stage sequence has very low legitimate trigger rate. Any match should be treated as high-confidence incident."
+    - "Authorized red team activities will match this. Validate against pentest calendar."
+  suppress:
+    - field: process.user
+      values:
+        - "DOMAIN\\pentest_svc"
+        - "DOMAIN\\redteam"

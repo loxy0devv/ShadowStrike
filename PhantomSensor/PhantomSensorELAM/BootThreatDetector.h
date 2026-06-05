@@ -1,0 +1,109 @@
+﻿/*
+ * ShadowStrike - Enterprise NGAV/EDR Platform
+ * Copyright (C) 2026 ShadowStrike Security
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+/*++
+    ShadowStrike Next-Generation Antivirus
+    Module: BootThreatDetector.h - Boot-time threat detection
+    Copyright (c) ShadowStrike Team
+--*/
+
+#pragma once
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include <ntifs.h>
+#include "BootDriverVerify.h"
+
+#define BTD_POOL_TAG 'DTBE'
+
+typedef enum _BTD_THREAT_TYPE {
+    BtdThreat_None = 0,
+    BtdThreat_Bootkit,
+    BtdThreat_Rootkit,
+    BtdThreat_MaliciousDriver,
+    BtdThreat_HijackedDriver,
+    BtdThreat_VulnerableDriver,
+    BtdThreat_UnauthorizedDriver,
+} BTD_THREAT_TYPE;
+
+typedef struct _BTD_THREAT {
+    BTD_THREAT_TYPE Type;
+    UNICODE_STRING DriverPath;
+    UCHAR Hash[32];
+    
+    CHAR ThreatName[64];
+    CHAR Description[256];
+    
+    // Severity
+    ULONG SeverityScore;
+    BOOLEAN IsCritical;
+    
+    // Action taken
+    BOOLEAN WasBlocked;
+    CHAR ActionReason[128];
+    
+    LARGE_INTEGER DetectionTime;
+    LIST_ENTRY ListEntry;
+} BTD_THREAT, *PBTD_THREAT;
+
+typedef VOID (*BTD_THREAT_CALLBACK)(
+    _In_ PBTD_THREAT Threat,
+    _In_opt_ PVOID Context
+);
+
+typedef struct _BTD_DETECTOR {
+    volatile LONG Initialized;
+    
+    PBDV_VERIFIER Verifier;
+    
+    // Detected threats
+    LIST_ENTRY DetectedList;
+    KSPIN_LOCK DetectedLock;
+    volatile LONG DetectedCount;
+    
+    // Callback (protected by CallbackLock)
+    BTD_THREAT_CALLBACK ThreatCallback;
+    PVOID CallbackContext;
+    EX_PUSH_LOCK CallbackLock;
+    
+    // Vulnerable driver list (BYOVD)
+    LIST_ENTRY VulnerableList;
+    EX_PUSH_LOCK VulnerableLock;
+    volatile LONG VulnerableCount;
+    
+    struct {
+        volatile LONG64 ScansPerformed;
+        volatile LONG64 ThreatsDetected;
+        volatile LONG64 ThreatsBlocked;
+        LARGE_INTEGER StartTime;
+    } Stats;
+} BTD_DETECTOR, *PBTD_DETECTOR;
+
+NTSTATUS BtdInitialize(_In_ PBDV_VERIFIER Verifier, _Out_ PBTD_DETECTOR* Detector);
+VOID BtdShutdown(_Inout_ PBTD_DETECTOR Detector);
+NTSTATUS BtdRegisterCallback(_In_ PBTD_DETECTOR Detector, _In_ BTD_THREAT_CALLBACK Callback, _In_opt_ PVOID Context);
+NTSTATUS BtdScanDriver(_In_ PBTD_DETECTOR Detector, _In_ PBDV_DRIVER_INFO DriverInfo, _In_opt_ PVOID ImageBase, _In_ SIZE_T ImageSize, _Out_ PBTD_THREAT* Threat);
+NTSTATUS BtdLoadVulnerableList(_In_ PBTD_DETECTOR Detector, _In_reads_bytes_(DataSize) PVOID Data, _In_ SIZE_T DataSize);
+NTSTATUS BtdIsVulnerable(_In_ PBTD_DETECTOR Detector, _In_reads_bytes_(HashLength) PUCHAR Hash, _In_ SIZE_T HashLength, _Out_ PBOOLEAN IsVulnerable, _Out_writes_opt_(CVEBufferSize) PCHAR CVEBuffer, _In_ SIZE_T CVEBufferSize);
+NTSTATUS BtdGetThreats(_In_ PBTD_DETECTOR Detector, _Out_writes_to_(Max, *Count) PBTD_THREAT* Threats, _In_ ULONG Max, _Out_ PULONG Count);
+VOID BtdFreeThreat(_In_ PBTD_DETECTOR Detector, _In_ PBTD_THREAT Threat);
+
+#ifdef __cplusplus
+}
+#endif

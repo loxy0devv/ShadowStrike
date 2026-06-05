@@ -1,0 +1,59 @@
+id: ss-reg-008
+detection_name: "Win32/Registry.Winlogon.NotificationPackage"
+description: "Detects modifications to the Winlogon Notify registry key or the addition of custom notification packages. Attackers register malicious DLLs as Winlogon notification packages to achieve SYSTEM-level persistence that executes during logon, logoff, lock, and unlock events, surviving reboots and running before user processes start."
+scope: registry
+severity: critical
+status: stable
+source: native
+confidence: 0.91
+weight: 3.5
+version: 1
+
+attack:
+  - tactic: TA0003
+    technique: T1547.004
+    name: "Boot or Logon Autostart Execution: Winlogon Helper DLL"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1547/004/"
+    title: "ATT&CK T1547.004"
+
+logic:
+  and:
+    - or:
+        - field_regex:
+            field: registry.key_path
+            pattern: "(?i)HKLM\\\\SOFTWARE\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\Winlogon\\\\Notify"
+        - and:
+            - field_regex:
+                field: registry.key_path
+                pattern: "(?i)HKLM\\\\SOFTWARE\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\Winlogon"
+            - field_in:
+                field: registry.value_name
+                values:
+                  - "Userinit"
+                  - "Shell"
+                  - "TaskMan"
+                case_insensitive: true
+    - field_in:
+        field: registry.operation
+        values:
+          - set_value
+          - create_key
+    - not:
+        field_in:
+          field: registry.process.name
+          values:
+            - trustedinstaller.exe
+            - msiexec.exe
+          case_insensitive: true
+
+fp_guard:
+  notes:
+    - "Smart card and biometric authentication software may register Winlogon notification packages. Validate DLL path and signature."
+    - "Some enterprise authentication solutions (RSA, Duo) modify Winlogon entries during installation."
+  suppress:
+    - field: registry.process.name
+      values:
+        - msiexec.exe
+        - trustedinstaller.exe

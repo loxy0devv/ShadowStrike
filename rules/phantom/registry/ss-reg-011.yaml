@@ -1,0 +1,54 @@
+id: ss-reg-011
+detection_name: "Win32/Registry.RunOnce.EncodedCommand"
+description: "Detects RunOnce registry key writes where the value contains base64-encoded content, environment variable obfuscation, or escaped command characters. Attackers use RunOnce keys with obfuscated commands to execute payloads on the next logon while evading signature-based detection that looks for plain-text malicious commands."
+scope: registry
+severity: high
+status: stable
+source: native
+confidence: 0.85
+weight: 2.5
+version: 1
+
+attack:
+  - tactic: TA0003
+    technique: T1547.001
+    name: "Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1547/001/"
+    title: "ATT&CK T1547.001"
+
+logic:
+  and:
+    - field_regex:
+        field: registry.key_path
+        pattern: "(?i)(HKCU|HKLM)\\\\SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\RunOnce"
+    - field_in:
+        field: registry.operation
+        values:
+          - set_value
+          - create_key
+    - or:
+        - field_regex:
+            field: registry.new_value
+            pattern: "(?i)-enc(odedcommand)?\\s+[A-Za-z0-9+/]{20,}"
+        - field_regex:
+            field: registry.new_value
+            pattern: "(?i)(cmd|powershell|wscript|cscript|mshta|rundll32).*(-e\\s|/e\\s|vbscript:|javascript:)"
+        - field_regex:
+            field: registry.new_value
+            pattern: "(?i)(\\^|%[0-9]+|chr\\([0-9]+\\)){3,}"
+        - field_regex:
+            field: registry.new_value
+            pattern: "(?i)(frombase64string|convertto-securestring|iex|invoke-expression)"
+
+fp_guard:
+  notes:
+    - "Software installers and updaters use RunOnce keys for post-reboot configuration. Focus on encoded/obfuscated commands specifically."
+    - "Some enterprise software distribution tools write RunOnce entries as part of staged deployments."
+  suppress:
+    - field: registry.process.name
+      values:
+        - msiexec.exe
+        - setup.exe
+        - trustedinstaller.exe

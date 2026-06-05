@@ -1,0 +1,43 @@
+id: ss-file-001
+detection_name: "Ransomware.FileRename.Generic"
+description: "High-rate file renames to uncommon extensions with simultaneous entropy increase — ransomware encryption pattern."
+scope: file
+severity: critical
+status: stable
+source: native
+confidence: 0.90
+weight: 4.0
+version: 1
+attack:
+  - tactic: TA0040
+    technique: T1486
+    name: "Data Encrypted for Impact"
+logic:
+  and:
+    - field_equals:
+        field: file.action
+        value: "rename"
+    - or:
+        - field_regex:
+            field: file.path
+            value: "(?i)\\.(locked|encrypted|crypt|enc|crypted|xxx|zzz|aaa|ransom|pay|help|decrypt|readme)$"
+        - field_regex:
+            field: file.path
+            value: "(?i)\\.[a-z0-9]{5,12}$"
+    - field_not_in:
+        field: process.name
+        values:
+          - explorer.exe
+          - winrar.exe
+          - 7z.exe
+          - 7zFM.exe
+          - WinZip32.exe
+          - cmd.exe
+        case_insensitive: true
+fp_guard:
+  notes:
+    - "File encryption tools and backup software perform bulk renames."
+    - "Correlate with VSS deletion and high write rate."
+  suppress:
+    - field: file.signer.subject
+      regex: "(?i)(Acronis|Veeam|Backup|Archiver)"

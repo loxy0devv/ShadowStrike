@@ -1,0 +1,42 @@
+id: ss-static-016
+detection_name: "Trojan.Spyware.Generic"
+description: "Binary imports location, microphone, clipboard, and remote-sending APIs consistent with spyware."
+scope: static
+severity: high
+status: stable
+source: native
+confidence: 0.70
+weight: 2.0
+version: 1
+attack:
+  - tactic: TA0009
+    technique: T1123
+    name: "Audio Capture"
+  - tactic: TA0009
+    technique: T1113
+    name: "Screen Capture"
+logic:
+  and:
+    - or:
+        - api: waveInOpen
+        - api: mciSendStringA
+        - api: DirectSoundCapture
+        - string: "microphone"
+        - string: "AudioCapture"
+    - or:
+        - api: GetCursorPos
+        - api: GetForegroundWindow
+        - api: GetWindowText
+    - or:
+        - api: socket
+        - api: connect
+        - api: InternetOpenA
+        - api: WinHttpOpen
+    - unsigned
+fp_guard:
+  notes:
+    - "Recording software, VoIP apps legitimately use audio APIs."
+    - "Suppress for known signed audio/communication apps."
+  suppress:
+    - field: file.signer.subject
+      regex: "(?i)(Zoom|Microsoft|Google|Cisco|WebEx|Skype|Slack|Teams)"

@@ -1,0 +1,65 @@
+id: ss-proc-030
+detection_name: "Win32/WerFault.ChildAbuse.Masquerade"
+description: "Detects unexpected processes spawned by WerFault.exe (Windows Error Reporting) or ReportQueue child processes. Attackers abuse WerFault as a masquerading parent to launch malicious payloads that appear to originate from a trusted crash reporting mechanism, or exploit WER's reflective loading of fault handlers."
+scope: process
+severity: high
+status: stable
+source: native
+confidence: 0.85
+weight: 2.5
+version: 1
+
+attack:
+  - tactic: TA0005
+    technique: T1036
+    name: "Masquerading"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1036/"
+    title: "ATT&CK T1036"
+  - url: "https://www.hexacorn.com/blog/2019/09/19/silentprocessexit-part-1/"
+    title: "SilentProcessExit / WER abuse"
+
+logic:
+  and:
+    - field_in:
+        field: process.parent.name
+        values:
+          - werfault.exe
+          - wermgr.exe
+          - werclsid.exe
+        case_insensitive: true
+    - not:
+        field_in:
+          field: process.name
+          values:
+            - werfault.exe
+            - wermgr.exe
+            - conhost.exe
+          case_insensitive: true
+    - or:
+        - field_in:
+            field: process.name
+            values:
+              - cmd.exe
+              - powershell.exe
+              - pwsh.exe
+              - rundll32.exe
+              - regsvr32.exe
+              - mshta.exe
+              - wscript.exe
+              - cscript.exe
+            case_insensitive: true
+        - field_regex:
+            field: process.executable_path
+            pattern: "(?i)(temp|appdata|programdata|users\\\\[^\\\\]+\\\\downloads)"
+
+fp_guard:
+  notes:
+    - "WerFault spawning conhost.exe is normal. All other child process launches from WerFault context should be treated as suspicious."
+    - "Some crash-reporting custom handlers may legitimately spawn processes; validate against known crash handler configuration."
+  suppress:
+    - field: process.name
+      values:
+        - conhost.exe
+        - watson.exe

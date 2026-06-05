@@ -1,0 +1,56 @@
+id: ss-file-005
+detection_name: "Win32/Dropper.NewExec"
+description: "New executable dropped in a user-writable directory by a non-installer process."
+scope: file
+severity: medium
+status: stable
+source: native
+confidence: 0.60
+weight: 1.5
+version: 1
+attack:
+  - tactic: TA0002
+    technique: T1204
+logic:
+  and:
+    - or:
+        - field_ends_with:
+            field: file.path
+            value: ".exe"
+            case_insensitive: true
+        - field_ends_with:
+            field: file.path
+            value: ".dll"
+            case_insensitive: true
+        - field_ends_with:
+            field: file.path
+            value: ".scr"
+            case_insensitive: true
+    - or:
+        - field_contains:
+            field: file.path
+            value: "\\AppData\\"
+        - field_contains:
+            field: file.path
+            value: "\\Temp\\"
+        - field_contains:
+            field: file.path
+            value: "\\Downloads\\"
+        - field_contains:
+            field: file.path
+            value: "\\Users\\Public\\"
+    - field_not_in:
+        field: process.name
+        values:
+          - msiexec.exe
+          - setup.exe
+          - install.exe
+          - update.exe
+          - updater.exe
+          - installer.exe
+          - winget.exe
+          - nuget.exe
+        case_insensitive: true
+fp_guard:
+  notes:
+    - "Many software installers extract executables to temp dirs. Correlate with execution."

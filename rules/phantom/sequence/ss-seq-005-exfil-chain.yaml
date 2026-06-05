@@ -1,0 +1,58 @@
+id: ss-seq-005
+detection_name: "Win32/Exfil.ArchiveSend"
+description: "File archiving followed by outbound network transfer — data staging and exfiltration chain."
+scope: sequence
+severity: high
+status: stable
+source: native
+confidence: 0.75
+weight: 2.5
+version: 1
+attack:
+  - tactic: TA0010
+    technique: T1560
+    name: "Archive Collected Data"
+  - tactic: TA0010
+    technique: T1041
+    name: "Exfiltration Over C2 Channel"
+logic:
+  sequence:
+    - or:
+        - and:
+            - field_in:
+                field: process.name
+                values: [7z.exe, 7za.exe, winrar.exe, rar.exe, zip.exe]
+                case_insensitive: true
+            - field_contains:
+                field: process.command_line
+                value: "a "
+        - field_contains:
+            field: process.command_line
+            value: "Compress-Archive"
+    - or:
+        - and:
+            - field_in:
+                field: process.name
+                values: [certutil.exe, curl.exe, wget.exe, nc.exe, ncat.exe]
+                case_insensitive: true
+            - field_exists:
+                field: network.destination.ip
+        - and:
+            - field_in:
+                field: process.name
+                values: [powershell.exe, pwsh.exe]
+                case_insensitive: true
+            - or:
+                - field_contains:
+                    field: process.command_line
+                    value: "WebClient"
+                - field_contains:
+                    field: process.command_line
+                    value: "Invoke-WebRequest"
+                - field_contains:
+                    field: process.command_line
+                    value: "Net.Http"
+fp_guard:
+  notes:
+    - "Legitimate backup and deployment workflows compress and upload files."
+    - "Suppress for authenticated users on management hosts."

@@ -1,0 +1,69 @@
+id: ss-proc-012
+detection_name: "Win32/Evasion.TrustedBinaryAbuse"
+description: "Trusted Windows binary executed with arguments that indicate proxy execution or LOLBIN abuse."
+scope: process
+severity: high
+status: stable
+source: native
+confidence: 0.72
+weight: 2.0
+version: 1
+attack:
+  - tactic: TA0005
+    technique: T1218
+    name: "System Binary Proxy Execution"
+logic:
+  or:
+    - and:
+        - field_equals:
+            field: process.name
+            value: "regsvr32.exe"
+            case_insensitive: true
+        - or:
+            - field_contains:
+                field: process.command_line
+                value: "/i:http"
+            - field_contains:
+                field: process.command_line
+                value: "/i:ftp"
+            - field_contains:
+                field: process.command_line
+                value: "scrobj.dll"
+    - and:
+        - field_equals:
+            field: process.name
+            value: "mshta.exe"
+            case_insensitive: true
+        - or:
+            - field_contains:
+                field: process.command_line
+                value: "javascript:"
+            - field_contains:
+                field: process.command_line
+                value: "vbscript:"
+            - field_contains:
+                field: process.command_line
+                value: "http"
+    - and:
+        - field_equals:
+            field: process.name
+            value: "cmstp.exe"
+            case_insensitive: true
+        - field_contains:
+            field: process.command_line
+            value: "/ni"
+    - and:
+        - field_equals:
+            field: process.name
+            value: "rundll32.exe"
+            case_insensitive: true
+        - or:
+            - field_contains:
+                field: process.command_line
+                value: "javascript:"
+            - field_contains:
+                field: process.command_line
+                value: "shell32.dll,ShellExec_RunDLL"
+fp_guard:
+  notes:
+    - "regsvr32 /i: is legitimate for COM registration from network shares in some enterprises."

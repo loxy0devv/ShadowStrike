@@ -1,0 +1,47 @@
+id: ss-static-002
+detection_name: "Trojan.Stealer.Generic"
+description: "Binary imports credential-theft and browser-data APIs consistent with stealer malware families."
+scope: static
+severity: high
+status: stable
+source: native
+confidence: 0.70
+weight: 2.0
+version: 1
+
+attack:
+  - tactic: TA0006
+    technique: T1555
+    name: "Credentials from Password Stores"
+  - tactic: TA0006
+    technique: T1539
+    name: "Steal Web Session Cookie"
+
+logic:
+  and:
+    - or:
+        - api: CryptUnprotectData
+        - api: NCryptExportKey
+        - api: CryptAcquireContextA
+        - api: PFXImportCertStore
+    - or:
+        - string: "sqlite3_open"
+        - string: "sqlite3_exec"
+        - string: "Login Data"
+        - string: "Cookies"
+        - api: sqlite3_open
+        - api: sqlite3_exec
+    - or:
+        - string: "chrome"
+        - string: "firefox"
+        - string: "opera"
+        - string: "browser"
+        - string: "wallet"
+        - string: "seed"
+        - string: "metamask"
+        - string: "keychain"
+        - string: "password"
+
+fp_guard:
+  notes:
+    - "Password managers legitimately use CryptUnprotectData and sqlite3. Correlate with unsigned binary and stealer-pattern imports."

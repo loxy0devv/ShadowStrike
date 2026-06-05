@@ -1,0 +1,50 @@
+id: ss-static-001
+detection_name: "Win32/Crypter.AntiAnalysis"
+description: "Binary combines anti-analysis API imports with high-entropy sections and minimal imports — typical of a crypter or packer."
+scope: static
+severity: high
+status: stable
+source: native
+confidence: 0.75
+weight: 2.0
+version: 1
+
+attack:
+  - tactic: TA0005
+    technique: T1027
+    name: "Obfuscated Files or Information"
+  - tactic: TA0005
+    technique: T1622
+    name: "Debugger Evasion"
+
+logic:
+  and:
+    - characteristic: high-entropy
+    - unique_api_count_above:
+        number: 1
+    - import_count_above:
+        number: 0
+    - or:
+        - api: IsDebuggerPresent
+        - api: CheckRemoteDebuggerPresent
+        - api: NtQueryInformationProcess
+        - api: GetTickCount
+        - api: QueryPerformanceCounter
+        - api: Sleep
+        - api: OutputDebugStringA
+        - api: FindWindowA
+    - or:
+        - api: VirtualAlloc
+        - api: VirtualAllocEx
+        - api: NtAllocateVirtualMemory
+        - api: ZwAllocateVirtualMemory
+    - or:
+        - api: WriteProcessMemory
+        - api: NtWriteVirtualMemory
+        - api: CreateRemoteThread
+        - api: CreateRemoteThreadEx
+        - api: NtCreateThreadEx
+
+fp_guard:
+  notes:
+    - "Installers built with NSIS/Inno Setup can trigger this pattern. Suppress when signer is widely trusted."

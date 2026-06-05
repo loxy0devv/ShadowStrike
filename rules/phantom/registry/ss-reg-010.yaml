@@ -1,0 +1,58 @@
+id: ss-reg-010
+detection_name: "Win32/Registry.LSA.SecurityProviderDLL"
+description: "Detects additions to the LSA Security Packages or Authentication Packages registry values, which cause Windows to load attacker-specified DLLs into lsass.exe at boot time. This persistence mechanism gives attackers SYSTEM-level code execution within the LSASS process, enabling direct credential interception and long-term stealth persistence."
+scope: registry
+severity: critical
+status: stable
+source: native
+confidence: 0.93
+weight: 4.0
+version: 1
+
+attack:
+  - tactic: TA0003
+    technique: T1547.002
+    name: "Boot or Logon Autostart Execution: Authentication Packages"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1547/002/"
+    title: "ATT&CK T1547.002"
+
+logic:
+  and:
+    - field_regex:
+        field: registry.key_path
+        pattern: "(?i)HKLM\\\\SYSTEM\\\\CurrentControlSet\\\\Control\\\\Lsa"
+    - field_in:
+        field: registry.value_name
+        values:
+          - "Security Packages"
+          - "Authentication Packages"
+          - "Notification Packages"
+        case_insensitive: true
+    - field_in:
+        field: registry.operation
+        values:
+          - set_value
+    - not:
+        field_in:
+          field: registry.process.name
+          values:
+            - trustedinstaller.exe
+            - msiexec.exe
+            - lsass.exe
+          case_insensitive: true
+
+fp_guard:
+  notes:
+    - "Smart card middleware (Gemalto, SafeNet) and biometric authentication solutions add legitimate security packages. Validate DLL name against vendor list."
+    - "Enterprise MFA solutions may add authentication packages during deployment."
+  suppress:
+    - field: registry.new_value
+      values:
+        - "kerberos"
+        - "msv1_0"
+        - "schannel"
+        - "wdigest"
+        - "tspkg"
+        - "pku2u"

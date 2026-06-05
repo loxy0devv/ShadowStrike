@@ -1,0 +1,52 @@
+id: ss-proc-031
+detection_name: "Win32/Rundll32.UnusualChild"
+description: "Detects rundll32.exe spawning unusual child processes such as cmd.exe, powershell.exe, or scripting engines. Rundll32 should not ordinarily spawn interactive shells; this pattern is characteristic of DLL side-loading or in-memory shellcode execution that pivots to a shell."
+scope: process
+severity: high
+status: stable
+source: native
+confidence: 0.85
+weight: 2.0
+version: 1
+
+attack:
+  - tactic: TA0005
+    technique: T1218.011
+    name: "System Binary Proxy Execution: Rundll32"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1218/011/"
+    title: "ATT&CK T1218.011"
+  - url: "https://lolbas-project.github.io/lolbas/Binaries/Rundll32/"
+    title: "LOLBAS Rundll32"
+
+logic:
+  and:
+    - field_in:
+        field: process.parent.name
+        values:
+          - rundll32.exe
+        case_insensitive: true
+    - field_in:
+        field: process.name
+        values:
+          - cmd.exe
+          - powershell.exe
+          - pwsh.exe
+          - wscript.exe
+          - cscript.exe
+          - mshta.exe
+          - regsvr32.exe
+          - wmic.exe
+          - certutil.exe
+        case_insensitive: true
+
+fp_guard:
+  notes:
+    - "Some legitimate software (e.g., older printer drivers, COM surrogate) may invoke rundll32 and launch helper processes. Validate against software inventory."
+    - "Windows shell extensions may trigger rundll32 spawning explorer child processes."
+  suppress:
+    - field: process.parent.command_line
+      values:
+        - "shell32.dll,Control_RunDLL"
+        - "shell32.dll,OpenAs_RunDLL"

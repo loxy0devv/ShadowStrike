@@ -1,0 +1,61 @@
+id: ss-proc-003
+detection_name: "Win32/Evasion.PPIDSpoof"
+description: "Process parent lineage inconsistency — probable PPID spoofing via CreateProcess with attribute inheritance."
+scope: process
+severity: high
+status: stable
+source: native
+confidence: 0.75
+weight: 2.0
+version: 1
+
+attack:
+  - tactic: TA0005
+    technique: T1134
+    sub_technique: T1134.004
+    name: "Access Token Manipulation: Parent PID Spoofing"
+
+logic:
+  and:
+    - field_in:
+        field: process.name
+        values:
+          - powershell.exe
+          - cmd.exe
+          - wscript.exe
+          - cscript.exe
+          - mshta.exe
+          - rundll32.exe
+          - regsvr32.exe
+          - cmstp.exe
+          - regasm.exe
+          - regsvcs.exe
+          - installutil.exe
+        case_insensitive: true
+    - or:
+        - field_in:
+            field: process.parent.name
+            values:
+              - svchost.exe
+              - lsass.exe
+              - winlogon.exe
+              - services.exe
+              - smss.exe
+              - csrss.exe
+              - wininit.exe
+              - explorer.exe
+            case_insensitive: true
+    - field_in:
+        field: process.integrity_level
+        values:
+          - "Medium"
+          - "High"
+
+fp_guard:
+  notes:
+    - "explorer.exe legitimately spawns powershell.exe — correlate with other signals."
+    - "svchost.exe spawning cmd.exe is suspicious but not impossible in scripted task workflows."
+  suppress:
+    - field: process.parent.name
+      values:
+        - explorer.exe

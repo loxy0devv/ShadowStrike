@@ -1,0 +1,290 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{B2A9F4AA-3484-4D30-9AD6-5ED0DB5968D3}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectName>ShadowStrikeFuzzer</ProjectName>
+    <RootNamespace>ShadowStrikeFuzzer</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>$(ProjectDir)..\bin\$(Configuration)\Fuzzer\</OutDir>
+    <IntDir>$(ProjectDir)..\build\$(Configuration)\Fuzzer\</IntDir>
+    <TargetName>ShadowStrikeFuzzer</TargetName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutDir>$(ProjectDir)..\bin\$(Configuration)\Fuzzer\</OutDir>
+    <IntDir>$(ProjectDir)..\build\$(Configuration)\Fuzzer\</IntDir>
+    <TargetName>ShadowStrikeFuzzer</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp23</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)..;$(ProjectDir)..\include;$(ProjectDir)..\src;$(ProjectDir)..\src\PhantomCore;$(ProjectDir)..\PhantomEmulator\Core\CPU;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;SHADOWSTRIKE_FUZZING=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalOptions>/utf-8 /wd4201 /wd4100 /wd4189 /wd4834 /wd4005 /wd4458 /wd4324 /wd4459 /wd4456 /wd4244 /wd4359 %(AdditionalOptions)</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>bcrypt.lib;ncrypt.lib;crypt32.lib;advapi32.lib;wintrust.lib;rpcrt4.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <SDLCheck>true</SDLCheck>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp23</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)..;$(ProjectDir)..\include;$(ProjectDir)..\src;$(ProjectDir)..\src\PhantomCore;$(ProjectDir)..\PhantomEmulator\Core\CPU;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;SHADOWSTRIKE_FUZZING=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalOptions>/utf-8 /wd4201 /wd4100 /wd4189 /wd4834 /wd4005 /wd4458 /wd4324 /wd4459 /wd4456 /wd4244 /wd4359 %(AdditionalOptions)</AdditionalOptions>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <Optimization>MaxSpeed</Optimization>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>bcrypt.lib;ncrypt.lib;crypt32.lib;advapi32.lib;wintrust.lib;rpcrt4.lib;ws2_32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Core\AttackSurface.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Core\CampaignPlanner.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Core\DispatchRuntime.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Core\EngineArchitecture.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Core\FuzzLoop.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Core\HarnessAdapterCatalog.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Core\MutationEngine.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Core\OperationsPipeline.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Core\RunnerExecutionRuntime.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Core\WorkerBackendRuntime.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\DisassemblerHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\EmulatorDecoderHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\EmulatorExecutionHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\EmulatorPEHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\BehaviorHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\ScanEngineHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\DatabaseConfigHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\ProcessCommandLineHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\IPCHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\ServiceProtocolHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\TrafficHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\SignaturePatternHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\StringPathHashHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\ThreatIntelHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\ThreatIntelFormatHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\ParserUtilsHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\CryptoCertHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\ConfigParserHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\AntiEvasionHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\AIFeatureHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\FuzzyHasherHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\ScriptScannerHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\ExploitDetectorHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\RansomwareAnalysisHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\CompressionHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Harnesses\PEParserHarness.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Protocol\KernelMessageFactory.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Protocol\KernelMessageSchema.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Targets\KernelTargetCatalog.hpp" />
+    <ClInclude Include="include\ShadowStrike\Fuzzer\Targets\UserModeTargetCatalog.hpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\AttackSurface.cpp" />
+    <ClCompile Include="src\CampaignPlanner.cpp" />
+    <ClCompile Include="src\DispatchRuntime.cpp" />
+    <ClCompile Include="src\DisassemblerHarness.cpp" />
+    <ClCompile Include="src\EmulatorDecoderHarness.cpp" />
+    <ClCompile Include="src\EmulatorExecutionHarness.cpp" />
+    <ClCompile Include="src\EmulatorPEHarness.cpp" />
+    <ClCompile Include="src\BehaviorHarness.cpp" />
+    <ClCompile Include="src\BehaviorHarnessDepsStub.cpp" />
+    <ClCompile Include="src\ScanEngineHarness.cpp" />
+    <ClCompile Include="src\ScanEngineHarnessDepsStub.cpp" />
+    <ClCompile Include="src\DatabaseConfigHarness.cpp" />
+    <ClCompile Include="src\ProcessCommandLineHarness.cpp" />
+    <ClCompile Include="src\IPCHarness.cpp" />
+    <ClCompile Include="src\ServiceProtocolHarness.cpp" />
+    <ClCompile Include="src\TrafficHarness.cpp" />
+    <ClCompile Include="src\TrafficHarnessDepsStub.cpp" />
+    <ClCompile Include="src\SignaturePatternHarness.cpp" />
+    <ClCompile Include="src\StringPathHashHarness.cpp" />
+    <ClCompile Include="src\ThreatIntelHarness.cpp" />
+    <ClCompile Include="src\ThreatIntelFormatHarness.cpp" />
+    <ClCompile Include="src\ThreatIntelFeedManagerStub.cpp" />
+    <ClCompile Include="src\ParserUtilsHarness.cpp" />
+    <ClCompile Include="src\CryptoCertHarness.cpp" />
+    <ClCompile Include="src\ConfigParserHarness.cpp" />
+    <ClCompile Include="src\ConfigParserHarnessDepsStub.cpp" />
+    <ClCompile Include="src\AntiEvasionHarness.cpp" />
+    <ClCompile Include="src\AntiEvasionHarnessDepsStub.cpp" />
+    <ClCompile Include="src\AIFeatureHarness.cpp" />
+    <ClCompile Include="src\AIFeatureHarnessDepsStub.cpp" />
+    <ClCompile Include="src\FuzzyHasherHarness.cpp" />
+    <ClCompile Include="src\FuzzyHasherHarnessDepsStub.cpp" />
+    <ClCompile Include="src\ScriptScannerHarness.cpp" />
+    <ClCompile Include="src\ScriptScannerHarnessDepsStub.cpp" />
+    <ClCompile Include="src\ExploitDetectorHarness.cpp" />
+    <ClCompile Include="src\ExploitDetectorHarnessDepsStub.cpp" />
+    <ClCompile Include="src\RansomwareAnalysisHarness.cpp" />
+    <ClCompile Include="src\RansomwareAnalysisHarnessDepsStub.cpp" />
+    <ClCompile Include="src\CompressionHarness.cpp" />
+    <ClCompile Include="src\EngineArchitecture.cpp" />
+    <ClCompile Include="src\FuzzLoop.cpp" />
+    <ClCompile Include="src\HarnessAdapterCatalog.cpp" />
+    <ClCompile Include="src\KernelMessageFactory.cpp" />
+    <ClCompile Include="src\KernelMessageSchema.cpp" />
+    <ClCompile Include="src\KernelTargetCatalog.cpp" />
+    <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\MutationEngine.cpp" />
+    <ClCompile Include="src\OperationsPipeline.cpp" />
+    <ClCompile Include="src\PEParserHarness.cpp" />
+    <ClCompile Include="src\RunnerExecutionRuntime.cpp" />
+    <ClCompile Include="src\UserModeTargetCatalog.cpp" />
+    <ClCompile Include="src\WorkerBackendRuntime.cpp" />
+    <ClCompile Include="..\src\PhantomCore\PEParser\PEParser.cpp" />
+    <ClCompile Include="..\src\PhantomCore\PEParser\PEValidation.cpp" />
+    <ClCompile Include="..\PhantomDisassembler\Decoder.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\Executor\Decoder\InstructionDecoder.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\Loader\ExportResolver.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\Loader\ImportResolver.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\Loader\PELoader.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\Loader\PEParser.cpp">
+      <ObjectFileName>$(IntDir)EmulatorLoaderPEParser.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="..\PhantomEmulator\Core\Loader\RelocApplier.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\Loader\TLSHandler.cpp" />
+    <!-- PhantomEmulator CPU core -->
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\CPU.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\State\CPUState.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\ExceptionDispatcher.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\HardwareBreakpoints.cpp" />
+    <!-- PhantomEmulator CPU executor ops -->
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\Executor\ArithmeticOps.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\Executor\DataTransfer.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\Executor\ControlFlow.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\Executor\LogicOps.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\Executor\ShiftRotate.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\Executor\StringOps.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\Executor\BitManip.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\Executor\FlagOps.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\Executor\StackOps.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\Executor\SystemOps.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\Executor\SSE2Ops.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\Executor\SSE4Ops.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\Executor\AESNIOps.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\Executor\AVX2Ops.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\Executor\FPUOps.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\Executor\FMAOps.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\Executor\SHAOps.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\Executor\AVX512Ops.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\Executor\CETOps.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\CPU\Executor\AMXOps.cpp" />
+    <!-- PhantomEmulator memory subsystem -->
+    <ClCompile Include="..\PhantomEmulator\Core\Memory\VirtualMemory.cpp" />
+    <ClCompile Include="..\PhantomEmulator\Core\Memory\MemoryTracker.cpp" />
+    <!-- PhantomEmulator JIT (needed by CPU even when disabled) -->
+    <ClCompile Include="..\PhantomEmulator\Core\JIT\JITCompiler.cpp" />
+    <ClCompile Include="..\src\PhantomCore\Utils\Logger.cpp" />
+    <ClCompile Include="..\src\PhantomCore\Utils\MemoryUtils.cpp" />
+    <ClCompile Include="..\src\PhantomCore\Utils\StringUtils.cpp" />
+    <ClCompile Include="..\src\PhantomCore\Utils\SystemUtils.cpp" />
+    <ClCompile Include="..\src\PhantomCore\Utils\ThreadPool.cpp" />
+    <ClCompile Include="..\src\PhantomCore\API\Http\HttpTypes.cpp" />
+    <ClCompile Include="..\src\PhantomCore\API\Http\HttpServer.cpp" />
+    <ClCompile Include="..\src\PhantomCore\Core\Engine\BehaviorAnalyzer.cpp" />
+    <ClCompile Include="..\src\PhantomCore\Core\Engine\ScanEngine.cpp">
+      <DisableSpecificWarnings>4018;4099;4702;4840;4858;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+    </ClCompile>
+    <ClCompile Include="..\src\PhantomCore\Core\FileSystem\FileTypeAnalyzer.cpp" />
+    <ClCompile Include="..\src\PhantomCore\Core\Network\TrafficAnalyzer.cpp" />
+    <ClCompile Include="..\src\PhantomCore\Communication\ServiceCommunication.cpp" />
+    <ClCompile Include="..\src\PhantomCore\Database\DatabaseManager.cpp" />
+    <ClCompile Include="..\src\PhantomCore\Database\ConfigurationDB.cpp" />
+    <ClCompile Include="..\src\PhantomCore\RealTime\BehaviorBlocker.cpp" />
+    <ClCompile Include="..\src\PhantomCore\RealTime\ProcessCreationMonitor.cpp">
+      <PreprocessorDefinitions>SHADOWSTRIKE_RTP_FOCUSED_BUILD=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <ClCompile Include="..\src\PhantomCore\RealTime\NetworkTrafficFilter.cpp" />
+    <ClCompile Include="..\src\PhantomCore\SelfProtection\CryptoManager.cpp" />
+    <!-- ThreatIntel feed parsers -->
+    <ClCompile Include="..\src\PhantomCore\ThreatIntel\ThreatIntelFeedManager_parsers.cpp" />
+    <ClCompile Include="..\src\PhantomCore\ThreatIntel\ThreatIntelFormat.cpp" />
+    <!-- JSON / XML / Base64 parsers -->
+    <ClCompile Include="..\src\PhantomCore\Utils\JSONUtils.cpp" />
+    <ClCompile Include="..\src\PhantomCore\Utils\XMLUtils.cpp" />
+    <ClCompile Include="..\src\PhantomCore\Utils\Base64Utils.cpp" />
+    <ClCompile Include="..\src\PhantomCore\Utils\CompressionUtils.cpp" />
+    <ClCompile Include="..\src\PhantomCore\External\pugixml\pugixml.cpp" />
+    <ClCompile Include="..\src\PhantomCore\External\sqlitecpp\Backup.cpp" />
+    <ClCompile Include="..\src\PhantomCore\External\sqlitecpp\Column.cpp" />
+    <ClCompile Include="..\src\PhantomCore\External\sqlitecpp\Database.cpp" />
+    <ClCompile Include="..\src\PhantomCore\External\sqlitecpp\Exception.cpp" />
+    <ClCompile Include="..\src\PhantomCore\External\sqlitecpp\Savepoint.cpp" />
+    <ClCompile Include="..\src\PhantomCore\External\sqlitecpp\sqlite3.c" />
+    <ClCompile Include="..\src\PhantomCore\External\sqlitecpp\Statement.cpp" />
+    <ClCompile Include="..\src\PhantomCore\External\sqlitecpp\Transaction.cpp" />
+    <!-- Crypto / Certificate / Hash -->
+    <ClCompile Include="..\src\PhantomCore\Utils\CertUtils.cpp" />
+    <ClCompile Include="..\src\PhantomCore\Utils\CryptoUtils.cpp" />
+    <ClCompile Include="..\src\PhantomCore\Utils\CryptoUtilsCommon.cpp" />
+    <ClCompile Include="..\src\PhantomCore\Utils\CryptoUtils_SymmetricCipher.cpp" />
+    <ClCompile Include="..\src\PhantomCore\Utils\CryptoUtils_AsymmetricCipher.cpp" />
+    <ClCompile Include="..\src\PhantomCore\Utils\CryptoUtils_SecureBuffer.cpp" />
+    <ClCompile Include="..\src\PhantomCore\Utils\CryptoUtils_Secure_Random.cpp" />
+    <ClCompile Include="..\src\PhantomCore\Utils\CryptoUtils_private_key.cpp" />
+    <ClCompile Include="..\src\PhantomCore\Utils\FileUtils.cpp" />
+    <ClCompile Include="..\src\PhantomCore\Utils\HashUtils.cpp" />
+    <ClCompile Include="..\src\PhantomCore\SignatureStore\SignatureFormat.cpp" />
+    <ClCompile Include="..\src\PhantomCore\PatternStore\PatternStore.cpp" />
+    <ClCompile Include="..\src\PhantomCore\PatternStore\PatternIndex.cpp" />
+    <ClCompile Include="..\src\PhantomCore\PatternStore\aho_crsck_impl.cpp" />
+    <ClCompile Include="..\src\PhantomCore\PatternStore\boyer_moore_impl.cpp" />
+    <ClCompile Include="..\src\PhantomCore\PatternStore\SIMD_matcher_impl.cpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>

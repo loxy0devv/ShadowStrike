@@ -1,0 +1,56 @@
+id: ss-static-003
+detection_name: "Ransomware.Trojan.Generic"
+description: "Binary statically imports file enumeration, cryptographic, and shadow copy deletion APIs consistent with ransomware."
+scope: static
+severity: critical
+status: stable
+source: native
+confidence: 0.80
+weight: 3.0
+version: 1
+
+attack:
+  - tactic: TA0040
+    technique: T1486
+    name: "Data Encrypted for Impact"
+  - tactic: TA0040
+    technique: T1490
+    name: "Inhibit System Recovery"
+
+logic:
+  and:
+    - or:
+        - api: BCryptEncrypt
+        - api: CryptEncrypt
+        - api: AES_init_ctx
+        - string: "AES"
+        - string: "ChaCha20"
+        - string: "Salsa20"
+        - string: "RC4"
+    - or:
+        - api: FindFirstFileW
+        - api: FindNextFileW
+        - api: SetFileAttributesW
+        - api: MoveFileExW
+        - api: DeleteFileW
+    - or:
+        - string: "vssadmin"
+        - string: "delete shadows"
+        - string: "wbadmin"
+        - string: ".onion"
+        - string: "decrypt"
+        - string: "your files"
+        - string: "bitcoin"
+        - string: "monero"
+        - string: "encrypted"
+        - string: "README"
+        - string: "RECOVER"
+        - string: "HOW_TO"
+        - string: "ransom"
+
+fp_guard:
+  notes:
+    - "Backup software legitimately uses encryption and file enumeration. Suppress for signed Microsoft or trusted backup vendor binaries."
+  suppress:
+    - field: file.signer.subject
+      regex: "(?i)(Microsoft|Veeam|Acronis|Veritas|Symantec|Broadcom)"

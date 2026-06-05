@@ -1,0 +1,67 @@
+id: ss-net-013
+detection_name: "Win32/Netcat.ReverseShell.Connection"
+description: "Detects netcat (nc.exe, ncat.exe) or PowerShell/Python initiating outbound TCP connections on common reverse-shell ports, or processes executing with arguments indicative of a reverse shell one-liner. Reverse shells provide attackers interactive access to compromised hosts while bypassing inbound firewall rules."
+scope: network
+severity: critical
+status: stable
+source: native
+confidence: 0.88
+weight: 3.0
+version: 1
+
+attack:
+  - tactic: TA0002
+    technique: T1059
+    name: "Command and Scripting Interpreter"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1059/"
+    title: "ATT&CK T1059"
+
+logic:
+  or:
+    - and:
+        - field_in:
+            field: network.process.name
+            values:
+              - nc.exe
+              - ncat.exe
+              - netcat.exe
+              - ncat64.exe
+            case_insensitive: true
+        - field_eq:
+            field: network.direction
+            value: "outbound"
+    - and:
+        - field_in:
+            field: network.process.name
+            values:
+              - powershell.exe
+              - pwsh.exe
+              - python.exe
+              - python3.exe
+              - cmd.exe
+            case_insensitive: true
+        - or:
+            - field_regex:
+                field: network.process.command_line
+                pattern: "(?i)New-Object\\s+Net\\.Sockets\\.TCPClient"
+            - field_regex:
+                field: network.process.command_line
+                pattern: "(?i)socket\\.connect\\("
+            - field_regex:
+                field: network.process.command_line
+                pattern: "(?i)\\|\\s*(nc|ncat|bash|sh)\\s"
+        - field_eq:
+            field: network.direction
+            value: "outbound"
+
+fp_guard:
+  notes:
+    - "Security testing and red team exercises legitimately use netcat. Validate against authorized penetration testing windows."
+    - "Network diagnostic toolkits on servers may include netcat variants."
+  suppress:
+    - field: network.process.user
+      values:
+        - "DOMAIN\\pentest_svc"
+        - "DOMAIN\\redteam"

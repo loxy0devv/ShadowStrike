@@ -1,0 +1,42 @@
+id: ss-file-009
+detection_name: "Win32/Ransomware.MassRename.SuspiciousExtension"
+description: "Detects rapid mass renaming of files to unknown or ransom-note-appended extensions within a short time window. This is the hallmark behavior of ransomware encryption, where files are renamed to custom extensions (e.g., .locked, .crypt, .WNCRY) after encryption to signal victim for payment."
+scope: file
+severity: critical
+status: stable
+source: native
+confidence: 0.90
+weight: 3.5
+version: 1
+
+attack:
+  - tactic: TA0040
+    technique: T1486
+    name: "Data Encrypted for Impact"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1486/"
+    title: "ATT&CK T1486"
+
+logic:
+  and:
+    - field_eq:
+        field: file.operation
+        value: "rename"
+    - field_regex:
+        field: file.new_path
+        pattern: "(?i)\\.(locked|crypt|encrypted|enc|crypted|wncry|wnry|wcry|wncrypt|locky|cerber|zepto|thor|aesir|zzzzz|osiris|diablo6|wallet|onion|fucked|micro|vvv|ttt|mp3|xyz|evil|zzz|777|xxx|abc|aaa|fun|gws|pays|pays2|paym|pays3|ryk|ryuk|ransom|sage|java|globe|spora|petya|goldeneye|jigsaw|shade|troldesh|crysis|dharma|phobos|makop|stop|djvu|sodinokibi|revil|darkside|conti|blackcat|alphv)$"
+    - field_gt:
+        field: file.rename_count_per_minute
+        value: 20
+
+fp_guard:
+  notes:
+    - "Bulk file migration or format conversion tools may rename many files quickly. Validate extension pattern against known legitimate converters."
+    - "Photo management or media encoding software may batch-rename files."
+  suppress:
+    - field: file.process.name
+      values:
+        - handbrake.exe
+        - ffmpeg.exe
+        - photoshop.exe

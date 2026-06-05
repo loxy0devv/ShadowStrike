@@ -1,0 +1,87 @@
+id: ss-seq-015
+detection_name: "Win32/Sequence.UACBypass.ElevatedProcess.PersistenceWrite"
+description: "Detects a privilege escalation and persistence chain: a UAC bypass technique used to obtain an elevated process, followed by that elevated process writing to persistence locations (registry Run keys, scheduled tasks, startup folder). This sequence shows an attacker converting a medium-integrity foothold into a persistent, elevated presence."
+scope: sequence
+severity: critical
+status: stable
+source: native
+confidence: 0.87
+weight: 4.0
+version: 1
+
+attack:
+  - tactic: TA0004
+    technique: T1548.002
+    name: "Abuse Elevation Control Mechanism: Bypass User Account Control"
+  - tactic: TA0003
+    technique: T1547
+    name: "Boot or Logon Autostart Execution"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1548/002/"
+    title: "ATT&CK T1548.002"
+  - url: "https://attack.mitre.org/techniques/T1547/"
+    title: "ATT&CK T1547"
+
+logic:
+  sequence:
+    - id: step1_uac_bypass
+      within: 300s
+      event:
+        or:
+          - field_regex:
+              field: process.command_line
+              pattern: "(?i)(fodhelper|eventvwr|sdclt|cmstp|computerdefaults|wsreset|slui|bypassuac)"
+          - and:
+              - field_eq:
+                  field: registry.key_path
+                  value: "HKCU\\SOFTWARE\\Classes\\ms-settings\\shell\\open\\command"
+              - field_eq:
+                  field: registry.operation
+                  value: "set_value"
+          - and:
+              - field_eq:
+                  field: registry.key_path
+                  value: "HKCU\\SOFTWARE\\Classes\\mscfile\\shell\\open\\command"
+              - field_eq:
+                  field: registry.operation
+                  value: "set_value"
+    - id: step2_elevated_process
+      within: 120s
+      after: step1_uac_bypass
+      event:
+        and:
+          - field_eq:
+              field: process.integrity_level
+              value: "high"
+          - field_eq:
+              field: process.is_elevated
+              value: "true"
+          - field_eq:
+              field: process.parent.integrity_level
+              value: "medium"
+    - id: step3_persistence
+      within: 300s
+      after: step2_elevated_process
+      event:
+        or:
+          - field_regex:
+              field: registry.key_path
+              pattern: "(?i)(Run|RunOnce|Startup|CurrentVersion\\\\Run)"
+          - field_regex:
+              field: process.command_line
+              pattern: "(?i)schtasks.*(/create|/sc)"
+          - field_regex:
+              field: file.path
+              pattern: "(?i)\\\\Start Menu\\\\Programs\\\\Startup\\\\"
+
+fp_guard:
+  notes:
+    - "Software installers that require elevation and then write startup entries will match. Validate against software deployment windows and signed installer binaries."
+  suppress:
+    - field: process.executable_signed
+      values:
+        - "true"
+    - field: process.signer
+      values:
+        - "Microsoft Corporation"

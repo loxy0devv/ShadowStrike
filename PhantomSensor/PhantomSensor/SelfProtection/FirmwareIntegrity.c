@@ -1,0 +1,638 @@
+﻿/*
+ * ShadowStrike - Enterprise NGAV/EDR Platform
+ * Copyright (C) 2026 ShadowStrike Security
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+/*++
+===============================================================================
+ShadowStrike NGAV - FIRMWARE/UEFI INTEGRITY IMPLEMENTATION
+===============================================================================
+
+@file FirmwareIntegrity.c
+@brief Boot firmware verification, Secure Boot monitoring, and ESP protection.
+
+Implementation Strategy:
+  - ExGetFirmwareEnvironmentVariable for UEFI variable queries
+  - Secure Boot state read from "SecureBoot" UEFI variable
+  - EFI System Partition detection via path pattern matching
+  - BCD store monitoring via file path interception
+
+@author ShadowStrike Security Team
+@version 1.0.0
+@copyright (c) 2026 ShadowStrike Security. All rights reserved.
+===============================================================================
+--*/
+
+#include "FirmwareIntegrity.h"
+
+#pragma warning(push)
+#pragma warning(disable:4324)  // fltKernel.h: structure was padded
+#include "../Core/Globals.h"
+#pragma warning(pop)
+
+#include <ntstrsafe.h>
+
+#include "../Behavioral/BehaviorEngine.h"
+#include "../ETW/TelemetryEvents.h"
+#include "../Sync/TimerManager.h"
+#include "../Core/DriverEntry.h"
+
+// ============================================================================
+// UEFI GUIDS
+// ============================================================================
+
+//
+// EFI Global Variable GUID: {8BE4DF61-93CA-11D2-AA0D-00E098032B8C}
+//
+static const GUID EFI_GLOBAL_VARIABLE_GUID = {
+    0x8BE4DF61, 0x93CA, 0x11D2,
+    { 0xAA, 0x0D, 0x00, 0xE0, 0x98, 0x03, 0x2B, 0x8C }
+};
+
+// ============================================================================
+// ESP PATH PATTERNS
+// ============================================================================
+
+static const UNICODE_STRING g_EspPaths[] = {
+    RTL_CONSTANT_STRING(L"\\EFI\\"),
+    RTL_CONSTANT_STRING(L"\\EFI\\Microsoft\\Boot\\"),
+    RTL_CONSTANT_STRING(L"\\EFI\\Boot\\"),
+};
+
+#define FI_ESP_PATH_COUNT \
+    (sizeof(g_EspPaths) / sizeof(g_EspPaths[0]))
+
+//
+// BCD path â€” only matched on volume roots, not substring (see FipIsBcdPath)
+//
+static const UNICODE_STRING g_BcdSuffix =
+    RTL_CONSTANT_STRING(L"\\Boot\\BCD");
+
+// ============================================================================
+// STATE
+// ============================================================================
+
+typedef struct _FI_STATE {
+    volatile LONG       State;
+    EX_RUNDOWN_REF      RundownRef;
+    FI_BOOT_STATUS      BootStatus;
+    FI_STATISTICS       Stats;
+    ULONG               VerifyTimerId;
+} FI_STATE;
+
+static FI_STATE g_FiState;
+
+// ============================================================================
+// FORWARD DECLARATIONS
+// ============================================================================
+
+static FI_BOOT_STATUS
+FipQuerySecureBootState(VOID);
+
+static BOOLEAN
+FipIsEspPath(
+    _In_ PCUNICODE_STRING FileName
+    );
+
+static BOOLEAN
+FipEnterOperation(VOID);
+
+static VOID
+FipLeaveOperation(VOID);
+
+static VOID
+FipVerifyTimerCallback(
+    _In_ ULONG TimerId,
+    _In_opt_ PVOID Context
+    );
+
+// ============================================================================
+// LIFECYCLE
+// ============================================================================
+
+_IRQL_requires_(PASSIVE_LEVEL)
+_Must_inspect_result_
+NTSTATUS
+FiInitialize(VOID)
+{
+    LONG Previous;
+
+    PAGED_CODE();
+
+    Previous = InterlockedCompareExchange(&g_FiState.State, 1, 0);
+    if (Previous != 0) {
+        return (Previous == 2) ? STATUS_SUCCESS : STATUS_DEVICE_BUSY;
+    }
+
+    ExInitializeRundownProtection(&g_FiState.RundownRef);
+    RtlZeroMemory(&g_FiState.Stats, sizeof(FI_STATISTICS));
+
+    //
+    // Perform initial boot integrity assessment
+    //
+    g_FiState.BootStatus = FipQuerySecureBootState();
+    g_FiState.Stats.CurrentBootStatus = g_FiState.BootStatus;
+    g_FiState.Stats.IntegrityChecks = 1;
+
+    if (g_FiState.BootStatus == FiBoot_SecureBootDisabled) {
+        DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
+                   "[ShadowStrike/FI] WARNING: Secure Boot is DISABLED! "
+                   "System is vulnerable to firmware-level attacks.\n");
+        InterlockedIncrement64(&g_FiState.Stats.ThreatsDetected);
+
+        //
+        // Report Secure Boot disabled to behavioral engine (T1542.003)
+        //
+        BeEngineSubmitEvent(
+            BehaviorEvent_FirmwareSecureBootDisabled,
+            BehaviorCategory_DefenseEvasion,
+            0,
+            NULL,
+            0,
+            85,
+            FALSE,
+            NULL
+            );
+
+        TeLogTamperAttempt(
+            Tamper_FirmwareModification,
+            0,
+            Component_SelfProtection,
+            0,
+            FALSE,
+            L"Secure Boot disabled at system startup"
+            );
+    } else if (g_FiState.BootStatus == FiBoot_SecureBootEnabled) {
+        DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
+                   "[ShadowStrike/FI] Secure Boot: ENABLED (Verified)\n");
+    } else {
+        DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
+                   "[ShadowStrike/FI] Secure Boot state: %d\n",
+                   g_FiState.BootStatus);
+    }
+
+    InterlockedExchange(&g_FiState.State, 2);
+
+    //
+    // Create periodic boot integrity verification timer.
+    // Checks every 5 minutes â€” firmware changes are rare.
+    // Uses WorkItem callback for PASSIVE_LEVEL (ExGetFirmwareEnvironmentVariable).
+    //
+    {
+        PTM_MANAGER TimerMgr = ShadowStrikeGetTimerManager();
+        if (TimerMgr != NULL) {
+            TM_TIMER_OPTIONS Opts = { 0 };
+            Opts.Flags = TmFlag_WorkItemCallback | TmFlag_Coalescable;
+            Opts.ToleranceMs = 30000;
+
+            NTSTATUS TmStatus = TmCreatePeriodic(
+                TimerMgr,
+                300000,
+                FipVerifyTimerCallback,
+                NULL,
+                &Opts,
+                &g_FiState.VerifyTimerId
+                );
+
+            if (!NT_SUCCESS(TmStatus)) {
+                g_FiState.VerifyTimerId = 0;
+                DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
+                    "[ShadowStrike/FI] WARNING: Periodic verify timer failed: 0x%08X\n",
+                    TmStatus);
+            }
+        }
+    }
+
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
+               "[ShadowStrike/FI] Firmware Integrity monitor initialized\n");
+
+    return STATUS_SUCCESS;
+}
+
+
+_IRQL_requires_(PASSIVE_LEVEL)
+VOID
+FiShutdown(VOID)
+{
+    PAGED_CODE();
+
+    if (InterlockedCompareExchange(&g_FiState.State, 3, 2) != 2) {
+        return;
+    }
+
+    //
+    // Cancel periodic verification timer before waiting for rundown.
+    // TmCancel with Wait=TRUE ensures no in-flight callback remains.
+    //
+    if (g_FiState.VerifyTimerId != 0) {
+        PTM_MANAGER TimerMgr = ShadowStrikeGetTimerManager();
+        if (TimerMgr != NULL) {
+            TmCancel(TimerMgr, g_FiState.VerifyTimerId, TRUE);
+        }
+        g_FiState.VerifyTimerId = 0;
+    }
+
+    ExWaitForRundownProtectionRelease(&g_FiState.RundownRef);
+
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
+               "[ShadowStrike/FI] Shutdown complete. "
+               "Checks=%lld, Threats=%lld, EspBlocked=%lld\n",
+               g_FiState.Stats.IntegrityChecks,
+               g_FiState.Stats.ThreatsDetected,
+               g_FiState.Stats.EspAccessBlocked);
+}
+
+// ============================================================================
+// ESP ACCESS MONITORING
+// ============================================================================
+
+_IRQL_requires_max_(APC_LEVEL)
+FI_THREAT_TYPE
+FiCheckEspAccess(
+    _In_ PCUNICODE_STRING FileName,
+    _In_ ACCESS_MASK DesiredAccess
+    )
+{
+    UNICODE_STRING BcdPath = RTL_CONSTANT_STRING(L"\\Boot\\BCD");
+    UNICODE_STRING Suffix;
+
+    if (!FipEnterOperation()) {
+        return FiThreat_None;
+    }
+
+    if (!FipIsEspPath(FileName)) {
+        FipLeaveOperation();
+        return FiThreat_None;
+    }
+
+    //
+    // Read access to ESP is acceptable (for backup tools, etc.)
+    // Only flag actual content modification â€” FILE_WRITE_ATTRIBUTES is excluded
+    // because it's commonly requested in standard access masks even for
+    // non-modifying operations and causes widespread false positives.
+    //
+    if (FlagOn(DesiredAccess, FILE_WRITE_DATA | FILE_APPEND_DATA |
+               DELETE | FILE_WRITE_EA)) {
+
+        InterlockedIncrement64(&g_FiState.Stats.ThreatsDetected);
+        InterlockedIncrement64(&g_FiState.Stats.EspAccessBlocked);
+
+        //
+        // Submit ESP write attempt to behavioral engine (T1542.003)
+        //
+        BeEngineSubmitEvent(
+            BehaviorEvent_FirmwareEspWrite,
+            BehaviorCategory_DefenseEvasion,
+            HandleToULong(PsGetCurrentProcessId()),
+            NULL,
+            0,
+            95,
+            FALSE,
+            NULL
+            );
+
+        //
+        // Emit structured telemetry for ESP write (T1542.003 Bootkit)
+        //
+        TeLogTamperAttempt(
+            Tamper_FirmwareModification,
+            HandleToULong(PsGetCurrentProcessId()),
+            Component_SelfProtection,
+            0,
+            FALSE,
+            L"Write access to EFI System Partition detected"
+            );
+
+        DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
+                   "[ShadowStrike/FI] CRITICAL: Write access to EFI partition detected! "
+                   "File=%wZ, Access=0x%08X, PID=%lu\n",
+                   FileName,
+                   DesiredAccess,
+                   HandleToULong(PsGetCurrentProcessId()));
+
+        FipLeaveOperation();
+        return FiThreat_EspModification;
+    }
+
+    //
+    // Check for BCD access specifically (read-only path â€” writes already handled above)
+    //
+    if (FileName->Length >= BcdPath.Length) {
+        Suffix.Buffer = FileName->Buffer +
+            (FileName->Length - BcdPath.Length) / sizeof(WCHAR);
+        Suffix.Length = BcdPath.Length;
+        Suffix.MaximumLength = BcdPath.Length;
+
+        if (RtlEqualUnicodeString(&Suffix, &BcdPath, TRUE)) {
+            InterlockedIncrement64(&g_FiState.Stats.BcdModificationsDetected);
+
+            DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
+                       "[ShadowStrike/FI] BCD access detected: %wZ\n",
+                       FileName);
+        }
+    }
+
+    FipLeaveOperation();
+    return FiThreat_None;
+}
+
+// ============================================================================
+// BOOT INTEGRITY VERIFICATION
+// ============================================================================
+
+_IRQL_requires_(PASSIVE_LEVEL)
+FI_BOOT_STATUS
+FiVerifyBootIntegrity(VOID)
+{
+    FI_BOOT_STATUS Status;
+
+    PAGED_CODE();
+
+    if (!FipEnterOperation()) {
+        return FiBoot_Unknown;
+    }
+
+    InterlockedIncrement64(&g_FiState.Stats.IntegrityChecks);
+
+    Status = FipQuerySecureBootState();
+    g_FiState.BootStatus = Status;
+    g_FiState.Stats.CurrentBootStatus = Status;
+
+    FipLeaveOperation();
+    return Status;
+}
+
+// ============================================================================
+// QUERY
+// ============================================================================
+
+_IRQL_requires_max_(DISPATCH_LEVEL)
+VOID
+FiGetStatistics(
+    _Out_ PFI_STATISTICS Statistics
+    )
+{
+    if (Statistics == NULL) {
+        return;
+    }
+
+    RtlZeroMemory(Statistics, sizeof(FI_STATISTICS));
+
+    //
+    // Take a rundown reference so a concurrent FiShutdown is forced to
+    // drain before any state is repurposed. Although g_FiState lives in
+    // BSS and is never freed, the rundown wait also serializes against
+    // an in-flight FiInitialize that would otherwise be observable in a
+    // partially-constructed form (e.g. before BootStatus is set).
+    //
+    if (!FipEnterOperation()) {
+        //
+        // Module not initialized or shutdown in progress: leave the
+        // caller's buffer zeroed (CurrentBootStatus == FiBoot_Unknown).
+        //
+        return;
+    }
+
+    //
+    // Read each volatile counter via InterlockedCompareExchange64 to
+    // guarantee atomicity vs. concurrent InterlockedIncrement64 callers
+    // and to defeat compiler reordering / partial-word reads.
+    //
+    Statistics->IntegrityChecks =
+        InterlockedCompareExchange64(&g_FiState.Stats.IntegrityChecks, 0, 0);
+    Statistics->ThreatsDetected =
+        InterlockedCompareExchange64(&g_FiState.Stats.ThreatsDetected, 0, 0);
+    Statistics->EspAccessBlocked =
+        InterlockedCompareExchange64(&g_FiState.Stats.EspAccessBlocked, 0, 0);
+    Statistics->BcdModificationsDetected =
+        InterlockedCompareExchange64(&g_FiState.Stats.BcdModificationsDetected, 0, 0);
+    Statistics->CurrentBootStatus = g_FiState.Stats.CurrentBootStatus;
+
+    FipLeaveOperation();
+}
+
+// ============================================================================
+// PRIVATE â€” SECURE BOOT QUERY
+// ============================================================================
+
+static FI_BOOT_STATUS
+FipQuerySecureBootState(VOID)
+{
+    NTSTATUS Status;
+    UNICODE_STRING VariableName = RTL_CONSTANT_STRING(L"SecureBoot");
+    UCHAR Value = 0;
+    ULONG ResultLength = sizeof(Value);
+
+    //
+    // Query the SecureBoot UEFI variable
+    // On BIOS systems, this will fail â€” that's expected
+    //
+    Status = ExGetFirmwareEnvironmentVariable(
+        &VariableName,
+        (LPGUID)&EFI_GLOBAL_VARIABLE_GUID,
+        &Value,
+        &ResultLength,
+        NULL
+        );
+
+    if (!NT_SUCCESS(Status)) {
+        //
+        // Failure could mean:
+        // - Legacy BIOS (no UEFI variables)
+        // - Insufficient privilege
+        // - Variable doesn't exist
+        //
+        if (Status == STATUS_NOT_IMPLEMENTED ||
+            Status == STATUS_NOT_SUPPORTED) {
+            DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
+                       "[ShadowStrike/FI] UEFI not supported (Legacy BIOS)\n");
+            return FiBoot_Unknown;
+        }
+
+        DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
+                   "[ShadowStrike/FI] Failed to query SecureBoot variable: 0x%08X\n",
+                   Status);
+        return FiBoot_Unknown;
+    }
+
+    if (Value == 0) {
+        return FiBoot_SecureBootDisabled;
+    }
+
+    //
+    // SecureBoot is enabled â€” check if we're in Setup Mode
+    // (Setup Mode allows unsigned binaries even with SecureBoot "on")
+    //
+    {
+        UNICODE_STRING SetupModeName = RTL_CONSTANT_STRING(L"SetupMode");
+        UCHAR SetupValue = 0;
+        ULONG SetupLen = sizeof(SetupValue);
+
+        Status = ExGetFirmwareEnvironmentVariable(
+            &SetupModeName,
+            (LPGUID)&EFI_GLOBAL_VARIABLE_GUID,
+            &SetupValue,
+            &SetupLen,
+            NULL
+            );
+
+        if (NT_SUCCESS(Status) && SetupValue != 0) {
+            DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
+                       "[ShadowStrike/FI] WARNING: UEFI Setup Mode active â€” "
+                       "Secure Boot enforcement bypassed!\n");
+            return FiBoot_SecureBootSetupMode;
+        }
+    }
+
+    return FiBoot_SecureBootEnabled;
+}
+
+// ============================================================================
+// PRIVATE â€” ESP PATH DETECTION
+// ============================================================================
+
+static BOOLEAN
+FipIsEspPath(
+    _In_ PCUNICODE_STRING FileName
+    )
+{
+    //
+    // ESP paths appear as \Device\HarddiskVolumeN\EFI\...
+    // We require \EFI\ to appear near the start (within first 40 chars)
+    // to avoid false positives on C:\Program Files\EFI\ etc.
+    // The volume prefix \Device\HarddiskVolumeNN\ is typically 25-30 chars.
+    //
+    USHORT PathLen = FileName->Length / sizeof(WCHAR);
+    USHORT SearchLimit = (PathLen > 40) ? 40 : PathLen;
+
+    for (ULONG i = 0; i < FI_ESP_PATH_COUNT; i++) {
+        USHORT PatternLen = g_EspPaths[i].Length / sizeof(WCHAR);
+
+        if (SearchLimit >= PatternLen) {
+            for (USHORT j = 0; j <= SearchLimit - PatternLen; j++) {
+                UNICODE_STRING Sub;
+                Sub.Buffer = &FileName->Buffer[j];
+                Sub.Length = g_EspPaths[i].Length;
+                Sub.MaximumLength = g_EspPaths[i].Length;
+
+                if (RtlEqualUnicodeString(&Sub, &g_EspPaths[i], TRUE)) {
+                    return TRUE;
+                }
+            }
+        }
+    }
+
+    return FALSE;
+}
+
+// ============================================================================
+// PRIVATE â€” LIFECYCLE
+// ============================================================================
+
+static BOOLEAN
+FipEnterOperation(VOID)
+{
+    //
+    // Cheap pre-check: if the module isn't running, fail fast without
+    // touching the rundown reference. The authoritative state machine
+    // transition happens via InterlockedCompareExchange in FiShutdown,
+    // so a stale read here is safe — the rundown acquire below is the
+    // real serialization point.
+    //
+    if (ReadAcquire(&g_FiState.State) != 2) {
+        return FALSE;
+    }
+
+    if (!ExAcquireRundownProtection(&g_FiState.RundownRef)) {
+        return FALSE;
+    }
+
+    //
+    // Re-validate state after acquiring the rundown reference. This
+    // closes the narrow window where FiShutdown observed State==2,
+    // transitioned it to 3, and is now waiting on rundown drain.
+    // Acquiring before the wait begins is benign (we hold a ref, the
+    // wait blocks until we release), but rejecting late acquirers
+    // shortens the shutdown path and prevents new work from starting.
+    //
+    if (ReadAcquire(&g_FiState.State) != 2) {
+        ExReleaseRundownProtection(&g_FiState.RundownRef);
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+static VOID
+FipLeaveOperation(VOID)
+{
+    ExReleaseRundownProtection(&g_FiState.RundownRef);
+}
+
+// ============================================================================
+// PRIVATE â€” PERIODIC VERIFICATION TIMER
+// ============================================================================
+
+static VOID
+FipVerifyTimerCallback(
+    _In_ ULONG TimerId,
+    _In_opt_ PVOID Context
+    )
+{
+    UNREFERENCED_PARAMETER(TimerId);
+    UNREFERENCED_PARAMETER(Context);
+
+    FI_BOOT_STATUS Previous = g_FiState.BootStatus;
+    FI_BOOT_STATUS Current = FiVerifyBootIntegrity();
+
+    //
+    // Detect runtime Secure Boot state transitions.
+    // A change from Enabled â†’ Disabled indicates potential firmware attack.
+    //
+    if (Current != Previous &&
+        Current != FiBoot_Unknown &&
+        Previous != FiBoot_Unknown) {
+
+        if (Current == FiBoot_SecureBootDisabled &&
+            Previous == FiBoot_SecureBootEnabled) {
+
+            InterlockedIncrement64(&g_FiState.Stats.ThreatsDetected);
+
+            BeEngineSubmitEvent(
+                BehaviorEvent_FirmwareSecureBootDisabled,
+                BehaviorCategory_DefenseEvasion,
+                0,
+                NULL,
+                0,
+                95,
+                FALSE,
+                NULL
+                );
+
+            TeLogTamperAttempt(
+                Tamper_FirmwareModification,
+                0,
+                Component_SelfProtection,
+                0,
+                FALSE,
+                L"Secure Boot changed from Enabled to Disabled at runtime"
+                );
+
+            DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
+                "[ShadowStrike/FI] CRITICAL: Secure Boot state changed from "
+                "ENABLED to DISABLED at runtime! Possible firmware attack.\n");
+        }
+    }
+}

@@ -1,0 +1,30 @@
+id: ss-proc-004
+detection_name: "Win32/WMI.ProcessSpawn"
+description: "Suspicious process spawned via WMI — common technique for fileless execution and lateral movement."
+scope: process
+severity: high
+status: stable
+source: native
+confidence: 0.80
+weight: 2.0
+version: 1
+attack:
+  - tactic: TA0002
+    technique: T1047
+    name: "Windows Management Instrumentation"
+logic:
+  and:
+    - field_in:
+        field: process.parent.name
+        values: [WmiPrvSE.exe, scrcons.exe]
+        case_insensitive: true
+    - field_not_in:
+        field: process.name
+        values: [WerFault.exe, dllhost.exe, msiexec.exe, svchost.exe, conhost.exe]
+        case_insensitive: true
+fp_guard:
+  notes:
+    - "Legitimate WMI-based deployment tools (SCCM, ConfigMgr) spawn processes via WmiPrvSE."
+  suppress:
+    - field: process.parent.signature.subject
+      regex: "(?i)Microsoft"

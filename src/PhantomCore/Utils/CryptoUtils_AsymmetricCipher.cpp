@@ -1,0 +1,2128 @@
+/*
+ * ShadowStrike - Enterprise NGAV/EDR Platform
+ * Copyright (C) 2026 ShadowStrike Security
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+/**
+ * @file CryptoUtils_AsymmetricCipher.cpp
+ * @brief Enterprise-grade asymmetric cryptography implementation
+ *
+ * Implements AsymmetricCipher with RSA encryption/decryption, digital signatures,
+ * ECC Diffie-Hellman key exchange, and key derivation functions using Windows CNG APIs.
+ *
+ * Features:
+ * - RSA Encryption: 2048/3072/4096-bit with PKCS#1 v1.5 and OAEP padding (SHA1/256/384/512)
+ * - RSA Signatures: PKCS#1 v1.5 and PSS padding with configurable hash algorithms
+ * - ECC ECDH: P-256/P-384/P-521 for shared secret derivation
+ * - Key Generation: Secure RSA/ECC key pair generation with proper finalization
+ * - Key Import/Export: PEM and DER format support for public/private keys
+ * - Key Derivation: PBKDF2, HKDF (RFC 5869), scrypt (RFC 7914), Argon2id (RFC 9106)
+ *
+ * Security Features:
+ * - Secure key import: Private keys zeroed after BCrypt import
+ * - Padding validation: RFC 8017 PSS salt length = hash length
+ * - Blob integrity checks: BCRYPT_RSAKEY_BLOB header validation
+ * - Thread-safe RAII: EcdhProviderHandle for resource management
+ * - Constant-time operations: BCRYPT crypto primitives prevent timing attacks
+ *
+ * @copyright Copyright (c) 2025 ShadowStrike Security Suite
+ */
+#include"pch.h"
+#include "CryptoUtils.hpp"
+#include"CryptoUtilsCommon.hpp"
+
+namespace ShadowStrike {
+	namespace Utils {
+		namespace CryptoUtils {
+
+			// =============================================================================
+			// AsymmetricCipher Implementation
+			// =============================================================================
+			AsymmetricCipher::AsymmetricCipher(AsymmetricAlgorithm algorithm) noexcept : m_algorithm(algorithm) {}
+
+			AsymmetricCipher::~AsymmetricCipher() {
+				cleanup();
+			}
+
+			void AsymmetricCipher::cleanup() noexcept {
+#ifdef _WIN32
+				// Proper cleanup order (keys before provider)
+				if (m_publicKeyHandle) {
+					BCryptDestroyKey(m_publicKeyHandle);
+					m_publicKeyHandle = nullptr;
+				}
+				if (m_privateKeyHandle) {
+					BCryptDestroyKey(m_privateKeyHandle);
+					m_privateKeyHandle = nullptr;
+				}
+
+				// Close provider handle
+				if (m_algHandle) {
+					NTSTATUS st = BCryptCloseAlgorithmProvider(m_algHandle, 0);
+					if (st < 0) {
+						SS_LOG_WARN(L"CryptoUtils", L"BCryptCloseAlgorithmProvider failed: 0x%08X", st);
+					}
+					m_algHandle = nullptr;
+				}
+#endif
+				m_publicKeyLoaded = false;
+				m_privateKeyLoaded = false;
+			}
+
+			bool AsymmetricCipher::ensureProvider(Error* err) noexcept {
+#ifdef _WIN32
+				//if already opened
+				if (m_algHandle) {
+					return true;
+				}
+
+				//Get Algorithm Name
+				const wchar_t* algName = RSAAlgName(m_algorithm);
+				if (!algName || !*algName) {
+					if (err) {
+						err->win32 = ERROR_INVALID_PARAMETER;
+						err->ntstatus = 0;
+						err->message = L"Invalid asymmetric algorithm";
+						err->context.clear();
+					}
+
+					//prevents abort() if logger not initialized
+					if (Logger::Instance().IsInitialized()) {
+						SS_LOG_ERROR(L"CryptoUtils", L"ensureProvider: invalid algorithm enum: %d", static_cast<int>(m_algorithm));
+					}
+					else
+					{
+						wchar_t debugMsg[256];
+						swprintf_s(debugMsg, L"[CryptoUtils] ensureProvider: invalid algorithm enum: %d\n",
+							static_cast<int>(m_algorithm));
+						OutputDebugStringW(debugMsg);
+					}
+					return false;
+				}
+
+				//Try to open
+				BCRYPT_ALG_HANDLE h = nullptr;
+				NTSTATUS st = BCryptOpenAlgorithmProvider(&h, algName, nullptr, 0);
+				if (st < 0 || h == nullptr) {
+					if (err) {
+						err->ntstatus = st;
+						err->win32 = RtlNtStatusToDosError(st);
+						err->message = L"BCryptOpenAlgorithmProvider failed for asymmetric";
+						wchar_t tmp[256];
+						swprintf_s(tmp, L"Algorithm=%s NTSTATUS=0x%08X Win32=%u", algName, static_cast<unsigned>(st), err->win32);
+						err->context = tmp; //Copies std::wstring, no dangling
+					}
+					//prevents abort() if logger not initialized
+					if (Logger::Instance().IsInitialized()) {
+						SS_LOG_ERROR(L"CryptoUtils", L"BCryptOpenAlgorithmProvider failed: Algorithm=%s, NTSTATUS=0x%08X, Win32=%u", algName, static_cast<unsigned>(st), RtlNtStatusToDosError(st));
+					}
+					else
+					{
+						wchar_t debugMsg[512];
+						swprintf_s(debugMsg,
+							L"[CryptoUtils] BCryptOpenAlgorithmProvider failed: Algorithm=%s, NTSTATUS=0x%08X, Win32=%u\n",
+							algName, static_cast<unsigned>(st), RtlNtStatusToDosError(st));
+						OutputDebugStringW(debugMsg);
+					}
+
+					//Guarantee null handle on failure
+					m_algHandle = nullptr;
+					return false;
+				}
+
+
+				m_algHandle = h;
+
+
+				if (Logger::Instance().IsInitialized()) {
+					SS_LOG_INFO(L"CryptoUtils", L"Algorithm provider opened: %s (handle: %p)", algName, m_algHandle);
+				}
+				else {
+					// Fallback to OutputDebugStringW if Logger not ready
+					wchar_t debugMsg[256];
+					swprintf_s(debugMsg, L"[CryptoUtils] Algorithm provider opened: %s (handle: %p)\n",
+						algName, static_cast<void*>(m_algHandle));
+					OutputDebugStringW(debugMsg);
+				}
+
+				return true;
+#else
+				if (err) { err->win32 = ERROR_NOT_SUPPORTED; err->ntstatus = 0; err->message = L"Platform not supported"; }
+				return false;
+#endif
+			}
+
+			bool AsymmetricCipher::GenerateKeyPair(KeyPair& outKeyPair, Error* err) noexcept {
+#ifdef _WIN32
+				// Ensure provider is opened
+				if (!ensureProvider(err)) {
+					SS_LOG_ERROR(L"CryptoUtils", L"GenerateKeyPair: ensureProvider failed");
+					return false;
+				}
+
+				if (!m_algHandle) {
+					if (err) { err->win32 = ERROR_INVALID_HANDLE; err->ntstatus = 0; err->message = L"Algorithm provider handle is null"; }
+					SS_LOG_ERROR(L"CryptoUtils", L"GenerateKeyPair: m_algHandle is null after ensureProvider");
+					return false;
+				}
+
+				ULONG keySizeBits = RSAKeySizeForAlg(m_algorithm);
+				SS_LOG_INFO(L"CryptoUtils", L"Generating key pair (alg=%d, bits=%u)", static_cast<int>(m_algorithm), keySizeBits);
+
+				BCRYPT_KEY_HANDLE hKey = nullptr;
+				NTSTATUS st = BCryptGenerateKeyPair(m_algHandle, &hKey, keySizeBits, 0);
+				if (st < 0 || !hKey) {
+					if (err) {
+						err->ntstatus = st;
+						err->win32 = RtlNtStatusToDosError(st);
+						err->message = L"BCryptGenerateKeyPair failed";
+						wchar_t tmp[128];
+						swprintf_s(tmp, L"KeySize=%u NTSTATUS=0x%08X", keySizeBits, static_cast<unsigned>(st));
+						err->context = tmp;
+					}
+					SS_LOG_ERROR(L"CryptoUtils", L"BCryptGenerateKeyPair failed: 0x%08X", st);
+					return false;
+				}
+
+				st = BCryptFinalizeKeyPair(hKey, 0);
+				if (st < 0) {
+					if (err) {
+						err->ntstatus = st;
+						err->win32 = RtlNtStatusToDosError(st);
+						err->message = L"BCryptFinalizeKeyPair failed";
+					}
+					SS_LOG_ERROR(L"CryptoUtils", L"BCryptFinalizeKeyPair failed: 0x%08X", st);
+					BCryptDestroyKey(hKey);
+					return false;
+				}
+
+				const bool isECC = (m_algorithm == AsymmetricAlgorithm::ECC_P256 ||
+					m_algorithm == AsymmetricAlgorithm::ECC_P384 ||
+					m_algorithm == AsymmetricAlgorithm::ECC_P521);
+
+				const wchar_t* pubBlobType = isECC ? BCRYPT_ECCPUBLIC_BLOB : BCRYPT_RSAPUBLIC_BLOB;
+				const wchar_t* privBlobType = isECC ? BCRYPT_ECCPRIVATE_BLOB : BCRYPT_RSAFULLPRIVATE_BLOB;
+
+				// Export public key
+				ULONG cbBlob = 0;
+				st = BCryptExportKey(hKey, nullptr, pubBlobType, nullptr, 0, &cbBlob, 0);
+				if (st < 0 || cbBlob == 0) {
+					if (err) { err->ntstatus = st; err->win32 = RtlNtStatusToDosError(st); err->message = L"BCryptExportKey (public size) failed"; }
+					SS_LOG_ERROR(L"CryptoUtils", L"BCryptExportKey (public size) failed: 0x%08X", st);
+					BCryptDestroyKey(hKey);
+					return false;
+				}
+				outKeyPair.publicKey.algorithm = m_algorithm;
+				try {
+					outKeyPair.publicKey.keyBlob.resize(cbBlob);
+				}
+				catch (const std::exception&) {
+					if (err) { err->win32 = ERROR_NOT_ENOUGH_MEMORY; err->message = L"Failed to allocate public key blob"; }
+					BCryptDestroyKey(hKey);
+					return false;
+				}
+				st = BCryptExportKey(hKey, nullptr, pubBlobType, outKeyPair.publicKey.keyBlob.data(), cbBlob, &cbBlob, 0);
+				if (st < 0) {
+					// SECURITY: Clear public key blob on failure
+					outKeyPair.publicKey.keyBlob.clear();
+					if (err) { err->ntstatus = st; err->win32 = RtlNtStatusToDosError(st); err->message = L"BCryptExportKey (public) failed"; }
+					SS_LOG_ERROR(L"CryptoUtils", L"BCryptExportKey (public) failed: 0x%08X", st);
+					BCryptDestroyKey(hKey);
+					return false;
+				}
+
+				// Export private key
+				cbBlob = 0;
+				st = BCryptExportKey(hKey, nullptr, privBlobType, nullptr, 0, &cbBlob, 0);
+				if (st < 0 || cbBlob == 0) {
+					// SECURITY: Clear public key blob since we're failing
+					outKeyPair.publicKey.keyBlob.clear();
+					if (err) { err->ntstatus = st; err->win32 = RtlNtStatusToDosError(st); err->message = L"BCryptExportKey (private size) failed"; }
+					SS_LOG_ERROR(L"CryptoUtils", L"BCryptExportKey (private size) failed: 0x%08X", st);
+					BCryptDestroyKey(hKey);
+					return false;
+				}
+				outKeyPair.privateKey.algorithm = m_algorithm;
+				try {
+					outKeyPair.privateKey.keyBlob.resize(cbBlob);
+				}
+				catch (const std::exception&) {
+					outKeyPair.publicKey.keyBlob.clear();
+					if (err) { err->win32 = ERROR_NOT_ENOUGH_MEMORY; err->message = L"Failed to allocate private key blob"; }
+					BCryptDestroyKey(hKey);
+					return false;
+				}
+				st = BCryptExportKey(hKey, nullptr, privBlobType, outKeyPair.privateKey.keyBlob.data(), cbBlob, &cbBlob, 0);
+				if (st < 0) {
+					// SECURITY: Clear both key blobs on failure
+					outKeyPair.publicKey.keyBlob.clear();
+					if (!outKeyPair.privateKey.keyBlob.empty()) {
+						SecureWipeMemory(outKeyPair.privateKey.keyBlob.data(), outKeyPair.privateKey.keyBlob.size());
+						outKeyPair.privateKey.keyBlob.clear();
+					}
+					if (err) { err->ntstatus = st; err->win32 = RtlNtStatusToDosError(st); err->message = L"BCryptExportKey (private) failed"; }
+					SS_LOG_ERROR(L"CryptoUtils", L"BCryptExportKey (private) failed: 0x%08X", st);
+					BCryptDestroyKey(hKey);
+					return false;
+				}
+
+				BCryptDestroyKey(hKey);
+
+				SS_LOG_INFO(L"CryptoUtils", L"Key pair generated (pub=%zu bytes, priv=%zu bytes)",
+					outKeyPair.publicKey.keyBlob.size(), outKeyPair.privateKey.keyBlob.size());
+
+				return true;
+#else
+				if (err) { err->win32 = ERROR_NOT_SUPPORTED; err->ntstatus = 0; err->message = L"Platform not supported"; }
+				return false;
+#endif
+			}
+
+			bool AsymmetricCipher::LoadPublicKey(const PublicKey& key, Error* err) noexcept {
+#ifdef _WIN32
+				if (!ensureProvider(err)) return false;
+
+				if (key.keyBlob.empty()) {
+					if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Public key blob is empty"; }
+					return false;
+				}
+
+				if (m_publicKeyHandle) {
+					BCryptDestroyKey(m_publicKeyHandle);
+					m_publicKeyHandle = nullptr;
+				}
+
+				// ECC vs RSA blob type selection
+				const bool isECC = (key.algorithm == AsymmetricAlgorithm::ECC_P256 ||
+					key.algorithm == AsymmetricAlgorithm::ECC_P384 ||
+					key.algorithm == AsymmetricAlgorithm::ECC_P521);
+				const wchar_t* blobType = isECC ? BCRYPT_ECCPUBLIC_BLOB : BCRYPT_RSAPUBLIC_BLOB;
+
+				// Import from a local copy to avoid const_cast UB on the caller's data
+				std::vector<uint8_t> blobCopy;
+				try {
+					blobCopy = key.keyBlob;
+				}
+				catch (const std::exception&) {
+					if (err) { err->win32 = ERROR_NOT_ENOUGH_MEMORY; err->message = L"Failed to copy public key blob"; }
+					return false;
+				}
+
+				NTSTATUS st = BCryptImportKeyPair(m_algHandle, nullptr, blobType,
+					&m_publicKeyHandle, blobCopy.data(),
+					static_cast<ULONG>(blobCopy.size()), 0);
+
+				// Public key blobs are not secret, but wipe the copy for consistency
+				blobCopy.clear();
+
+				if (st < 0) {
+					if (err) { err->ntstatus = st; err->win32 = RtlNtStatusToDosError(st); err->message = L"BCryptImportKeyPair public failed"; }
+					SS_LOG_ERROR(L"CryptoUtils", L"BCryptImportKeyPair public failed: 0x%08X", st);
+					return false;
+				}
+
+				m_publicKeyLoaded = true;
+				SS_LOG_INFO(L"CryptoUtils", L"Public key loaded successfully");
+				return true;
+#else
+				if (err) { err->win32 = ERROR_NOT_SUPPORTED; err->message = L"Platform not supported"; }
+				return false;
+#endif
+			}
+
+			bool AsymmetricCipher::LoadPrivateKey(const PrivateKey& key, Error* err) noexcept {
+#ifdef _WIN32
+				if (!ensureProvider(err)) return false;
+
+				if (m_privateKeyHandle) {
+					BCryptDestroyKey(m_privateKeyHandle);
+					m_privateKeyHandle = nullptr;
+				}
+
+				// ECC vs RSA blob type selection
+				const bool isECC = (key.algorithm == AsymmetricAlgorithm::ECC_P256 ||
+					key.algorithm == AsymmetricAlgorithm::ECC_P384 ||
+					key.algorithm == AsymmetricAlgorithm::ECC_P521);
+				const wchar_t* blobType = isECC ? BCRYPT_ECCPRIVATE_BLOB : BCRYPT_RSAFULLPRIVATE_BLOB;
+
+				// Import from a local copy to avoid const_cast UB on the caller's data
+				std::vector<uint8_t> blobCopy;
+				try {
+					blobCopy = key.keyBlob;
+				}
+				catch (const std::exception&) {
+					if (err) { err->win32 = ERROR_NOT_ENOUGH_MEMORY; err->message = L"Failed to copy key blob"; }
+					return false;
+				}
+
+				NTSTATUS st = BCryptImportKeyPair(m_algHandle, nullptr, blobType,
+					&m_privateKeyHandle, blobCopy.data(),
+					static_cast<ULONG>(blobCopy.size()), 0);
+
+				// Securely wipe the local copy regardless of success/failure
+				SecureWipeMemory(blobCopy.data(), blobCopy.size());
+				blobCopy.clear();
+
+				if (st < 0) {
+					if (err) { err->ntstatus = st; err->win32 = RtlNtStatusToDosError(st); err->message = L"BCryptImportKeyPair private failed"; }
+					SS_LOG_ERROR(L"CryptoUtils", L"BCryptImportKeyPair private failed: 0x%08X", st);
+					return false;
+				}
+
+				m_privateKeyLoaded = true;
+				SS_LOG_INFO(L"CryptoUtils", L"Private key loaded successfully");
+				return true;
+#else
+				if (err) { err->win32 = ERROR_NOT_SUPPORTED; err->message = L"Platform not supported"; }
+				return false;
+#endif
+			}
+
+			bool AsymmetricCipher::Encrypt(const uint8_t* plaintext, size_t plaintextLen,
+				std::vector<uint8_t>& ciphertext,
+				RSAPaddingScheme padding,
+				Error* err) noexcept
+			{
+				// Basic state validation
+				if (!m_publicKeyLoaded) {
+					if (err) { err->win32 = ERROR_INVALID_STATE; err->message = L"Public key not loaded"; }
+					return false;
+				}
+
+#ifdef _WIN32
+				if (!m_publicKeyHandle) {
+					if (err) { err->win32 = ERROR_INVALID_STATE; err->message = L"Public key handle is null"; }
+					return false;
+				}
+
+				if (!(m_algorithm == AsymmetricAlgorithm::RSA_2048 ||
+					m_algorithm == AsymmetricAlgorithm::RSA_3072 ||
+					m_algorithm == AsymmetricAlgorithm::RSA_4096)) {
+					if (err) { err->win32 = ERROR_NOT_SUPPORTED; err->message = L"Only RSA encryption is supported"; }
+					return false;
+				}
+
+				if (!plaintext && plaintextLen != 0) {
+					if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Invalid plaintext pointer"; }
+					return false;
+				}
+
+				// Guard against size_t→ULONG truncation on x64
+				if (plaintextLen > static_cast<size_t>(std::numeric_limits<ULONG>::max())) {
+					if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Plaintext length exceeds ULONG max"; }
+					return false;
+				}
+
+				// Padding setup
+				ULONG flags = 0;
+				BCRYPT_OAEP_PADDING_INFO oaep{};
+				oaep.pbLabel = nullptr;
+				oaep.cbLabel = 0;
+				const void* pPadInfo = nullptr;
+
+				auto setOaepAlg = [&](RSAPaddingScheme s) -> bool {
+					switch (s) {
+					case RSAPaddingScheme::OAEP_SHA1:   oaep.pszAlgId = BCRYPT_SHA1_ALGORITHM; break;
+					case RSAPaddingScheme::OAEP_SHA256: oaep.pszAlgId = BCRYPT_SHA256_ALGORITHM; break;
+					case RSAPaddingScheme::OAEP_SHA384: oaep.pszAlgId = BCRYPT_SHA384_ALGORITHM; break;
+					case RSAPaddingScheme::OAEP_SHA512: oaep.pszAlgId = BCRYPT_SHA512_ALGORITHM; break;
+					default: return false;
+					}
+					return true;
+					};
+
+				bool isOAEP = (padding == RSAPaddingScheme::OAEP_SHA1 ||
+					padding == RSAPaddingScheme::OAEP_SHA256 ||
+					padding == RSAPaddingScheme::OAEP_SHA384 ||
+					padding == RSAPaddingScheme::OAEP_SHA512);
+
+				if (padding == RSAPaddingScheme::PKCS1) {
+					flags = BCRYPT_PAD_PKCS1;
+					pPadInfo = nullptr;
+				}
+				else if (isOAEP) {
+					if (!setOaepAlg(padding)) {
+						if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Invalid padding scheme"; }
+						return false;
+					}
+					flags = BCRYPT_PAD_OAEP;
+					pPadInfo = &oaep;
+				}
+				else {
+					if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Invalid padding for encryption"; }
+					return false;
+				}
+
+				// Max plaintext size validation using existing helper
+				size_t maxPlain = GetMaxPlaintextSize(padding);
+				if (plaintextLen > maxPlain) {
+					if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Plaintext too large"; }
+					return false;
+				}
+
+				// Query output size
+				ULONG cbResult = 0;
+				NTSTATUS st = BCryptEncrypt(m_publicKeyHandle,
+					const_cast<uint8_t*>(plaintext), static_cast<ULONG>(plaintextLen),
+					const_cast<void*>(pPadInfo),
+					nullptr, 0,
+					nullptr, 0, &cbResult, flags);
+
+				if (st < 0) {
+					if (err) { err->ntstatus = st; err->win32 = RtlNtStatusToDosError(st); err->message = L"BCryptEncrypt size query failed"; }
+					return false;
+				}
+
+				try {
+					ciphertext.resize(cbResult);
+				}
+				catch (const std::exception&) {
+					if (err) { err->win32 = ERROR_NOT_ENOUGH_MEMORY; err->message = L"Failed to allocate ciphertext buffer"; }
+					return false;
+				}
+				st = BCryptEncrypt(m_publicKeyHandle,
+					const_cast<uint8_t*>(plaintext), static_cast<ULONG>(plaintextLen),
+					const_cast<void*>(pPadInfo),
+					nullptr, 0,
+					ciphertext.data(), static_cast<ULONG>(ciphertext.size()), &cbResult, flags);
+
+				if (st < 0) {
+					if (err) { err->ntstatus = st; err->win32 = RtlNtStatusToDosError(st); err->message = L"BCryptEncrypt failed"; }
+					SecureWipeMemory(ciphertext.data(), ciphertext.size());
+					return false;
+				}
+
+				ciphertext.resize(cbResult);
+				return true;
+#else
+				if (err) { err->win32 = ERROR_NOT_SUPPORTED; err->message = L"Platform not supported"; }
+				return false;
+#endif
+			}
+
+
+			bool AsymmetricCipher::Decrypt(const uint8_t* ciphertext, size_t ciphertextLen,
+				std::vector<uint8_t>& plaintext,
+				RSAPaddingScheme padding,
+				Error* err) noexcept
+			{
+				if (!m_privateKeyLoaded) {
+					if (err) { err->win32 = ERROR_INVALID_STATE; err->message = L"Private key not loaded"; }
+					return false;
+				}
+
+#ifdef _WIN32
+				if (!m_privateKeyHandle) {
+					if (err) { err->win32 = ERROR_INVALID_STATE; err->message = L"Private key handle is null"; }
+					return false;
+				}
+
+
+				if (!(m_algorithm == AsymmetricAlgorithm::RSA_2048 ||
+					m_algorithm == AsymmetricAlgorithm::RSA_3072 ||
+					m_algorithm == AsymmetricAlgorithm::RSA_4096)) {
+					if (err) { err->win32 = ERROR_NOT_SUPPORTED; err->message = L"Only RSA decryption is supported"; }
+					return false;
+				}
+
+				if (!ciphertext && ciphertextLen != 0) {
+					if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Invalid ciphertext pointer"; }
+					return false;
+				}
+
+				// Guard against size_t→ULONG truncation on x64
+				if (ciphertextLen > static_cast<size_t>(std::numeric_limits<ULONG>::max())) {
+					if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Ciphertext length exceeds ULONG max"; }
+					return false;
+				}
+
+				ULONG flags = 0;
+				BCRYPT_OAEP_PADDING_INFO oaep{};
+				oaep.pbLabel = nullptr;
+				oaep.cbLabel = 0;
+				const void* pPadInfo = nullptr;
+
+				auto setOaepAlg = [&](RSAPaddingScheme s) -> bool {
+					switch (s) {
+					case RSAPaddingScheme::OAEP_SHA1:   oaep.pszAlgId = BCRYPT_SHA1_ALGORITHM; break;
+					case RSAPaddingScheme::OAEP_SHA256: oaep.pszAlgId = BCRYPT_SHA256_ALGORITHM; break;
+					case RSAPaddingScheme::OAEP_SHA384: oaep.pszAlgId = BCRYPT_SHA384_ALGORITHM; break;
+					case RSAPaddingScheme::OAEP_SHA512: oaep.pszAlgId = BCRYPT_SHA512_ALGORITHM; break;
+					default: return false;
+					}
+					return true;
+					};
+
+				bool isOAEP = (padding == RSAPaddingScheme::OAEP_SHA1 ||
+					padding == RSAPaddingScheme::OAEP_SHA256 ||
+					padding == RSAPaddingScheme::OAEP_SHA384 ||
+					padding == RSAPaddingScheme::OAEP_SHA512);
+
+				if (padding == RSAPaddingScheme::PKCS1) {
+					flags = BCRYPT_PAD_PKCS1;
+					pPadInfo = nullptr;
+				}
+				else if (isOAEP) {
+					if (!setOaepAlg(padding)) {
+						if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Invalid padding scheme"; }
+						return false;
+					}
+					flags = BCRYPT_PAD_OAEP;
+					pPadInfo = &oaep;
+				}
+				else {
+					if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Invalid padding for decryption"; }
+					return false;
+				}
+
+				// Query output size
+				ULONG cbResult = 0;
+				NTSTATUS st = BCryptDecrypt(m_privateKeyHandle,
+					const_cast<uint8_t*>(ciphertext), static_cast<ULONG>(ciphertextLen),
+					const_cast<void*>(pPadInfo),
+					nullptr, 0,
+					nullptr, 0, &cbResult, flags);
+
+				if (st < 0) {
+					if (err) { err->ntstatus = st; err->win32 = RtlNtStatusToDosError(st); err->message = L"BCryptDecrypt size query failed"; }
+					return false;
+				}
+
+				try {
+					plaintext.resize(cbResult);
+				}
+				catch (const std::exception&) {
+					if (err) { err->win32 = ERROR_NOT_ENOUGH_MEMORY; err->message = L"Failed to allocate plaintext buffer"; }
+					return false;
+				}
+				st = BCryptDecrypt(m_privateKeyHandle,
+					const_cast<uint8_t*>(ciphertext), static_cast<ULONG>(ciphertextLen),
+					const_cast<void*>(pPadInfo),
+					nullptr, 0,
+					plaintext.data(), static_cast<ULONG>(plaintext.size()), &cbResult, flags);
+
+				if (st < 0) {
+					if (err) { err->ntstatus = st; err->win32 = RtlNtStatusToDosError(st); err->message = L"BCryptDecrypt failed"; }
+					SecureWipeMemory(plaintext.data(), plaintext.size());
+					return false;
+				}
+
+				plaintext.resize(cbResult);
+				return true;
+#else
+				if (err) { err->win32 = ERROR_NOT_SUPPORTED; err->message = L"Platform not supported"; }
+				return false;
+#endif
+			}
+
+			bool AsymmetricCipher::Sign(const uint8_t* data, size_t dataLen,
+				std::vector<uint8_t>& signature,
+				HashUtils::Algorithm hashAlg,
+				RSAPaddingScheme padding,
+				Error* err) noexcept
+			{
+				if (!m_privateKeyLoaded) {
+					if (err) { err->win32 = ERROR_INVALID_STATE; err->message = L"Private key not loaded"; }
+					return false;
+				}
+
+				std::vector<uint8_t> hash;
+				if (!HashUtils::Compute(hashAlg, data, dataLen, hash, nullptr)) {
+					if (err) { err->win32 = ERROR_INVALID_DATA; err->message = L"Hash computation failed"; }
+					return false;
+				}
+
+#ifdef _WIN32
+				//Padding scheme selection
+				ULONG flags = 0;
+				void* pPaddingInfo = nullptr;
+
+				BCRYPT_PKCS1_PADDING_INFO pkcs1Info{};
+				BCRYPT_PSS_PADDING_INFO pssInfo{};
+
+				// Map hash algorithm to BCrypt algorithm name
+				auto getHashAlgName = [](HashUtils::Algorithm alg) -> LPCWSTR {
+					switch (alg) {
+					case HashUtils::Algorithm::SHA1:   return BCRYPT_SHA1_ALGORITHM;
+					case HashUtils::Algorithm::SHA256: return BCRYPT_SHA256_ALGORITHM;
+					case HashUtils::Algorithm::SHA384: return BCRYPT_SHA384_ALGORITHM;
+					case HashUtils::Algorithm::SHA512: return BCRYPT_SHA512_ALGORITHM;
+					default: return nullptr;
+					}
+					};
+
+				LPCWSTR hashAlgName = getHashAlgName(hashAlg);
+				if (!hashAlgName) {
+					if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Unsupported hash algorithm for signing"; }
+					return false;
+				}
+
+				// Use correct padding struct based on scheme
+				if (padding == RSAPaddingScheme::PKCS1) {
+					flags = BCRYPT_PAD_PKCS1;
+					pkcs1Info.pszAlgId = hashAlgName;
+					pPaddingInfo = &pkcs1Info;
+				}
+				else if (padding == RSAPaddingScheme::PSS_SHA256 ||
+					padding == RSAPaddingScheme::PSS_SHA384 ||
+					padding == RSAPaddingScheme::PSS_SHA512)
+				{
+					// Validate PSS padding scheme matches the hash algorithm
+					const bool pssMismatch =
+						(padding == RSAPaddingScheme::PSS_SHA256 && hashAlg != HashUtils::Algorithm::SHA256) ||
+						(padding == RSAPaddingScheme::PSS_SHA384 && hashAlg != HashUtils::Algorithm::SHA384) ||
+						(padding == RSAPaddingScheme::PSS_SHA512 && hashAlg != HashUtils::Algorithm::SHA512);
+					if (pssMismatch) {
+						if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"PSS padding scheme does not match hash algorithm"; }
+						SS_LOG_ERROR(L"CryptoUtils", L"Sign: PSS padding/hash mismatch (padding=%d, hash=%d)",
+							static_cast<int>(padding), static_cast<int>(hashAlg));
+						return false;
+					}
+
+					flags = BCRYPT_PAD_PSS;
+					pssInfo.pszAlgId = hashAlgName;
+					pssInfo.cbSalt = static_cast<ULONG>(hash.size());
+					pPaddingInfo = &pssInfo;
+				}
+				else {
+					if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Unsupported padding scheme for signing"; }
+					return false;
+				}
+
+				// Query signature size
+				ULONG cbResult = 0;
+				NTSTATUS st = BCryptSignHash(m_privateKeyHandle,
+					pPaddingInfo,
+					hash.data(), static_cast<ULONG>(hash.size()),
+					nullptr, 0, &cbResult, flags);
+
+				if (st < 0) {
+					if (err) {
+						err->ntstatus = st;
+						err->win32 = RtlNtStatusToDosError(st);
+						err->message = L"BCryptSignHash size query failed";
+						wchar_t tmp[128];
+						swprintf_s(tmp, L"NTSTATUS=0x%08X, Padding=%d", static_cast<unsigned>(st), static_cast<int>(padding));
+						err->context = tmp;
+					}
+					SS_LOG_ERROR(L"CryptoUtils", L"BCryptSignHash size query failed: 0x%08X (padding: %d)", st, static_cast<int>(padding));
+					return false;
+				}
+
+				try {
+					signature.resize(cbResult);
+				}
+				catch (const std::exception&) {
+					if (err) { err->win32 = ERROR_NOT_ENOUGH_MEMORY; err->message = L"Failed to allocate signature buffer"; }
+					return false;
+				}
+
+				// Perform signing
+				st = BCryptSignHash(m_privateKeyHandle,
+					pPaddingInfo,
+					hash.data(), static_cast<ULONG>(hash.size()),
+					signature.data(), static_cast<ULONG>(signature.size()), &cbResult, flags);
+
+				if (st < 0) {
+					if (err) {
+						err->ntstatus = st;
+						err->win32 = RtlNtStatusToDosError(st);
+						err->message = L"BCryptSignHash failed";
+						wchar_t tmp[256];
+						swprintf_s(tmp, L"NTSTATUS=0x%08X, HashLen=%zu, SigLen=%zu, Padding=%d",
+							static_cast<unsigned>(st), hash.size(), signature.size(), static_cast<int>(padding));
+						err->context = tmp;
+					}
+					SS_LOG_ERROR(L"CryptoUtils", L"BCryptSignHash failed: 0x%08X (hash: %zu bytes, padding: %d)",
+						st, hash.size(), static_cast<int>(padding));
+					return false;
+				}
+
+				signature.resize(cbResult);
+
+				SS_LOG_INFO(L"CryptoUtils", L"Signature generated successfully (%zu bytes, padding: %d)",
+					signature.size(), static_cast<int>(padding));
+				return true;
+
+#else
+				if (err) { err->win32 = ERROR_NOT_SUPPORTED; err->message = L"Platform not supported"; }
+				return false;
+#endif
+			}
+
+			bool AsymmetricCipher::Verify(const uint8_t* data, size_t dataLen,
+				const uint8_t* signature, size_t signatureLen,
+				HashUtils::Algorithm hashAlg,
+				RSAPaddingScheme padding,
+				Error* err) noexcept
+			{
+				if (!m_publicKeyLoaded) {
+					if (err) { err->win32 = ERROR_INVALID_STATE; err->message = L"Public key not loaded"; }
+					return false;
+				}
+
+				std::vector<uint8_t> hash;
+				if (!HashUtils::Compute(hashAlg, data, dataLen, hash, nullptr)) {
+					if (err) { err->win32 = ERROR_INVALID_DATA; err->message = L"Hash computation failed"; }
+					return false;
+				}
+
+#ifdef _WIN32
+				// Padding scheme selection
+				ULONG flags = 0;
+				void* pPaddingInfo = nullptr;
+
+				BCRYPT_PKCS1_PADDING_INFO pkcs1Info{};
+				BCRYPT_PSS_PADDING_INFO pssInfo{};
+
+				// Map hash algorithm to BCrypt algorithm name
+				auto getHashAlgName = [](HashUtils::Algorithm alg) -> LPCWSTR {
+					switch (alg) {
+					case HashUtils::Algorithm::SHA1:   return BCRYPT_SHA1_ALGORITHM;
+					case HashUtils::Algorithm::SHA256: return BCRYPT_SHA256_ALGORITHM;
+					case HashUtils::Algorithm::SHA384: return BCRYPT_SHA384_ALGORITHM;
+					case HashUtils::Algorithm::SHA512: return BCRYPT_SHA512_ALGORITHM;
+					default: return nullptr;
+					}
+					};
+
+				LPCWSTR hashAlgName = getHashAlgName(hashAlg);
+				if (!hashAlgName) {
+					if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Unsupported hash algorithm for verification"; }
+					return false;
+				}
+
+				// Use correct padding struct based on scheme
+				if (padding == RSAPaddingScheme::PKCS1) {
+					flags = BCRYPT_PAD_PKCS1;
+					pkcs1Info.pszAlgId = hashAlgName;
+					pPaddingInfo = &pkcs1Info;
+				}
+				else if (padding == RSAPaddingScheme::PSS_SHA256 ||
+					padding == RSAPaddingScheme::PSS_SHA384 ||
+					padding == RSAPaddingScheme::PSS_SHA512)
+				{
+					// Validate PSS padding scheme matches the hash algorithm
+					const bool pssMismatch =
+						(padding == RSAPaddingScheme::PSS_SHA256 && hashAlg != HashUtils::Algorithm::SHA256) ||
+						(padding == RSAPaddingScheme::PSS_SHA384 && hashAlg != HashUtils::Algorithm::SHA384) ||
+						(padding == RSAPaddingScheme::PSS_SHA512 && hashAlg != HashUtils::Algorithm::SHA512);
+					if (pssMismatch) {
+						if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"PSS padding scheme does not match hash algorithm"; }
+						SS_LOG_ERROR(L"CryptoUtils", L"Verify: PSS padding/hash mismatch (padding=%d, hash=%d)",
+							static_cast<int>(padding), static_cast<int>(hashAlg));
+						return false;
+					}
+
+					flags = BCRYPT_PAD_PSS;
+					pssInfo.pszAlgId = hashAlgName;
+					pssInfo.cbSalt = static_cast<ULONG>(hash.size());
+					pPaddingInfo = &pssInfo;
+				}
+				else {
+					if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Unsupported padding scheme for verification"; }
+					return false;
+				}
+
+				// Verify signature
+				NTSTATUS st = BCryptVerifySignature(m_publicKeyHandle,
+					pPaddingInfo,
+					hash.data(), static_cast<ULONG>(hash.size()),
+					const_cast<uint8_t*>(signature), static_cast<ULONG>(signatureLen),
+					flags);
+
+				if (st < 0) {
+					if (err) {
+						err->ntstatus = st;
+						err->win32 = RtlNtStatusToDosError(st);
+						err->message = L"BCryptVerifySignature failed";
+						wchar_t tmp[256];
+						swprintf_s(tmp, L"NTSTATUS=0x%08X, HashLen=%zu, SigLen=%zu, Padding=%d",
+							static_cast<unsigned>(st), hash.size(), signatureLen, static_cast<int>(padding));
+						err->context = tmp;
+					}
+					SS_LOG_ERROR(L"CryptoUtils", L"BCryptVerifySignature failed: 0x%08X (padding: %d)",
+						st, static_cast<int>(padding));
+					return false;
+				}
+
+				SS_LOG_INFO(L"CryptoUtils", L"Signature verified successfully (padding: %d)", static_cast<int>(padding));
+				return true;
+
+#else
+				if (err) { err->win32 = ERROR_NOT_SUPPORTED; err->message = L"Platform not supported"; }
+				return false;
+#endif
+			}
+
+			bool AsymmetricCipher::DeriveSharedSecret(const PublicKey& peerPublicKey,
+				std::vector<uint8_t>& sharedSecret,
+				Error* err) noexcept
+			{
+				// Validate that we have a private key loaded
+				if (!m_privateKeyLoaded) {
+					if (err) { err->win32 = ERROR_INVALID_STATE; err->message = L"Private key not loaded"; }
+					return false;
+				}
+
+				// Validate algorithm compatibility
+				if (m_algorithm != AsymmetricAlgorithm::ECC_P256 &&
+					m_algorithm != AsymmetricAlgorithm::ECC_P384 &&
+					m_algorithm != AsymmetricAlgorithm::ECC_P521) {
+					if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"ECDH only supported for ECC algorithms"; }
+					return false;
+				}
+
+				// Validate peer public key algorithm matches
+				if (peerPublicKey.algorithm != m_algorithm) {
+					if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Peer public key algorithm mismatch"; }
+					return false;
+				}
+
+				if (peerPublicKey.keyBlob.empty()) {
+					if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Peer public key is empty"; }
+					return false;
+				}
+
+#ifdef _WIN32
+				// Get the correct algorithm name for ECC
+				const wchar_t* algName = nullptr;
+				switch (m_algorithm) {
+				case AsymmetricAlgorithm::ECC_P256: algName = BCRYPT_ECDH_P256_ALGORITHM; break;
+				case AsymmetricAlgorithm::ECC_P384: algName = BCRYPT_ECDH_P384_ALGORITHM; break;
+				case AsymmetricAlgorithm::ECC_P521: algName = BCRYPT_ECDH_P521_ALGORITHM; break;
+				default:
+					if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Unsupported ECC algorithm"; }
+					return false;
+				}
+
+				// RAII provider(no throw)
+				struct EcdhProviderHandle {
+					BCRYPT_ALG_HANDLE handle = nullptr;
+					NTSTATUS status = 0;
+
+					explicit EcdhProviderHandle(const wchar_t* name) {
+						status = BCryptOpenAlgorithmProvider(&handle, name, nullptr, 0);
+						if (status < 0) {
+							handle = nullptr;
+						}
+					}
+					~EcdhProviderHandle() {
+						if (handle) {
+							BCryptCloseAlgorithmProvider(handle, 0);
+							handle = nullptr;
+						}
+					}
+					EcdhProviderHandle(const EcdhProviderHandle&) = delete;
+					EcdhProviderHandle& operator=(const EcdhProviderHandle&) = delete;
+					EcdhProviderHandle(EcdhProviderHandle&& other) noexcept {
+						handle = other.handle;
+						status = other.status;
+						other.handle = nullptr;
+					}
+					bool ok() const { return status >= 0 && handle != nullptr; }
+				};
+
+				EcdhProviderHandle provider(algName);
+				if (!provider.ok()) {
+					if (err) {
+						err->ntstatus = provider.status;
+						err->win32 = RtlNtStatusToDosError(provider.status);
+						err->message = L"ECDH provider init failed";
+					}
+					SS_LOG_ERROR(L"CryptoUtils", L"ECDH provider init failed: 0x%08X", provider.status);
+					return false;
+				}
+
+				// Import peer's public key
+				BCRYPT_KEY_HANDLE hPeerPublicKey = nullptr;
+				NTSTATUS st = BCryptImportKeyPair(provider.handle, nullptr, BCRYPT_ECCPUBLIC_BLOB,
+					&hPeerPublicKey,
+					const_cast<uint8_t*>(peerPublicKey.keyBlob.data()),
+					static_cast<ULONG>(peerPublicKey.keyBlob.size()), 0);
+
+				if (st < 0) {
+					if (err) { err->ntstatus = st; err->win32 = RtlNtStatusToDosError(st); err->message = L"BCryptImportKeyPair for peer public key failed"; }
+					SS_LOG_ERROR(L"CryptoUtils", L"BCryptImportKeyPair for peer failed: 0x%08X", st);
+					return false; // provider RAII ile kapanacak
+				}
+
+				// Derive shared secret using BCryptSecretAgreement
+				BCRYPT_SECRET_HANDLE hSecret = nullptr;
+				st = BCryptSecretAgreement(m_privateKeyHandle, hPeerPublicKey, &hSecret, 0);
+				if (st < 0) {
+					if (err) { err->ntstatus = st; err->win32 = RtlNtStatusToDosError(st); err->message = L"BCryptSecretAgreement failed"; }
+					SS_LOG_ERROR(L"CryptoUtils", L"BCryptSecretAgreement failed: 0x%08X", st);
+					BCryptDestroyKey(hPeerPublicKey);
+					return false;
+				}
+
+				// Derive key material from the secret using RAW secret
+				ULONG cbResult = 0;
+				st = BCryptDeriveKey(hSecret, BCRYPT_KDF_RAW_SECRET, nullptr, nullptr, 0, &cbResult, 0);
+				if (st < 0) {
+					if (err) { err->ntstatus = st; err->win32 = RtlNtStatusToDosError(st); err->message = L"BCryptDeriveKey size query failed"; }
+					SS_LOG_ERROR(L"CryptoUtils", L"BCryptDeriveKey size query failed: 0x%08X", st);
+					BCryptDestroySecret(hSecret);
+					BCryptDestroyKey(hPeerPublicKey);
+					return false;
+				}
+
+				try {
+					sharedSecret.resize(cbResult);
+				}
+				catch (const std::exception&) {
+					if (err) { err->win32 = ERROR_NOT_ENOUGH_MEMORY; err->message = L"Failed to allocate shared secret buffer"; }
+					BCryptDestroySecret(hSecret);
+					BCryptDestroyKey(hPeerPublicKey);
+					return false;
+				}
+
+				st = BCryptDeriveKey(hSecret, BCRYPT_KDF_RAW_SECRET, nullptr,
+					sharedSecret.data(), static_cast<ULONG>(sharedSecret.size()), &cbResult, 0);
+
+				// Cleanup secret + peer key
+				BCryptDestroySecret(hSecret);
+				BCryptDestroyKey(hPeerPublicKey);
+
+				if (st < 0) {
+					if (err) { err->ntstatus = st; err->win32 = RtlNtStatusToDosError(st); err->message = L"BCryptDeriveKey failed"; }
+					SS_LOG_ERROR(L"CryptoUtils", L"BCryptDeriveKey failed: 0x%08X", st);
+					SecureWipeMemory(sharedSecret.data(), sharedSecret.size());
+					sharedSecret.clear();
+					return false;
+				}
+
+				sharedSecret.resize(cbResult);
+
+				SS_LOG_INFO(L"CryptoUtils", L"ECDH shared secret derived successfully (%zu bytes)", sharedSecret.size());
+				return true;
+
+#else
+				if (err) { err->win32 = ERROR_NOT_SUPPORTED; err->message = L"Platform not supported"; }
+				return false;
+#endif
+			}
+
+			size_t AsymmetricCipher::GetMaxPlaintextSize(RSAPaddingScheme padding) const noexcept {
+#ifdef _WIN32
+
+				ULONG keySizeBits = 0;
+
+				if (m_publicKeyLoaded && m_publicKeyHandle) {
+					ULONG cbBlob = 0;
+					NTSTATUS st = BCryptExportKey(m_publicKeyHandle, nullptr, BCRYPT_RSAPUBLIC_BLOB,
+						nullptr, 0, &cbBlob, 0);
+					if (st >= 0 && cbBlob >= sizeof(BCRYPT_RSAKEY_BLOB)) {
+						std::vector<uint8_t> blob(cbBlob);
+						st = BCryptExportKey(m_publicKeyHandle, nullptr, BCRYPT_RSAPUBLIC_BLOB,
+							blob.data(), cbBlob, &cbBlob, 0);
+						if (st >= 0 && cbBlob >= sizeof(BCRYPT_RSAKEY_BLOB)) {
+							//Parse the blob header securely
+							const auto* hdr = reinterpret_cast<const BCRYPT_RSAKEY_BLOB*>(blob.data());
+							//Magic and bit length sanity check
+							if (hdr->Magic == BCRYPT_RSAPUBLIC_MAGIC && (hdr->BitLength % 8) == 0) {
+								const size_t kBytes = static_cast<size_t>(hdr->BitLength / 8);
+								const size_t headerSize = sizeof(BCRYPT_RSAKEY_BLOB);
+								const size_t expectedMin = headerSize + hdr->cbPublicExp + hdr->cbModulus;
+								//Blob size and modulus size consistency check
+								if (cbBlob >= expectedMin && hdr->cbModulus == kBytes) {
+									keySizeBits = hdr->BitLength;
+								}
+								else {
+									SS_LOG_WARN(L"CryptoUtils",
+										L"Inconsistent RSA public blob: cbBlob=%lu, expectedMin=%zu, cbModulus=%lu, kBytes=%zu",
+										cbBlob, expectedMin, hdr->cbModulus, kBytes);
+									keySizeBits = 0;
+								}
+							}
+							else {
+								SS_LOG_WARN(L"CryptoUtils",
+									L"Invalid RSA public blob header: Magic=0x%08X, BitLength=%lu",
+									hdr->Magic, hdr->BitLength);
+								keySizeBits = 0;
+							}
+						}
+					}
+				}
+
+				if (keySizeBits == 0) {
+					//Algorithm based fallback
+					keySizeBits = RSAKeySizeForAlg(m_algorithm);
+				}
+#else
+				const ULONG keySizeBits = RSAKeySizeForAlg(m_algorithm);
+#endif
+
+				//for ECC, return a predefined cap
+				const bool isECC = (m_algorithm == AsymmetricAlgorithm::ECC_P256 ||
+					m_algorithm == AsymmetricAlgorithm::ECC_P384 ||
+					m_algorithm == AsymmetricAlgorithm::ECC_P521);
+				if (isECC) {
+					// use a predefined ECC cap if exists, if not use the default 65536
+					const size_t eccCap =
+#ifdef HAS_ECC_CAP_MEMBER
+						m_eccMaxPlaintextCap
+#else
+						static_cast<size_t>(65536)
+#endif
+						;
+					return eccCap;
+				}
+
+				//bit-> byte conversion for RSA
+				if (keySizeBits == 0 || (keySizeBits % 8) != 0) {
+					SS_LOG_WARN(L"CryptoUtils", L"Invalid RSA key size bits: %lu", keySizeBits);
+					return 0;
+				}
+				const size_t keySizeBytes = static_cast<size_t>(keySizeBits / 8);
+				if (keySizeBytes == 0) return 0;
+
+				// Sanity cap: block the unrealistic key sizes
+				const size_t sanityCap = 1024 * 1024; // 1MB
+				if (keySizeBytes > sanityCap) {
+					SS_LOG_WARN(L"CryptoUtils", L"RSA key size bytes (%zu) exceeded sanity cap (%zu)", keySizeBytes, sanityCap);
+					return 0;
+				}
+
+				//maximum plaintext size for the given padding
+				switch (padding) {
+				case RSAPaddingScheme::PKCS1:
+					// PKCS#1 v1.5: max = k - 11
+					if (keySizeBytes <= 11) return 0;
+					return keySizeBytes - 11;
+
+				case RSAPaddingScheme::OAEP_SHA1: {
+					const size_t hLen = 20;
+					// OAEP: max = k - 2*hLen - 2
+					if (keySizeBytes <= (2 * hLen + 2)) return 0;
+					return keySizeBytes - (2 * hLen) - 2;
+				}
+				case RSAPaddingScheme::OAEP_SHA256: {
+					const size_t hLen = 32;
+					if (keySizeBytes <= (2 * hLen + 2)) return 0;
+					return keySizeBytes - (2 * hLen) - 2;
+				}
+				case RSAPaddingScheme::OAEP_SHA384: {
+					const size_t hLen = 48;
+					if (keySizeBytes <= (2 * hLen + 2)) return 0;
+					return keySizeBytes - (2 * hLen) - 2;
+				}
+				case RSAPaddingScheme::OAEP_SHA512: {
+					const size_t hLen = 64;
+					if (keySizeBytes <= (2 * hLen + 2)) return 0;
+					return keySizeBytes - (2 * hLen) - 2;
+				}
+
+				default:
+					return 0;
+				}
+			}
+
+
+			size_t AsymmetricCipher::GetSignatureSize() const noexcept {
+				const ULONG keySize = RSAKeySizeForAlg(m_algorithm);
+				return keySize / 8;
+			}
+
+			bool KeyDerivation::PBKDF2(const uint8_t* password, size_t passwordLen,
+				const uint8_t* salt, size_t saltLen,
+				uint32_t iterations,
+				HashUtils::Algorithm hashAlg,
+				uint8_t* outKey, size_t keyLen,
+				Error* err) noexcept
+			{
+				if (!password || !salt || !outKey || keyLen == 0) {
+					if (err) {
+						err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Invalid parameters";
+					}
+					return false;
+				}
+
+				if (saltLen < 8) {
+					if (err) {
+						err->win32 = ERROR_INVALID_PARAMETER;
+						err->message = L"Salt length should be at least 8 bytes";
+					}
+					return false;
+				}
+
+				// Guard against size_t→ULONG truncation for BCryptDeriveKeyPBKDF2
+				constexpr size_t ulongMax = static_cast<size_t>(std::numeric_limits<ULONG>::max());
+				if (passwordLen > ulongMax || saltLen > ulongMax || keyLen > ulongMax) {
+					if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Parameter length exceeds ULONG max"; }
+					return false;
+				}
+
+#ifdef _WIN32
+				// Map HashUtils::Algorithm to BCrypt algorithm
+				const wchar_t* algName = BCRYPT_SHA256_ALGORITHM;
+				switch (hashAlg) {
+				case HashUtils::Algorithm::SHA1:   algName = BCRYPT_SHA1_ALGORITHM; break;
+				case HashUtils::Algorithm::SHA256: algName = BCRYPT_SHA256_ALGORITHM; break;
+				case HashUtils::Algorithm::SHA384: algName = BCRYPT_SHA384_ALGORITHM; break;
+				case HashUtils::Algorithm::SHA512: algName = BCRYPT_SHA512_ALGORITHM; break;
+				default: algName = BCRYPT_SHA256_ALGORITHM; break;
+				}
+
+				BCRYPT_ALG_HANDLE hAlg = nullptr;
+				NTSTATUS st = BCryptOpenAlgorithmProvider(&hAlg, algName, nullptr, BCRYPT_ALG_HANDLE_HMAC_FLAG);
+				if (st < 0) {
+					if (err) { err->ntstatus = st; err->win32 = RtlNtStatusToDosError(st); err->message = L"BCryptOpenAlgorithmProvider failed"; }
+					return false;
+				}
+
+				st = BCryptDeriveKeyPBKDF2(hAlg,
+					const_cast<uint8_t*>(password), static_cast<ULONG>(passwordLen),
+					const_cast<uint8_t*>(salt), static_cast<ULONG>(saltLen),
+					iterations,
+					outKey, static_cast<ULONG>(keyLen),
+					0);
+
+				BCryptCloseAlgorithmProvider(hAlg, 0);
+
+				if (st < 0) {
+					if (err) { err->ntstatus = st; err->win32 = RtlNtStatusToDosError(st); err->message = L"BCryptDeriveKeyPBKDF2 failed"; }
+					return false;
+				}
+
+				return true;
+#else
+				if (err) { err->win32 = ERROR_NOT_SUPPORTED; err->message = L"Platform not supported"; }
+				return false;
+#endif
+			}
+
+			bool KeyDerivation::HKDF(const uint8_t* inputKeyMaterial, size_t ikmLen,
+				const uint8_t* salt, size_t saltLen,
+				const uint8_t* info, size_t infoLen,
+				HashUtils::Algorithm hashAlg,
+				uint8_t* outKey, size_t keyLen,
+				Error* err) noexcept
+			{
+				if (!inputKeyMaterial || !outKey || keyLen == 0) {
+					if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Invalid parameters"; }
+					return false;
+				}
+
+				// HKDF-Extract: PRK = HMAC-Hash(salt, IKM)
+				std::vector<uint8_t> prk;
+				size_t hashLen = 32; // Default SHA256
+				switch (hashAlg) {
+				case HashUtils::Algorithm::SHA256: hashLen = 32; break;
+				case HashUtils::Algorithm::SHA384: hashLen = 48; break;
+				case HashUtils::Algorithm::SHA512: hashLen = 64; break;
+				default: hashLen = 32; break;
+				}
+
+				prk.resize(hashLen);
+
+				// Use HMAC for extraction
+				std::vector<uint8_t> hmacKey;
+				if (salt && saltLen > 0) {
+					hmacKey.assign(salt, salt + saltLen);
+				}
+				else {
+					hmacKey.assign(hashLen, 0); // Zero-filled salt(RFC 5869 standard).
+				}
+
+				// Use ComputeHmac helper (one-shot) instead of non-existent HashUtils::Hmac(...) function
+				if (!HashUtils::ComputeHmac(hashAlg, hmacKey.data(), hmacKey.size(),
+					inputKeyMaterial, ikmLen, prk, nullptr)) {
+					// SECURITY: Clear hmacKey on failure
+					SecureWipeMemory(hmacKey.data(), hmacKey.size());
+					if (err) { err->win32 = ERROR_INVALID_DATA; err->message = L"HKDF Extract failed"; }
+					return false;
+				}
+
+				// SECURITY: Clear hmacKey after use (it may contain salt or zeros)
+				SecureWipeMemory(hmacKey.data(), hmacKey.size());
+				hmacKey.clear();
+
+				if (keyLen > 255 * hashLen) {
+					// SECURITY: Clear prk before returning
+					SecureWipeMemory(prk.data(), prk.size());
+					if (err) {
+						err->win32 = ERROR_INVALID_PARAMETER;
+						err->message = L"HKDF keyLen too large";
+					}
+					return false;
+				}
+
+
+				// HKDF-Expand: OKM = T(1) | T(2) | T(3) | ...
+				size_t n = (keyLen + hashLen - 1) / hashLen; // Ceiling division
+				std::vector<uint8_t> t;
+				std::vector<uint8_t> okm;
+
+				for (size_t i = 1; i <= n; ++i) {
+					std::vector<uint8_t> msg;
+					msg.insert(msg.end(), t.begin(), t.end());
+					if (info && infoLen > 0) {
+						msg.insert(msg.end(), info, info + infoLen);
+					}
+					msg.push_back(static_cast<uint8_t>(i));
+
+					t.resize(hashLen);
+					if (!HashUtils::ComputeHmac(hashAlg, prk.data(), prk.size(),
+						msg.data(), msg.size(), t, nullptr)) {
+						// SECURITY: Clear all intermediate key material on failure
+						SecureWipeMemory(msg.data(), msg.size());
+						SecureWipeMemory(prk.data(), prk.size());
+						SecureWipeMemory(t.data(), t.size());
+						SecureWipeMemory(okm.data(), okm.size());
+						if (err) { err->win32 = ERROR_INVALID_DATA; err->message = L"HKDF Expand failed"; }
+						return false;
+					}
+
+					// SECURITY: Wipe msg containing T(i-1) concatenation before it goes out of scope
+					SecureWipeMemory(msg.data(), msg.size());
+
+					okm.insert(okm.end(), t.begin(), t.end());
+				}
+
+				std::memcpy(outKey, okm.data(), keyLen);
+
+				// SECURITY: Clear all intermediate key material
+				SecureWipeMemory(prk.data(), prk.size());
+				SecureWipeMemory(t.data(), t.size());
+				SecureWipeMemory(okm.data(), okm.size());
+
+				return true;
+			}
+
+			// =============================================================================
+			// RFC 7914 — scrypt Key Derivation (Salsa20/8 + ROMix)
+			// =============================================================================
+			namespace {
+
+				inline uint32_t ScryptRotl32(uint32_t x, int n) noexcept {
+					return (x << n) | (x >> (32 - n));
+				}
+
+				void Salsa208Core(uint32_t B[16]) noexcept {
+					uint32_t x[16];
+					std::memcpy(x, B, 64);
+
+					for (int i = 8; i > 0; i -= 2) {
+						x[ 4] ^= ScryptRotl32(x[ 0]+x[12], 7);  x[ 8] ^= ScryptRotl32(x[ 4]+x[ 0], 9);
+						x[12] ^= ScryptRotl32(x[ 8]+x[ 4],13);  x[ 0] ^= ScryptRotl32(x[12]+x[ 8],18);
+						x[ 9] ^= ScryptRotl32(x[ 5]+x[ 1], 7);  x[13] ^= ScryptRotl32(x[ 9]+x[ 5], 9);
+						x[ 1] ^= ScryptRotl32(x[13]+x[ 9],13);  x[ 5] ^= ScryptRotl32(x[ 1]+x[13],18);
+						x[14] ^= ScryptRotl32(x[10]+x[ 6], 7);  x[ 2] ^= ScryptRotl32(x[14]+x[10], 9);
+						x[ 6] ^= ScryptRotl32(x[ 2]+x[14],13);  x[10] ^= ScryptRotl32(x[ 6]+x[ 2],18);
+						x[ 3] ^= ScryptRotl32(x[15]+x[11], 7);  x[ 7] ^= ScryptRotl32(x[ 3]+x[15], 9);
+						x[11] ^= ScryptRotl32(x[ 7]+x[ 3],13);  x[15] ^= ScryptRotl32(x[11]+x[ 7],18);
+						x[ 1] ^= ScryptRotl32(x[ 0]+x[ 3], 7);  x[ 2] ^= ScryptRotl32(x[ 1]+x[ 0], 9);
+						x[ 3] ^= ScryptRotl32(x[ 2]+x[ 1],13);  x[ 0] ^= ScryptRotl32(x[ 3]+x[ 2],18);
+						x[ 6] ^= ScryptRotl32(x[ 5]+x[ 4], 7);  x[ 7] ^= ScryptRotl32(x[ 6]+x[ 5], 9);
+						x[ 4] ^= ScryptRotl32(x[ 7]+x[ 6],13);  x[ 5] ^= ScryptRotl32(x[ 4]+x[ 7],18);
+						x[11] ^= ScryptRotl32(x[10]+x[ 9], 7);  x[ 8] ^= ScryptRotl32(x[11]+x[10], 9);
+						x[ 9] ^= ScryptRotl32(x[ 8]+x[11],13);  x[10] ^= ScryptRotl32(x[ 9]+x[ 8],18);
+						x[12] ^= ScryptRotl32(x[15]+x[14], 7);  x[13] ^= ScryptRotl32(x[12]+x[15], 9);
+						x[14] ^= ScryptRotl32(x[13]+x[12],13);  x[15] ^= ScryptRotl32(x[14]+x[13],18);
+					}
+
+					for (int i = 0; i < 16; ++i) B[i] += x[i];
+					SecureWipeMemory(x, sizeof(x));
+				}
+
+				// scryptBlockMix: reads from B (2r × 16 uint32_t), writes interleaved to Bout
+				void ScryptBlockMix(const uint32_t* B, uint32_t* Bout, uint32_t r) noexcept {
+					const uint32_t numBlocks = 2 * r;
+					uint32_t X[16];
+					std::memcpy(X, &B[(numBlocks - 1) * 16], 64);
+
+					for (uint32_t i = 0; i < numBlocks; ++i) {
+						for (int j = 0; j < 16; ++j) X[j] ^= B[i * 16 + j];
+						Salsa208Core(X);
+						const uint32_t dst = (i % 2 == 0) ? (i / 2) : (r + i / 2);
+						std::memcpy(&Bout[dst * 16], X, 64);
+					}
+
+					SecureWipeMemory(X, sizeof(X));
+				}
+
+				// scryptROMix: memory-hard mixing on block B of 128*r bytes
+				bool ScryptROMix(uint32_t* B, uint32_t r, uint64_t N) noexcept {
+					const size_t blockWords = 32ULL * r;
+					const size_t blockBytes = blockWords * sizeof(uint32_t);
+
+					std::unique_ptr<uint32_t[]> V;
+					std::unique_ptr<uint32_t[]> Y;
+					try {
+						V = std::make_unique<uint32_t[]>(static_cast<size_t>(N) * blockWords);
+						Y = std::make_unique<uint32_t[]>(blockWords);
+					}
+					catch (...) { return false; }
+
+					// V[0] = B
+					std::memcpy(V.get(), B, blockBytes);
+
+					// V[i] = BlockMix(V[i-1]) for i = 1..N-1
+					for (uint64_t i = 1; i < N; ++i)
+						ScryptBlockMix(&V[(i - 1) * blockWords], &V[i * blockWords], r);
+
+					// X = BlockMix(V[N-1])
+					ScryptBlockMix(&V[(N - 1) * blockWords], B, r);
+
+					// Mixing phase: N iterations
+					for (uint64_t i = 0; i < N; ++i) {
+						uint64_t j = static_cast<uint64_t>(B[blockWords - 16]) |
+							(static_cast<uint64_t>(B[blockWords - 15]) << 32);
+						j %= N;
+
+						for (size_t k = 0; k < blockWords; ++k)
+							B[k] ^= V[j * blockWords + k];
+
+						ScryptBlockMix(B, Y.get(), r);
+						std::memcpy(B, Y.get(), blockBytes);
+					}
+
+					SecureWipeMemory(V.get(), static_cast<size_t>(N) * blockBytes);
+					SecureWipeMemory(Y.get(), blockBytes);
+					return true;
+				}
+
+			} // anonymous namespace (scrypt helpers)
+
+			static bool ScryptDeriveKey(const uint8_t* password, size_t passwordLen,
+				const uint8_t* salt, size_t saltLen,
+				const KDFParams& params,
+				uint8_t* outKey, size_t keyLen,
+				Error* err) noexcept
+			{
+				constexpr uint32_t r = 8; // Standard scrypt block size parameter
+				const uint32_t p = params.parallelism;
+
+				// Compute N: largest power of 2 that fits in the memory budget
+				// With r=8, each ROMix block = 128*r = 1024 bytes = 1 KiB, so N ≈ memoryCostKB
+				uint64_t N = 1;
+				while (N * 2 <= static_cast<uint64_t>(params.memoryCostKB) && N < (1ULL << 28))
+					N *= 2;
+				if (N < 2) N = 2;
+
+				// Memory safety: cap at 2 GiB per ROMix invocation
+				constexpr uint64_t MAX_ROMIX_BYTES = 2ULL * 1024 * 1024 * 1024;
+				if (N * 128ULL * r > MAX_ROMIX_BYTES) {
+					if (err) { err->win32 = ERROR_NOT_ENOUGH_MEMORY; err->message = L"Scrypt: memory cost exceeds 2 GiB ROMix limit"; }
+					return false;
+				}
+
+				// Step 1: B[0..p-1] = PBKDF2-HMAC-SHA256(password, salt, 1, p * 128 * r)
+				const size_t bLen = static_cast<size_t>(p) * 128 * r;
+				std::vector<uint8_t> B;
+				try { B.resize(bLen); }
+				catch (...) {
+					if (err) { err->win32 = ERROR_NOT_ENOUGH_MEMORY; err->message = L"Scrypt: B buffer allocation failed"; }
+					return false;
+				}
+
+				if (!KeyDerivation::PBKDF2(password, passwordLen, salt, saltLen, 1,
+					HashUtils::Algorithm::SHA256, B.data(), B.size(), err)) {
+					SecureWipeMemory(B.data(), B.size());
+					return false;
+				}
+
+				// Step 2: Apply ROMix to each parallel block
+				const size_t blockBytes = 128ULL * r;
+				for (uint32_t i = 0; i < p; ++i) {
+					auto* Bi = reinterpret_cast<uint32_t*>(&B[i * blockBytes]);
+					if (!ScryptROMix(Bi, r, N)) {
+						SecureWipeMemory(B.data(), B.size());
+						if (err) { err->win32 = ERROR_NOT_ENOUGH_MEMORY; err->message = L"Scrypt: ROMix memory allocation failed"; }
+						return false;
+					}
+				}
+
+				// Step 3: Output = PBKDF2-HMAC-SHA256(password, B, 1, dkLen)
+				bool ok = KeyDerivation::PBKDF2(password, passwordLen, B.data(), B.size(),
+					1, HashUtils::Algorithm::SHA256, outKey, keyLen, err);
+
+				SecureWipeMemory(B.data(), B.size());
+				return ok;
+			}
+
+			// =============================================================================
+			// RFC 7693 — Blake2b Implementation (used by Argon2id)
+			// =============================================================================
+			namespace {
+
+				static constexpr uint64_t kBlake2bIV[8] = {
+					0x6A09E667F3BCC908ULL, 0xBB67AE8584CAA73BULL,
+					0x3C6EF372FE94F82BULL, 0xA54FF53A5F1D36F1ULL,
+					0x510E527FADE682D1ULL, 0x9B05688C2B3E6C1FULL,
+					0x1F83D9ABFB41BD6BULL, 0x5BE0CD19137E2179ULL
+				};
+
+				static constexpr uint8_t kBlake2bSigma[12][16] = {
+					{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15},
+					{14,10, 4, 8, 9,15,13, 6, 1,12, 0, 2,11, 7, 5, 3},
+					{11, 8,12, 0, 5, 2,15,13,10,14, 3, 6, 7, 1, 9, 4},
+					{ 7, 9, 3, 1,13,12,11,14, 2, 6, 5,10, 4, 0,15, 8},
+					{ 9, 0, 5, 7, 2, 4,10,15,14, 1,11,12, 6, 8, 3,13},
+					{ 2,12, 6,10, 0,11, 8, 3, 4,13, 7, 5,15,14, 1, 9},
+					{12, 5, 1,15,14,13, 4,10, 0, 7, 6, 3, 9, 2, 8,11},
+					{13,11, 7,14,12, 1, 3, 9, 5, 0,15, 4, 8, 6, 2,10},
+					{ 6,15,14, 9,11, 3, 0, 8,12, 2,13, 7, 1, 4,10, 5},
+					{10, 2, 8, 4, 7, 6, 1, 5,15,11, 9,14, 3,12,13, 0},
+					{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15},
+					{14,10, 4, 8, 9,15,13, 6, 1,12, 0, 2,11, 7, 5, 3}
+				};
+
+				struct Blake2bState {
+					uint64_t h[8];
+					uint64_t t[2];
+					uint64_t f[2];
+					uint8_t buf[128];
+					size_t bufLen;
+					size_t outLen;
+				};
+
+				inline uint64_t B2bRotr64(uint64_t x, int n) noexcept {
+					return (x >> n) | (x << (64 - n));
+				}
+
+				void B2bG(uint64_t v[16], int a, int b, int c, int d, uint64_t x, uint64_t y) noexcept {
+					v[a] += v[b] + x;  v[d] = B2bRotr64(v[d] ^ v[a], 32);
+					v[c] += v[d];      v[b] = B2bRotr64(v[b] ^ v[c], 24);
+					v[a] += v[b] + y;  v[d] = B2bRotr64(v[d] ^ v[a], 16);
+					v[c] += v[d];      v[b] = B2bRotr64(v[b] ^ v[c], 63);
+				}
+
+				void B2bCompress(Blake2bState& S, const uint8_t* block) noexcept {
+					uint64_t m[16], v[16];
+					for (int i = 0; i < 16; ++i)
+						std::memcpy(&m[i], &block[i * 8], 8);
+
+					for (int i = 0; i < 8; ++i) v[i] = S.h[i];
+					v[ 8] = kBlake2bIV[0];           v[ 9] = kBlake2bIV[1];
+					v[10] = kBlake2bIV[2];           v[11] = kBlake2bIV[3];
+					v[12] = kBlake2bIV[4] ^ S.t[0];  v[13] = kBlake2bIV[5] ^ S.t[1];
+					v[14] = kBlake2bIV[6] ^ S.f[0];  v[15] = kBlake2bIV[7] ^ S.f[1];
+
+					for (int r = 0; r < 12; ++r) {
+						const uint8_t* s = kBlake2bSigma[r];
+						B2bG(v,0,4, 8,12,m[s[ 0]],m[s[ 1]]); B2bG(v,1,5, 9,13,m[s[ 2]],m[s[ 3]]);
+						B2bG(v,2,6,10,14,m[s[ 4]],m[s[ 5]]); B2bG(v,3,7,11,15,m[s[ 6]],m[s[ 7]]);
+						B2bG(v,0,5,10,15,m[s[ 8]],m[s[ 9]]); B2bG(v,1,6,11,12,m[s[10]],m[s[11]]);
+						B2bG(v,2,7, 8,13,m[s[12]],m[s[13]]); B2bG(v,3,4, 9,14,m[s[14]],m[s[15]]);
+					}
+
+					for (int i = 0; i < 8; ++i) S.h[i] ^= v[i] ^ v[i + 8];
+					SecureWipeMemory(m, sizeof(m));
+					SecureWipeMemory(v, sizeof(v));
+				}
+
+				void B2bInit(Blake2bState& S, size_t outLen) noexcept {
+					std::memset(&S, 0, sizeof(S));
+					for (int i = 0; i < 8; ++i) S.h[i] = kBlake2bIV[i];
+					S.h[0] ^= 0x01010000ULL ^ static_cast<uint64_t>(outLen);
+					S.outLen = outLen;
+				}
+
+				void B2bUpdate(Blake2bState& S, const void* data, size_t len) noexcept {
+					auto p = static_cast<const uint8_t*>(data);
+					while (len > 0) {
+						if (S.bufLen == 128) {
+							S.t[0] += 128;
+							if (S.t[0] < 128) S.t[1]++;
+							B2bCompress(S, S.buf);
+							S.bufLen = 0;
+						}
+						size_t n = std::min(len, static_cast<size_t>(128) - S.bufLen);
+						std::memcpy(&S.buf[S.bufLen], p, n);
+						S.bufLen += n;
+						p += n;
+						len -= n;
+					}
+				}
+
+				void B2bFinal(Blake2bState& S, uint8_t* out) noexcept {
+					S.t[0] += static_cast<uint64_t>(S.bufLen);
+					if (S.t[0] < S.bufLen) S.t[1]++;
+					S.f[0] = ~0ULL;
+					std::memset(&S.buf[S.bufLen], 0, 128 - S.bufLen);
+					B2bCompress(S, S.buf);
+					std::memcpy(out, S.h, S.outLen);
+					SecureWipeMemory(&S, sizeof(S));
+				}
+
+				void B2bHash(const void* data, size_t dataLen, uint8_t* out, size_t outLen) noexcept {
+					Blake2bState S;
+					B2bInit(S, outLen);
+					B2bUpdate(S, data, dataLen);
+					B2bFinal(S, out);
+				}
+
+				// Argon2 variable-length hash H' (RFC 9106 Section 3.3)
+				bool B2bLongHash(const void* data, size_t dataLen, uint8_t* out, uint32_t outLen) noexcept {
+					if (outLen == 0) return false;
+					uint8_t outLenLE[4];
+					std::memcpy(outLenLE, &outLen, 4);
+
+					if (outLen <= 64) {
+						Blake2bState S;
+						B2bInit(S, outLen);
+						B2bUpdate(S, outLenLE, 4);
+						B2bUpdate(S, data, dataLen);
+						B2bFinal(S, out);
+						return true;
+					}
+
+					// r = ceil(outLen/32) - 2, intermediate digests contribute 32 bytes each
+					const uint32_t r = (outLen + 31) / 32 - 2;
+					uint8_t V[64];
+					{
+						Blake2bState S;
+						B2bInit(S, 64);
+						B2bUpdate(S, outLenLE, 4);
+						B2bUpdate(S, data, dataLen);
+						B2bFinal(S, V);
+					}
+					std::memcpy(out, V, 32);
+
+					for (uint32_t i = 2; i <= r; ++i) {
+						uint8_t prev[64];
+						std::memcpy(prev, V, 64);
+						B2bHash(prev, 64, V, 64);
+						std::memcpy(&out[(i - 1) * 32], V, 32);
+						SecureWipeMemory(prev, sizeof(prev));
+					}
+
+					// Final block: variable length
+					const uint32_t lastLen = outLen - 32 * r;
+					{
+						uint8_t prev[64];
+						std::memcpy(prev, V, 64);
+						Blake2bState S;
+						B2bInit(S, lastLen);
+						B2bUpdate(S, prev, 64);
+						B2bFinal(S, &out[r * 32]);
+						SecureWipeMemory(prev, sizeof(prev));
+					}
+
+					SecureWipeMemory(V, sizeof(V));
+					return true;
+				}
+
+			} // anonymous namespace (Blake2b)
+
+			// =============================================================================
+			// RFC 9106 — Argon2id Key Derivation
+			// =============================================================================
+			namespace {
+
+				struct Argon2Block { uint64_t v[128]; }; // 1024 bytes
+				static constexpr size_t ARGON2_QWORDS_IN_BLOCK = 128;
+
+				// Argon2 GB mixing (fBlaMka): uses multiplication for extra diffusion
+				inline void A2GB(uint64_t& a, uint64_t& b, uint64_t& c, uint64_t& d) noexcept {
+					a += b + 2 * static_cast<uint64_t>(static_cast<uint32_t>(a)) *
+						static_cast<uint64_t>(static_cast<uint32_t>(b));
+					d = B2bRotr64(d ^ a, 32);
+					c += d + 2 * static_cast<uint64_t>(static_cast<uint32_t>(c)) *
+						static_cast<uint64_t>(static_cast<uint32_t>(d));
+					b = B2bRotr64(b ^ c, 24);
+					a += b + 2 * static_cast<uint64_t>(static_cast<uint32_t>(a)) *
+						static_cast<uint64_t>(static_cast<uint32_t>(b));
+					d = B2bRotr64(d ^ a, 16);
+					c += d + 2 * static_cast<uint64_t>(static_cast<uint32_t>(c)) *
+						static_cast<uint64_t>(static_cast<uint32_t>(d));
+					b = B2bRotr64(b ^ c, 63);
+				}
+
+				// P permutation on 16 uint64_t (128 bytes) — Blake2b-based round
+				void A2Permute(uint64_t v[16]) noexcept {
+					A2GB(v[0],v[4], v[8],v[12]); A2GB(v[1],v[5], v[9],v[13]);
+					A2GB(v[2],v[6],v[10],v[14]); A2GB(v[3],v[7],v[11],v[15]);
+					A2GB(v[0],v[5],v[10],v[15]); A2GB(v[1],v[6],v[11],v[12]);
+					A2GB(v[2],v[7], v[8],v[13]); A2GB(v[3],v[4], v[9],v[14]);
+				}
+
+				// G compression: result = (X ⊕ Y) ⊕ P_col(P_row(X ⊕ Y))
+				void A2Compress(Argon2Block& result, const Argon2Block& X, const Argon2Block& Y) noexcept {
+					Argon2Block R;
+					for (int i = 0; i < 128; ++i) R.v[i] = X.v[i] ^ Y.v[i];
+					Argon2Block Z;
+					std::memcpy(&Z, &R, sizeof(Argon2Block));
+
+					// Row-wise: 8 rows of 16 uint64_t
+					for (int i = 0; i < 8; ++i)
+						A2Permute(&Z.v[i * 16]);
+
+					// Column-wise: 8 columns, each spanning 8 rows (2 consecutive per row)
+					for (int j = 0; j < 8; ++j) {
+						uint64_t col[16];
+						for (int i = 0; i < 8; ++i) {
+							col[i * 2]     = Z.v[i * 16 + j * 2];
+							col[i * 2 + 1] = Z.v[i * 16 + j * 2 + 1];
+						}
+						A2Permute(col);
+						for (int i = 0; i < 8; ++i) {
+							Z.v[i * 16 + j * 2]     = col[i * 2];
+							Z.v[i * 16 + j * 2 + 1] = col[i * 2 + 1];
+						}
+					}
+
+					for (int i = 0; i < 128; ++i) result.v[i] = R.v[i] ^ Z.v[i];
+				}
+
+				// Compute reference block index for Argon2id segment filling
+				void A2ComputeRef(uint64_t pseudoRand, uint32_t pass, uint32_t slice,
+					uint32_t lane, uint32_t idx, uint32_t lanes,
+					uint32_t segLen, uint32_t laneLen,
+					uint32_t& refLane, uint32_t& refIdx) noexcept
+				{
+					uint32_t J1 = static_cast<uint32_t>(pseudoRand);
+					uint32_t J2 = static_cast<uint32_t>(pseudoRand >> 32);
+
+					// Reference lane
+					refLane = (pass == 0 && slice == 0) ? lane : (J2 % lanes);
+
+					// Reference area size
+					uint32_t refArea;
+					bool sameLane = (refLane == lane);
+					if (pass == 0) {
+						if (slice == 0) {
+							refArea = idx - 1;
+						}
+						else if (sameLane) {
+							refArea = slice * segLen + idx - 1;
+						}
+						else {
+							refArea = slice * segLen - ((idx == 0) ? 1 : 0);
+						}
+					}
+					else {
+						if (sameLane) {
+							refArea = laneLen - segLen + idx - 1;
+						}
+						else {
+							refArea = laneLen - segLen - ((idx == 0) ? 1 : 0);
+						}
+					}
+
+					// Map J1 → position within reference area
+					uint64_t x = (static_cast<uint64_t>(J1) * static_cast<uint64_t>(J1)) >> 32;
+					uint64_t y = (static_cast<uint64_t>(refArea) * x) >> 32;
+					uint32_t z = refArea - 1 - static_cast<uint32_t>(y);
+
+					// Starting position for the reference window
+					uint32_t startPos = (pass == 0) ? 0 : (((slice + 1) % 4) * segLen);
+					refIdx = (startPos + z) % laneLen;
+				}
+
+			} // anonymous namespace (Argon2id helpers)
+
+			static bool Argon2idDeriveKey(const uint8_t* password, size_t passwordLen,
+				const uint8_t* salt, size_t saltLen,
+				const KDFParams& params,
+				uint8_t* outKey, size_t keyLen,
+				Error* err) noexcept
+			{
+				const uint32_t lanes = params.parallelism;
+				const uint32_t hashLen = static_cast<uint32_t>(keyLen);
+				const uint32_t memKiB = params.memoryCostKB;
+
+				// Argon2 passes (t): clamp from PBKDF2 default to sensible Argon2 range
+				uint32_t passes = params.iterations;
+				if (passes > 1000) passes = 3;
+				if (passes < 1) passes = 1;
+
+				// Memory layout: at least 8*p blocks, segment = total/(4*p), rounded
+				uint32_t totalBlocks = memKiB;
+				if (totalBlocks < 8 * lanes) totalBlocks = 8 * lanes;
+				const uint32_t segLen = totalBlocks / (4 * lanes);
+				totalBlocks = segLen * 4 * lanes;
+				const uint32_t laneLen = segLen * 4;
+
+				// Cap: 2 GiB
+				if (static_cast<uint64_t>(totalBlocks) * 1024ULL > 2ULL * 1024 * 1024 * 1024) {
+					if (err) { err->win32 = ERROR_NOT_ENOUGH_MEMORY; err->message = L"Argon2id: memory cost exceeds 2 GiB limit"; }
+					return false;
+				}
+
+				std::unique_ptr<Argon2Block[]> mem;
+				try {
+					mem = std::make_unique<Argon2Block[]>(totalBlocks);
+				}
+				catch (...) {
+					if (err) { err->win32 = ERROR_NOT_ENOUGH_MEMORY; err->message = L"Argon2id: memory allocation failed"; }
+					return false;
+				}
+				std::memset(mem.get(), 0, static_cast<size_t>(totalBlocks) * sizeof(Argon2Block));
+
+				// Step 1: Compute H0 = Blake2b-512(p||τ||m||t||v||y||len(P)||P||len(S)||S||0||0)
+				uint8_t H0[64];
+				{
+					Blake2bState S;
+					B2bInit(S, 64);
+					auto le32 = [&S](uint32_t val) {
+						uint8_t b[4]; std::memcpy(b, &val, 4);
+						B2bUpdate(S, b, 4);
+					};
+					le32(lanes);
+					le32(hashLen);
+					le32(memKiB);
+					le32(passes);
+					le32(0x13);  // version 1.3
+					le32(2);     // Argon2id
+					le32(static_cast<uint32_t>(passwordLen));
+					B2bUpdate(S, password, passwordLen);
+					le32(static_cast<uint32_t>(saltLen));
+					B2bUpdate(S, salt, saltLen);
+					le32(0);     // |K| = 0
+					le32(0);     // |X| = 0
+					B2bFinal(S, H0);
+				}
+
+				// Step 2: Initialize first two blocks of each lane via H'
+				for (uint32_t l = 0; l < lanes; ++l) {
+					uint8_t inp[72];
+					std::memcpy(inp, H0, 64);
+					uint32_t idx0 = 0, idx1 = 1, lv = l;
+
+					std::memcpy(&inp[64], &idx0, 4); std::memcpy(&inp[68], &lv, 4);
+					B2bLongHash(inp, 72, reinterpret_cast<uint8_t*>(mem[l * laneLen].v), 1024);
+
+					std::memcpy(&inp[64], &idx1, 4);
+					B2bLongHash(inp, 72, reinterpret_cast<uint8_t*>(mem[l * laneLen + 1].v), 1024);
+
+					SecureWipeMemory(inp, sizeof(inp));
+				}
+				SecureWipeMemory(H0, sizeof(H0));
+
+				// Step 3: Fill memory
+				Argon2Block zeroBlock, inputBlock, addrBlock;
+				std::memset(&zeroBlock, 0, sizeof(Argon2Block));
+
+				for (uint32_t pass = 0; pass < passes; ++pass) {
+					for (uint32_t slice = 0; slice < 4; ++slice) {
+						for (uint32_t lane = 0; lane < lanes; ++lane) {
+							const uint32_t startIdx = (pass == 0 && slice == 0) ? 2 : 0;
+							const bool dataIndep = (pass == 0) && (slice < 2);
+
+							// Pre-generate addresses for data-independent mode
+							std::memset(&inputBlock, 0, sizeof(Argon2Block));
+							if (dataIndep) {
+								inputBlock.v[0] = pass;
+								inputBlock.v[1] = lane;
+								inputBlock.v[2] = slice;
+								inputBlock.v[3] = totalBlocks;
+								inputBlock.v[4] = passes;
+								inputBlock.v[5] = 2; // Argon2id
+							}
+							uint32_t addrCounter = 0;
+
+							for (uint32_t idx = startIdx; idx < segLen; ++idx) {
+								const uint32_t curPos = slice * segLen + idx;
+								const uint32_t prevPos = (curPos == 0) ? (laneLen - 1) : (curPos - 1);
+
+								uint64_t pseudoRand;
+								if (dataIndep) {
+									if (idx % 128 == 0) {
+										inputBlock.v[6] = ++addrCounter;
+										Argon2Block tmp;
+										A2Compress(tmp, zeroBlock, inputBlock);
+										A2Compress(addrBlock, zeroBlock, tmp);
+									}
+									pseudoRand = addrBlock.v[idx % 128];
+								}
+								else {
+									pseudoRand = mem[lane * laneLen + prevPos].v[0];
+								}
+
+								uint32_t refLane, refIdx;
+								A2ComputeRef(pseudoRand, pass, slice, lane, idx,
+									lanes, segLen, laneLen, refLane, refIdx);
+
+								Argon2Block compressed;
+								A2Compress(compressed,
+									mem[refLane * laneLen + refIdx],
+									mem[lane * laneLen + prevPos]);
+
+								if (pass == 0) {
+									mem[lane * laneLen + curPos] = compressed;
+								}
+								else {
+									for (int q = 0; q < 128; ++q)
+										mem[lane * laneLen + curPos].v[q] ^= compressed.v[q];
+								}
+							}
+						}
+					}
+				}
+
+				// Step 4: Finalize — XOR last block of each lane
+				Argon2Block finalBlock = mem[laneLen - 1];
+				for (uint32_t l = 1; l < lanes; ++l) {
+					for (int q = 0; q < 128; ++q)
+						finalBlock.v[q] ^= mem[l * laneLen + laneLen - 1].v[q];
+				}
+
+				SecureWipeMemory(mem.get(), static_cast<size_t>(totalBlocks) * sizeof(Argon2Block));
+
+				// Output = H'(finalBlock, hashLen)
+				bool ok = B2bLongHash(finalBlock.v, 1024, outKey, hashLen);
+				SecureWipeMemory(&finalBlock, sizeof(finalBlock));
+
+				if (!ok && err) {
+					err->win32 = ERROR_INVALID_DATA;
+					err->message = L"Argon2id: final hash derivation failed";
+				}
+				return ok;
+			}
+
+			// =============================================================================
+			// Key Derivation — DeriveKey dispatcher
+			// =============================================================================
+
+			bool KeyDerivation::DeriveKey(const uint8_t* password, size_t passwordLen,
+				const KDFParams& params,
+				std::vector<uint8_t>& outKey,
+				Error* err) noexcept
+			{
+				if (!password || passwordLen == 0) {
+					if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Invalid password"; }
+					return false;
+				}
+
+				// Validate key length: reject 0 and unreasonably large values
+				constexpr size_t MAX_DERIVED_KEY_LEN = 1024ULL * 1024ULL; // 1 MiB
+				if (params.keyLength == 0 || params.keyLength > MAX_DERIVED_KEY_LEN) {
+					if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Invalid derived key length (0 or exceeds 1 MiB)"; }
+					return false;
+				}
+
+				// Validate iteration count for PBKDF2 algorithms
+				if (params.algorithm == KDFAlgorithm::PBKDF2_SHA256 ||
+					params.algorithm == KDFAlgorithm::PBKDF2_SHA384 ||
+					params.algorithm == KDFAlgorithm::PBKDF2_SHA512)
+				{
+					if (params.iterations < MIN_PBKDF2_ITERATIONS) {
+						if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"PBKDF2 iterations below minimum"; }
+						return false;
+					}
+				}
+
+				try {
+					outKey.resize(params.keyLength);
+				}
+				catch (const std::exception&) {
+					if (err) { err->win32 = ERROR_NOT_ENOUGH_MEMORY; err->message = L"Failed to allocate output key buffer"; }
+					return false;
+				}
+
+				// Generate salt if not provided
+				std::vector<uint8_t> salt = params.salt;
+				if (salt.empty()) {
+					if (!GenerateSalt(salt, 32, err)) return false;
+				}
+
+				switch (params.algorithm) {
+				case KDFAlgorithm::PBKDF2_SHA256:
+					return PBKDF2(password, passwordLen, salt.data(), salt.size(),
+						params.iterations, HashUtils::Algorithm::SHA256,
+						outKey.data(), outKey.size(), err);
+
+				case KDFAlgorithm::PBKDF2_SHA384:
+					return PBKDF2(password, passwordLen, salt.data(), salt.size(),
+						params.iterations, HashUtils::Algorithm::SHA384,
+						outKey.data(), outKey.size(), err);
+
+				case KDFAlgorithm::PBKDF2_SHA512:
+					return PBKDF2(password, passwordLen, salt.data(), salt.size(),
+						params.iterations, HashUtils::Algorithm::SHA512,
+						outKey.data(), outKey.size(), err);
+
+				case KDFAlgorithm::HKDF_SHA256:
+					return HKDF(password, passwordLen, salt.data(), salt.size(),
+						params.info.data(), params.info.size(),
+						HashUtils::Algorithm::SHA256,
+						outKey.data(), outKey.size(), err);
+
+				case KDFAlgorithm::HKDF_SHA384:
+					return HKDF(password, passwordLen, salt.data(), salt.size(),
+						params.info.data(), params.info.size(),
+						HashUtils::Algorithm::SHA384,
+						outKey.data(), outKey.size(), err);
+
+				case KDFAlgorithm::HKDF_SHA512:
+					return HKDF(password, passwordLen, salt.data(), salt.size(),
+						params.info.data(), params.info.size(),
+						HashUtils::Algorithm::SHA512,
+						outKey.data(), outKey.size(), err);
+
+				case KDFAlgorithm::Scrypt:
+					return ScryptDeriveKey(password, passwordLen, salt.data(), salt.size(),
+						params, outKey.data(), outKey.size(), err);
+
+				case KDFAlgorithm::Argon2id:
+					return Argon2idDeriveKey(password, passwordLen, salt.data(), salt.size(),
+						params, outKey.data(), outKey.size(), err);
+
+				default:
+					if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Unknown KDF algorithm"; }
+					return false;
+				}
+			}
+
+			bool KeyDerivation::DeriveKey(std::string_view password,
+				const KDFParams& params,
+				std::vector<uint8_t>& outKey,
+				Error* err) noexcept
+			{
+				return DeriveKey(reinterpret_cast<const uint8_t*>(password.data()),
+					password.size(), params, outKey, err);
+			}
+
+			bool KeyDerivation::GenerateSalt(std::vector<uint8_t>& salt, size_t size, Error* err) noexcept {
+				SecureRandom rng;
+				return rng.Generate(salt, size, err);
+			}
+
+			// =============================================================================
+			// PublicKey Implementation
+			// =============================================================================
+			bool PublicKey::Export(std::vector<uint8_t>& out, Error* err) const noexcept {
+				try {
+					out = keyBlob;
+				}
+				catch (const std::exception&) {
+					if (err) { err->win32 = ERROR_NOT_ENOUGH_MEMORY; err->message = L"Failed to copy key blob"; }
+					return false;
+				}
+				return true;
+			}
+
+			bool PublicKey::ExportPEM(std::string& out, Error* err) const noexcept {
+				if (keyBlob.empty()) {
+					if (err) { err->win32 = ERROR_INVALID_DATA; err->message = L"Key blob is empty"; }
+					return false;
+				}
+
+				try {
+					// Base64 encode the DER blob
+					std::string base64 = Base64::Encode(keyBlob);
+					if (base64.empty()) {
+						if (err) { err->win32 = ERROR_INVALID_DATA; err->message = L"Base64 encoding failed"; }
+						return false;
+					}
+
+					// PEM format: header + base64 (64 chars per line) + footer
+					std::string result;
+					result.reserve(base64.size() + 64);
+					result += "-----BEGIN PUBLIC KEY-----\n";
+
+					const size_t lineWidth = 64;
+					for (size_t i = 0; i < base64.size(); i += lineWidth) {
+						size_t chunkSize = std::min(lineWidth, base64.size() - i);
+						result.append(base64, i, chunkSize);
+						result += '\n';
+					}
+
+					result += "-----END PUBLIC KEY-----\n";
+					out = std::move(result);
+					return true;
+				}
+				catch (const std::exception&) {
+					if (err) { err->win32 = ERROR_NOT_ENOUGH_MEMORY; err->message = L"PEM export allocation failed"; }
+					return false;
+				}
+			}
+
+			bool PublicKey::Import(const uint8_t* data, size_t len, PublicKey& out, Error* err) noexcept {
+				if (!data || len == 0) {
+					if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"Invalid input data"; }
+					return false;
+				}
+
+				try {
+					out.keyBlob.assign(data, data + len);
+				}
+				catch (const std::exception&) {
+					if (err) { err->win32 = ERROR_NOT_ENOUGH_MEMORY; err->message = L"Failed to copy key data"; }
+					return false;
+				}
+				return true;
+			}
+
+			bool PublicKey::ImportPEM(std::string_view pem, PublicKey& out, Error* err) noexcept {
+				if (pem.empty()) {
+					if (err) { err->win32 = ERROR_INVALID_PARAMETER; err->message = L"PEM string is empty"; }
+					return false;
+				}
+
+				try {
+					// Find PEM boundaries
+					const std::string_view beginMarker = "-----BEGIN PUBLIC KEY-----";
+					const std::string_view endMarker = "-----END PUBLIC KEY-----";
+
+					size_t beginPos = pem.find(beginMarker);
+					if (beginPos == std::string_view::npos) {
+						if (err) { err->win32 = ERROR_INVALID_DATA; err->message = L"PEM begin marker not found"; }
+						return false;
+					}
+
+					size_t endPos = pem.find(endMarker, beginPos);
+					if (endPos == std::string_view::npos) {
+						if (err) { err->win32 = ERROR_INVALID_DATA; err->message = L"PEM end marker not found"; }
+						return false;
+					}
+
+					// Extract base64 content (skip header)
+					beginPos += beginMarker.size();
+					std::string_view base64Content = pem.substr(beginPos, endPos - beginPos);
+
+					// Remove whitespace (newlines, spaces, tabs)
+					std::string cleanBase64;
+					cleanBase64.reserve(base64Content.size());
+					for (char c : base64Content) {
+						if (c != '\n' && c != '\r' && c != ' ' && c != '\t') {
+							cleanBase64.push_back(c);
+						}
+					}
+
+					if (cleanBase64.empty()) {
+						if (err) { err->win32 = ERROR_INVALID_DATA; err->message = L"PEM content is empty"; }
+						return false;
+					}
+
+					// Base64 decode
+					std::vector<uint8_t> decoded;
+					if (!Base64::Decode(cleanBase64, decoded)) {
+						if (err) { err->win32 = ERROR_INVALID_DATA; err->message = L"Base64 decoding failed"; }
+						return false;
+					}
+
+					if (decoded.empty()) {
+						if (err) { err->win32 = ERROR_INVALID_DATA; err->message = L"Decoded data is empty"; }
+						return false;
+					}
+
+					out.keyBlob = std::move(decoded);
+					return true;
+				}
+				catch (const std::exception&) {
+					if (err) { err->win32 = ERROR_NOT_ENOUGH_MEMORY; err->message = L"PEM import allocation failed"; }
+					return false;
+				}
+			}
+
+
+		}
+	}
+}

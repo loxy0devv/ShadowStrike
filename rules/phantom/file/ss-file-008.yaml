@@ -1,0 +1,53 @@
+id: ss-file-008
+detection_name: "Win32/WebShell.IIS.Apache.Creation"
+description: "Detects creation of script files (ASPX, PHP, JSP, CFML, SHTML) in web server root directories by non-web-server processes. Web shell deployment gives attackers persistent interactive access to compromised web servers and is a common post-exploitation technique following initial web application compromise."
+scope: file
+severity: critical
+status: stable
+source: native
+confidence: 0.88
+weight: 3.0
+version: 1
+
+attack:
+  - tactic: TA0003
+    technique: T1505.003
+    name: "Server Software Component: Web Shell"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1505/003/"
+    title: "ATT&CK T1505.003"
+
+logic:
+  and:
+    - or:
+        - field_regex:
+            field: file.path
+            pattern: "(?i)(inetpub\\\\wwwroot|inetpub\\\\ftproot|xampp\\\\htdocs|wamp\\\\www|apache.*\\\\htdocs|nginx.*\\\\html|tomcat.*\\\\webapps)"
+        - field_regex:
+            field: file.path
+            pattern: "(?i)C:\\\\inetpub\\\\"
+    - field_regex:
+        field: file.path
+        pattern: "(?i)\\.(aspx|asp|php|php3|php4|php5|phtml|jsp|jspx|cfm|cfml|shtml|cgi|pl)$"
+    - not:
+        field_in:
+          field: file.process.name
+          values:
+            - w3wp.exe
+            - httpd.exe
+            - nginx.exe
+            - tomcat.exe
+            - deploy.exe
+          case_insensitive: true
+
+fp_guard:
+  notes:
+    - "Web developers and CI/CD pipelines deploy new script files to webroot directories. Correlate with deployment windows and authorized users."
+    - "CMS systems (WordPress, Drupal) may create PHP files during plugin installation via the web interface."
+  suppress:
+    - field: file.process.name
+      values:
+        - msdeploy.exe
+        - robocopy.exe
+        - xcopy.exe

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  DriverInstallCA.wxs
+  ===================
+  Compatibility placeholder for existing build scripts.
+
+  The active ShadowStrikeDriverResume post-install startup custom action is
+  authored directly in Product.wxs so WiX links it into the Package section.
+  Keeping this file avoids breaking tooling that still passes DriverInstallCA.wxs
+  to `wix build`.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Fragment/>
+</Wix>

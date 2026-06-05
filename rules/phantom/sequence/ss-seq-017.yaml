@@ -1,0 +1,82 @@
+id: ss-seq-017
+detection_name: "Win32/Sequence.Download.Execute.DeleteOnDisk"
+description: "Detects a fileless-footprint attack sequence: a binary downloaded from an external URL, immediately executed, and then deleted from disk. This download-execute-delete pattern is used by attackers to minimize forensic evidence and evade file-scanning defenses, as the payload exists on disk only briefly between download and deletion."
+scope: sequence
+severity: critical
+status: stable
+source: native
+confidence: 0.87
+weight: 3.5
+version: 1
+
+attack:
+  - tactic: TA0011
+    technique: T1105
+    name: "Ingress Tool Transfer"
+  - tactic: TA0002
+    technique: T1204
+    name: "User Execution"
+  - tactic: TA0005
+    technique: T1070.004
+    name: "Indicator Removal: File Deletion"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1105/"
+    title: "ATT&CK T1105"
+  - url: "https://attack.mitre.org/techniques/T1070/004/"
+    title: "ATT&CK T1070.004"
+
+logic:
+  sequence:
+    - id: step1_download
+      within: 300s
+      event:
+        and:
+          - field_in:
+              field: network.process.name
+              values:
+                - powershell.exe
+                - pwsh.exe
+                - certutil.exe
+                - bitsadmin.exe
+                - curl.exe
+                - wget.exe
+                - wscript.exe
+                - mshta.exe
+              case_insensitive: true
+          - field_eq:
+              field: file.operation
+              value: "create"
+          - field_regex:
+              field: file.path
+              pattern: "(?i)(temp|appdata|programdata|downloads)\\\\.*\\.(exe|dll|ps1|vbs|bat|hta)"
+    - id: step2_execute
+      within: 120s
+      after: step1_download
+      event:
+        and:
+          - field_eq:
+              field: process.executable_path
+              value: "{{step1_download.file.path}}"
+    - id: step3_delete
+      within: 300s
+      after: step2_execute
+      event:
+        and:
+          - field_eq:
+              field: file.path
+              value: "{{step1_download.file.path}}"
+          - field_eq:
+              field: file.operation
+              value: "delete"
+
+fp_guard:
+  notes:
+    - "Software auto-updaters download, run, and clean up temporary installer files. Validate binary signature and download source URL."
+    - "Browser-initiated downloads that the user immediately runs and deletes may match. Correlate with browser parent process."
+  suppress:
+    - field: file.process.name
+      values:
+        - chrome.exe
+        - firefox.exe
+        - msedge.exe

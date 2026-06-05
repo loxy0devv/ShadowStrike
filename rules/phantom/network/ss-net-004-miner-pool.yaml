@@ -1,0 +1,25 @@
+id: ss-net-004
+detection_name: "CoinMiner.Trojan.Generic"
+description: "Network connection to known cryptomining pool ports or domains."
+scope: network
+severity: high
+status: stable
+source: native
+confidence: 0.80
+weight: 2.5
+version: 1
+attack:
+  - tactic: TA0040
+    technique: T1496
+    name: "Resource Hijacking"
+logic:
+  or:
+    - field_regex:
+        field: network.destination.host
+        value: "(?i)(pool\\.|(stratum|mining|xmrpool|nanopool|ethermine|supportxmr|hashvault|2miners)\\.)"
+    - field_in:
+        field: network.destination.port
+        values: ["3333", "4444", "5555", "7777", "14444", "45560", "45700"]
+fp_guard:
+  notes:
+    - "Some IoT and DevOps tooling uses ports 3333/4444. Correlate with high CPU and suspicious parent."

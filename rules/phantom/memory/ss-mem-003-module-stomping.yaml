@@ -1,0 +1,26 @@
+id: ss-mem-003
+detection_name: "Win32/Evasion.ModuleStomping"
+description: "Loaded module header bytes differ from on-disk PE — module stomping / overwrite injection technique."
+scope: memory
+severity: critical
+status: stable
+source: native
+confidence: 0.88
+weight: 3.2
+version: 1
+attack:
+  - tactic: TA0005
+    technique: T1055
+    sub_technique: T1055.001
+    name: "Process Injection: DLL Injection"
+logic:
+  and:
+    - field_equals:
+        field: deep.finding
+        value: "9"
+    - field_exists:
+        field: image.path
+fp_guard:
+  notes:
+    - "False positives possible when disk images are updated while process runs (hot-patching)."
+    - "Correlate with suspicious parent process or prior process injection events."

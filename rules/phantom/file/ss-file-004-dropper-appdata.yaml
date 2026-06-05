@@ -1,0 +1,59 @@
+id: ss-file-004
+detection_name: "Win32/Dropper.AppDataExec"
+description: "Executable written to AppData/Temp and then launched — dropper deposit and execution pattern."
+scope: sequence
+severity: high
+status: stable
+source: native
+confidence: 0.78
+weight: 2.5
+version: 1
+attack:
+  - tactic: TA0002
+    technique: T1204
+    name: "User Execution"
+  - tactic: TA0003
+    technique: T1547
+    name: "Boot or Logon Autostart Execution"
+logic:
+  sequence:
+    - and:
+        - or:
+            - field_contains:
+                field: file.path
+                value: "\\AppData\\Roaming\\"
+            - field_contains:
+                field: file.path
+                value: "\\AppData\\Local\\Temp\\"
+            - field_contains:
+                field: file.path
+                value: "\\Users\\Public\\"
+        - or:
+            - field_ends_with:
+                field: file.path
+                value: ".exe"
+                case_insensitive: true
+            - field_ends_with:
+                field: file.path
+                value: ".dll"
+                case_insensitive: true
+            - field_ends_with:
+                field: file.path
+                value: ".ps1"
+                case_insensitive: true
+    - and:
+        - field_in:
+            field: process.name
+            values: [cmd.exe, powershell.exe, explorer.exe]
+            case_insensitive: true
+fp_guard:
+  notes:
+    - "Many legitimate installers extract to temp directories and run setup from there."
+    - "Correlate with parent process being a browser or email client."
+  suppress:
+    - field: process.parent.name
+      values:
+        - msiexec.exe
+        - setup.exe
+        - install.exe
+        - installer.exe

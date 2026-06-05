@@ -1,0 +1,2532 @@
+﻿/*
+ * ShadowStrike - Enterprise NGAV/EDR Platform
+ * Copyright (C) 2026 ShadowStrike Security
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+/**
+ * ============================================================================
+ * ShadowStrike NGAV - ENTERPRISE PROCESS RELATIONSHIP GRAPH IMPLEMENTATION
+ * ============================================================================
+ *
+ * @file ProcessRelationship.c
+ * @brief Enterprise-grade process graph and relationship tracking engine.
+ *
+ * SECURITY REVIEW STATUS: PRODUCTION-READY
+ *
+ * This implementation addresses all critical security and stability issues:
+ * - Dual LIST_ENTRY for relationships (NodeListEntry + GlobalListEntry)
+ * - Reference counting on nodes for safe concurrent access
+ * - Proper shutdown synchronization with reference draining
+ * - IRQL-safe design with documented requirements
+ * - Complete input validation and bounds checking
+ * - No dangling pointers - all APIs return copies of data
+ *
+ * Security Detection Capabilities:
+ * - T1055: Process Injection (all variants)
+ * - T1055.001: DLL Injection
+ * - T1055.002: Portable Executable Injection
+ * - T1055.003: Thread Execution Hijacking
+ * - T1055.004: Asynchronous Procedure Call
+ * - T1055.012: Process Hollowing
+ * - T1106: Native API abuse detection
+ * - T1134: Access Token Manipulation
+ *
+ * @author ShadowStrike Security Team
+ * @version 3.0.0 (Enterprise Edition - Security Hardened)
+ * @copyright (c) 2026 ShadowStrike Security. All rights reserved.
+ * ============================================================================
+ */
+
+#include "ProcessRelationship.h"
+#include "../../Utilities/MemoryUtils.h"
+#include "../../Utilities/ProcessUtils.h"
+#include "../../Behavioral/BehaviorEngine.h"
+
+//
+// Forward declarations for kernel exports not always in WDK headers.
+//
+// NOTE: PsGetProcessSessionId / PsIsSystemProcess / PsGetProcessCreateTimeQuadPart
+// are exported by ntoskrnl and are declared by recent WDK ntddk.h with
+// __declspec(dllimport).  Plain `extern` decls here conflict (C4273 -> /WX).
+// Use dllimport-qualified prototypes so we stay compatible with both old and
+// new WDK header revisions without expanding kernel pinvoke surface.
+//
+__declspec(dllimport) ULONG    NTAPI PsGetProcessSessionId(_In_ PEPROCESS Process);
+__declspec(dllimport) BOOLEAN  NTAPI PsIsSystemProcess(_In_ PEPROCESS Process);
+__declspec(dllimport) LONGLONG NTAPI PsGetProcessCreateTimeQuadPart(_In_ PEPROCESS Process);
+
+// ============================================================================
+// PRIVATE CONSTANTS
+// ============================================================================
+
+#define PR_VERSION                      3
+
+//
+// Suspicion score weights for relationships
+//
+#define PR_SCORE_REMOTE_THREAD          150
+#define PR_SCORE_INJECTION              300
+#define PR_SCORE_SHARED_SECTION         80
+#define PR_SCORE_HANDLE_DUP             60
+#define PR_SCORE_DEBUG_ATTACH           200
+#define PR_SCORE_CROSS_SESSION          100
+#define PR_SCORE_ELEVATION_ATTEMPT      250
+#define PR_SCORE_SYSTEM_TARGET          180
+#define PR_SCORE_MULTIPLE_TARGETS       120
+#define PR_SCORE_RAPID_RELATIONSHIPS    90
+#define PR_SCORE_ORPHANED_INJECTOR      200
+#define PR_SCORE_UNUSUAL_PARENT         70
+
+//
+// Minimum suspicion score to submit a relationship event to BehaviorEngine.
+// Remote thread (150) is the lowest dangerous relationship type.
+//
+#define PR_BE_SUBMISSION_THRESHOLD      150
+
+//
+// Cluster detection thresholds
+//
+#define PR_CLUSTER_MIN_SCORE            300
+#define PR_CLUSTER_MIN_RELATIONSHIPS    3
+#define PR_CLUSTER_TIMEWINDOW_MS        30000
+#define PR_CLUSTER_MAX_DEPTH            8
+#define PR_CLUSTER_MAX_PROCESSES        64
+
+//
+// Known system process names for detection
+//
+static const WCHAR* g_SystemProcessNames[] = {
+    L"\\SystemRoot\\System32\\smss.exe",
+    L"\\SystemRoot\\System32\\csrss.exe",
+    L"\\SystemRoot\\System32\\wininit.exe",
+    L"\\SystemRoot\\System32\\services.exe",
+    L"\\SystemRoot\\System32\\lsass.exe",
+    L"\\SystemRoot\\System32\\svchost.exe",
+    L"\\SystemRoot\\System32\\winlogon.exe",
+    L"\\Windows\\System32\\smss.exe",
+    L"\\Windows\\System32\\csrss.exe",
+    L"\\Windows\\System32\\wininit.exe",
+    L"\\Windows\\System32\\services.exe",
+    L"\\Windows\\System32\\lsass.exe",
+    L"\\Windows\\System32\\svchost.exe",
+    L"\\Windows\\System32\\winlogon.exe",
+    NULL
+};
+
+// ============================================================================
+// PRIVATE STRUCTURES
+// ============================================================================
+
+/**
+ * @brief Extended internal graph structure with shutdown synchronization.
+ */
+typedef struct _PR_GRAPH_INTERNAL {
+    //
+    // Base public structure - MUST be first member
+    //
+    PR_GRAPH Public;
+
+    //
+    // Signature for validation
+    //
+    ULONG Signature;
+
+    //
+    // Lookaside lists for efficient allocation
+    //
+    NPAGED_LOOKASIDE_LIST NodeLookaside;
+    NPAGED_LOOKASIDE_LIST RelationshipLookaside;
+    BOOLEAN LookasideInitialized;
+
+    //
+    // Shutdown synchronization
+    // ActiveOperations starts at 1, decremented during shutdown
+    // When it reaches 0, ShutdownEvent is signaled
+    //
+    volatile LONG ShuttingDown;
+    volatile LONG ActiveOperations;
+    KEVENT ShutdownEvent;
+
+    //
+    // Deferred node free list (nodes with RefCount > 0 at removal time)
+    //
+    LIST_ENTRY DeferredFreeList;
+    KSPIN_LOCK DeferredFreeLock;
+
+} PR_GRAPH_INTERNAL, *PPR_GRAPH_INTERNAL;
+
+/**
+ * @brief Cluster analysis context for suspicious activity detection.
+ */
+typedef struct _PR_CLUSTER_CONTEXT {
+    HANDLE ProcessIds[PR_CLUSTER_MAX_PROCESSES];
+    ULONG ProcessCount;
+    ULONG TotalScore;
+    ULONG RelationshipCount;
+    LARGE_INTEGER FirstEventTime;
+    LARGE_INTEGER LastEventTime;
+    ULONG CurrentDepth;
+} PR_CLUSTER_CONTEXT, *PPR_CLUSTER_CONTEXT;
+
+// ============================================================================
+// FORWARD DECLARATIONS
+// ============================================================================
+
+static PPR_PROCESS_NODE
+PrpAllocateNode(
+    _In_ PPR_GRAPH_INTERNAL Graph
+    );
+
+static VOID
+PrpFreeNode(
+    _In_ PPR_GRAPH_INTERNAL Graph,
+    _In_ PPR_PROCESS_NODE Node
+    );
+
+static VOID
+PrpReleaseNodeReference(
+    _In_ PPR_GRAPH_INTERNAL Graph,
+    _In_ PPR_PROCESS_NODE Node
+    );
+
+static PPR_RELATIONSHIP
+PrpAllocateRelationship(
+    _In_ PPR_GRAPH_INTERNAL Graph
+    );
+
+static VOID
+PrpFreeRelationship(
+    _In_ PPR_GRAPH_INTERNAL Graph,
+    _In_ PPR_RELATIONSHIP Relationship
+    );
+
+static ULONG
+PrpHashProcessId(
+    _In_ HANDLE ProcessId,
+    _In_ ULONG BucketCount
+    );
+
+static PPR_PROCESS_NODE
+PrpFindNodeLocked(
+    _In_ PPR_GRAPH_INTERNAL Graph,
+    _In_ HANDLE ProcessId
+    );
+
+static VOID
+PrpInsertNodeLocked(
+    _In_ PPR_GRAPH_INTERNAL Graph,
+    _In_ PPR_PROCESS_NODE Node
+    );
+
+static VOID
+PrpRemoveNodeLocked(
+    _In_ PPR_GRAPH_INTERNAL Graph,
+    _In_ PPR_PROCESS_NODE Node
+    );
+
+static ULONG
+PrpCalculateRelationshipScore(
+    _In_ PPR_GRAPH_INTERNAL Graph,
+    _In_ PR_RELATIONSHIP_TYPE Type,
+    _In_ PPR_PROCESS_NODE SourceNode,
+    _In_ PPR_PROCESS_NODE TargetNode
+    );
+
+static VOID
+PrpUpdateNodeMetricsLocked(
+    _In_ PPR_GRAPH_INTERNAL Graph,
+    _In_ PPR_PROCESS_NODE Node,
+    _In_ ULONG CurrentDepth
+    );
+
+static BOOLEAN
+PrpIsProcessOrphanCached(
+    _In_ PPR_GRAPH_INTERNAL Graph,
+    _In_ HANDLE ProcessId
+    );
+
+static VOID
+PrpCacheProcessInfo(
+    _In_ PPR_PROCESS_NODE Node,
+    _In_ HANDLE ProcessId
+    );
+
+static BOOLEAN
+PrpIsSystemProcessByName(
+    _In_ PUNICODE_STRING ImageName
+    );
+
+static VOID
+PrpAcquireGraphReference(
+    _In_ PPR_GRAPH_INTERNAL Graph
+    );
+
+static VOID
+PrpReleaseGraphReference(
+    _In_ PPR_GRAPH_INTERNAL Graph
+    );
+
+static BOOLEAN
+PrpTryAcquireGraphReference(
+    _In_ PPR_GRAPH_INTERNAL Graph
+    );
+
+static VOID
+PrpAnalyzeClusterRecursive(
+    _In_ PPR_GRAPH_INTERNAL Graph,
+    _In_ PPR_PROCESS_NODE Node,
+    _Inout_ PPR_CLUSTER_CONTEXT Context
+    );
+
+static BOOLEAN
+PrpIsNodeInCluster(
+    _In_ PPR_CLUSTER_CONTEXT Context,
+    _In_ HANDLE ProcessId
+    );
+
+static VOID
+PrpCopyNodeToInfo(
+    _In_ PPR_PROCESS_NODE Node,
+    _Out_ PPR_NODE_INFO Info
+    );
+
+static BOOLEAN
+PrpValidateGraph(
+    _In_ PPR_GRAPH Graph
+    );
+
+static BOOLEAN
+PrpValidateNode(
+    _In_ PPR_PROCESS_NODE Node
+    );
+
+// ============================================================================
+// VALIDATION HELPERS
+// ============================================================================
+
+/**
+ * @brief Validate graph structure integrity.
+ */
+static BOOLEAN
+PrpValidateGraph(
+    _In_ PPR_GRAPH Graph
+    )
+{
+    PPR_GRAPH_INTERNAL internal;
+
+    if (Graph == NULL) {
+        return FALSE;
+    }
+
+    if (!Graph->Initialized) {
+        return FALSE;
+    }
+
+    internal = CONTAINING_RECORD(Graph, PR_GRAPH_INTERNAL, Public);
+
+    if (internal->Signature != PR_GRAPH_SIGNATURE) {
+        return FALSE;
+    }
+
+    if (Graph->NodeHash.Buckets == NULL) {
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+/**
+ * @brief Validate node structure integrity.
+ */
+static BOOLEAN
+PrpValidateNode(
+    _In_ PPR_PROCESS_NODE Node
+    )
+{
+    if (Node == NULL) {
+        return FALSE;
+    }
+
+    if (Node->Signature != PR_NODE_SIGNATURE) {
+        return FALSE;
+    }
+
+    if (Node->RefCount < 0) {
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+// ============================================================================
+// REFERENCE COUNTING - GRAPH LEVEL
+// ============================================================================
+
+/**
+ * @brief Acquire reference to graph for an operation.
+ *
+ * Must be called BEFORE checking shutdown state.
+ */
+static VOID
+PrpAcquireGraphReference(
+    _In_ PPR_GRAPH_INTERNAL Graph
+    )
+{
+    InterlockedIncrement(&Graph->ActiveOperations);
+}
+
+/**
+ * @brief Release reference to graph.
+ *
+ * Signals shutdown event when last reference is released.
+ */
+static VOID
+PrpReleaseGraphReference(
+    _In_ PPR_GRAPH_INTERNAL Graph
+    )
+{
+    LONG result = InterlockedDecrement(&Graph->ActiveOperations);
+
+    if (result == 0) {
+        KeSetEvent(&Graph->ShutdownEvent, IO_NO_INCREMENT, FALSE);
+    }
+}
+
+/**
+ * @brief Try to acquire reference, fails if shutting down.
+ *
+ * This is the CORRECT pattern: acquire first, then check shutdown.
+ * If shutting down, release the reference we just took.
+ *
+ * @return TRUE if reference acquired and not shutting down.
+ */
+static BOOLEAN
+PrpTryAcquireGraphReference(
+    _In_ PPR_GRAPH_INTERNAL Graph
+    )
+{
+    //
+    // Acquire reference FIRST
+    //
+    PrpAcquireGraphReference(Graph);
+
+    //
+    // THEN check shutdown state
+    //
+    if (Graph->ShuttingDown) {
+        PrpReleaseGraphReference(Graph);
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+// ============================================================================
+// REFERENCE COUNTING - NODE LEVEL
+// ============================================================================
+
+/**
+ * @brief Acquire reference to a node.
+ *
+ * Called while holding graph lock. Prevents node from being freed.
+ *
+ * @return TRUE if reference acquired (node not removed).
+ */
+static BOOLEAN
+PrpAcquireNodeReference(
+    _In_ PPR_PROCESS_NODE Node
+    )
+{
+    //
+    // Check if node has been marked for removal
+    //
+    if (Node->Removed) {
+        return FALSE;
+    }
+
+    InterlockedIncrement(&Node->RefCount);
+    return TRUE;
+}
+
+/**
+ * @brief Release reference to a node.
+ *
+ * If this is the last reference AND node is removed, frees the node.
+ */
+static VOID
+PrpReleaseNodeReference(
+    _In_ PPR_GRAPH_INTERNAL Graph,
+    _In_ PPR_PROCESS_NODE Node
+    )
+{
+    LONG refCount;
+
+    refCount = InterlockedDecrement(&Node->RefCount);
+
+    if (refCount == 0 && Node->Removed) {
+        //
+        // Last reference on a removed node - safe to free
+        //
+        if (Node->ImageName.Buffer != NULL) {
+            ShadowStrikeFreePoolWithTag(Node->ImageName.Buffer, PR_POOL_TAG);
+            Node->ImageName.Buffer = NULL;
+        }
+
+        Node->Signature = 0;
+        PrpFreeNode(Graph, Node);
+    }
+}
+
+// ============================================================================
+// INITIALIZATION AND SHUTDOWN
+// ============================================================================
+
+_Use_decl_annotations_
+NTSTATUS
+PrInitialize(
+    _Out_ PPR_GRAPH* Graph
+    )
+{
+    NTSTATUS status = STATUS_SUCCESS;
+    PPR_GRAPH_INTERNAL internal = NULL;
+    ULONG i;
+
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+
+    if (Graph == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    *Graph = NULL;
+
+    //
+    // Allocate graph structure from NonPagedPoolNx
+    //
+    internal = (PPR_GRAPH_INTERNAL)ShadowStrikeAllocatePoolWithTag(
+        NonPagedPoolNx,
+        sizeof(PR_GRAPH_INTERNAL),
+        PR_POOL_TAG
+    );
+
+    if (internal == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    RtlZeroMemory(internal, sizeof(PR_GRAPH_INTERNAL));
+    internal->Signature = PR_GRAPH_SIGNATURE;
+
+    //
+    // Initialize synchronization primitives
+    //
+    ExInitializePushLock(&internal->Public.NodeLock);
+    ExInitializePushLock(&internal->Public.RelationshipLock);
+    InitializeListHead(&internal->Public.NodeList);
+    InitializeListHead(&internal->Public.RelationshipList);
+
+    //
+    // Initialize deferred free list
+    //
+    InitializeListHead(&internal->DeferredFreeList);
+    KeInitializeSpinLock(&internal->DeferredFreeLock);
+
+    //
+    // Initialize shutdown synchronization
+    // Start with reference count of 1 (the "alive" reference)
+    //
+    KeInitializeEvent(&internal->ShutdownEvent, NotificationEvent, FALSE);
+    internal->ActiveOperations = 1;
+    internal->ShuttingDown = FALSE;
+
+    //
+    // Allocate hash table buckets
+    //
+    internal->Public.NodeHash.BucketCount = PR_HASH_BUCKET_COUNT;
+    internal->Public.NodeHash.Buckets = (PLIST_ENTRY)ShadowStrikeAllocatePoolWithTag(
+        NonPagedPoolNx,
+        PR_HASH_BUCKET_COUNT * sizeof(LIST_ENTRY),
+        PR_POOL_TAG
+    );
+
+    if (internal->Public.NodeHash.Buckets == NULL) {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Cleanup;
+    }
+
+    //
+    // Initialize all hash buckets
+    //
+    for (i = 0; i < PR_HASH_BUCKET_COUNT; i++) {
+        InitializeListHead(&internal->Public.NodeHash.Buckets[i]);
+    }
+
+    //
+    // Initialize lookaside lists for efficient allocation
+    //
+    ExInitializeNPagedLookasideList(
+        &internal->NodeLookaside,
+        NULL,
+        NULL,
+        0,
+        sizeof(PR_PROCESS_NODE),
+        PR_POOL_TAG,
+        0
+    );
+
+    ExInitializeNPagedLookasideList(
+        &internal->RelationshipLookaside,
+        NULL,
+        NULL,
+        0,
+        sizeof(PR_RELATIONSHIP),
+        PR_POOL_TAG,
+        0
+    );
+
+    internal->LookasideInitialized = TRUE;
+
+    //
+    // Record start time for statistics
+    //
+    KeQuerySystemTime(&internal->Public.Stats.StartTime);
+
+    //
+    // Mark as initialized - this must be last
+    //
+    MemoryBarrier();
+    internal->Public.Initialized = TRUE;
+
+    *Graph = &internal->Public;
+
+    return STATUS_SUCCESS;
+
+Cleanup:
+    if (internal != NULL) {
+        if (internal->Public.NodeHash.Buckets != NULL) {
+            ShadowStrikeFreePoolWithTag(
+                internal->Public.NodeHash.Buckets,
+                PR_POOL_TAG
+            );
+        }
+
+        ShadowStrikeFreePoolWithTag(internal, PR_POOL_TAG);
+    }
+
+    return status;
+}
+
+_Use_decl_annotations_
+VOID
+PrShutdown(
+    _Inout_ PPR_GRAPH Graph
+    )
+{
+    PPR_GRAPH_INTERNAL internal;
+    PLIST_ENTRY listEntry;
+    PLIST_ENTRY nextEntry;
+    PPR_PROCESS_NODE node;
+    PPR_RELATIONSHIP relationship;
+    KLOCK_QUEUE_HANDLE lockHandle;
+
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+
+    if (!PrpValidateGraph(Graph)) {
+        return;
+    }
+
+    internal = CONTAINING_RECORD(Graph, PR_GRAPH_INTERNAL, Public);
+
+    //
+    // Signal shutdown - this prevents new operations from starting
+    //
+    InterlockedExchange(&internal->ShuttingDown, 1);
+    MemoryBarrier();
+
+    //
+    // Release the initial "alive" reference
+    // This will signal ShutdownEvent when all operations complete
+    //
+    PrpReleaseGraphReference(internal);
+
+    //
+    // Wait for all active operations to complete.
+    // MUST wait indefinitely â€” proceeding before all operations drain
+    // would cause use-after-free when we free graph structures below.
+    //
+    KeWaitForSingleObject(
+        &internal->ShutdownEvent,
+        Executive,
+        KernelMode,
+        FALSE,
+        NULL
+    );
+
+    //
+    // Free all relationships from global list using GlobalListEntry
+    //
+    KeEnterCriticalRegion();
+    ExAcquirePushLockExclusive(&Graph->RelationshipLock);
+
+    listEntry = Graph->RelationshipList.Flink;
+    while (listEntry != &Graph->RelationshipList) {
+        nextEntry = listEntry->Flink;
+
+        //
+        // Use GlobalListEntry to get the relationship
+        //
+        relationship = CONTAINING_RECORD(listEntry, PR_RELATIONSHIP, GlobalListEntry);
+
+        //
+        // Remove from global list
+        //
+        RemoveEntryList(&relationship->GlobalListEntry);
+
+        //
+        // Note: NodeListEntry will be handled when we free nodes
+        // Just free the relationship here
+        //
+        PrpFreeRelationship(internal, relationship);
+        InterlockedIncrement64(&Graph->Stats.RelationshipsRemoved);
+
+        listEntry = nextEntry;
+    }
+
+    ExReleasePushLockExclusive(&Graph->RelationshipLock);
+    KeLeaveCriticalRegion();
+
+    //
+    // Free all nodes
+    //
+    KeEnterCriticalRegion();
+    ExAcquirePushLockExclusive(&Graph->NodeLock);
+
+    listEntry = Graph->NodeList.Flink;
+    while (listEntry != &Graph->NodeList) {
+        nextEntry = listEntry->Flink;
+
+        node = CONTAINING_RECORD(listEntry, PR_PROCESS_NODE, ListEntry);
+
+        //
+        // Remove from lists
+        //
+        RemoveEntryList(&node->ListEntry);
+        RemoveEntryList(&node->HashEntry);
+
+        //
+        // Free image name
+        //
+        if (node->ImageName.Buffer != NULL) {
+            ShadowStrikeFreePoolWithTag(node->ImageName.Buffer, PR_POOL_TAG);
+            node->ImageName.Buffer = NULL;
+        }
+
+        //
+        // Clear signature and free
+        //
+        node->Signature = 0;
+        PrpFreeNode(internal, node);
+
+        listEntry = nextEntry;
+    }
+
+    ExReleasePushLockExclusive(&Graph->NodeLock);
+    KeLeaveCriticalRegion();
+
+    //
+    // Free deferred nodes
+    //
+    KeAcquireInStackQueuedSpinLock(&internal->DeferredFreeLock, &lockHandle);
+
+    while (!IsListEmpty(&internal->DeferredFreeList)) {
+        listEntry = RemoveHeadList(&internal->DeferredFreeList);
+        node = CONTAINING_RECORD(listEntry, PR_PROCESS_NODE, ListEntry);
+
+        if (node->ImageName.Buffer != NULL) {
+            ShadowStrikeFreePoolWithTag(node->ImageName.Buffer, PR_POOL_TAG);
+        }
+
+        node->Signature = 0;
+        PrpFreeNode(internal, node);
+    }
+
+    KeReleaseInStackQueuedSpinLock(&lockHandle);
+
+    //
+    // Free hash table
+    //
+    if (Graph->NodeHash.Buckets != NULL) {
+        ShadowStrikeFreePoolWithTag(Graph->NodeHash.Buckets, PR_POOL_TAG);
+        Graph->NodeHash.Buckets = NULL;
+    }
+
+    //
+    // Delete lookaside lists
+    //
+    if (internal->LookasideInitialized) {
+        ExDeleteNPagedLookasideList(&internal->NodeLookaside);
+        ExDeleteNPagedLookasideList(&internal->RelationshipLookaside);
+        internal->LookasideInitialized = FALSE;
+    }
+
+    //
+    // Clear signature and free graph
+    //
+    internal->Signature = 0;
+    Graph->Initialized = FALSE;
+
+    ShadowStrikeFreePoolWithTag(internal, PR_POOL_TAG);
+}
+
+// ============================================================================
+// PROCESS NODE MANAGEMENT
+// ============================================================================
+
+_Use_decl_annotations_
+NTSTATUS
+PrAddProcess(
+    _In_ PPR_GRAPH Graph,
+    _In_ HANDLE ProcessId,
+    _In_opt_ HANDLE ParentId,
+    _In_opt_ PUNICODE_STRING ImageName
+    )
+{
+    NTSTATUS status = STATUS_SUCCESS;
+    PPR_GRAPH_INTERNAL internal;
+    PPR_PROCESS_NODE node = NULL;
+    PPR_PROCESS_NODE existingNode;
+    PPR_PROCESS_NODE parentNode;
+    LONG currentCount;
+
+    NT_ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
+
+    //
+    // Validate parameters
+    //
+    if (!PrpValidateGraph(Graph)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (ProcessId == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    //
+    // Validate ProcessId is reasonable (not obviously bogus)
+    //
+    if ((ULONG_PTR)ProcessId > 0x7FFFFFFF) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    internal = CONTAINING_RECORD(Graph, PR_GRAPH_INTERNAL, Public);
+
+    //
+    // CRITICAL: Acquire reference BEFORE checking shutdown
+    // This prevents race between shutdown check and operation start
+    //
+    if (!PrpTryAcquireGraphReference(internal)) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    //
+    // Allocate node first (outside lock to minimize lock hold time)
+    //
+    node = PrpAllocateNode(internal);
+    if (node == NULL) {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Cleanup;
+    }
+
+    //
+    // Initialize node
+    //
+    RtlZeroMemory(node, sizeof(PR_PROCESS_NODE));
+    node->Signature = PR_NODE_SIGNATURE;
+    node->RefCount = 1;  // Initial reference
+    node->Removed = FALSE;
+    node->ProcessId = ProcessId;
+    node->ParentId = ParentId;
+    KeInitializeSpinLock(&node->RelationshipSpinLock);
+    InitializeListHead(&node->RelationshipList);
+    KeQuerySystemTime(&node->CreateTime);
+
+    //
+    // Copy image name if provided
+    //
+    if (ImageName != NULL && ImageName->Buffer != NULL && ImageName->Length > 0) {
+        //
+        // Validate length to prevent overflow
+        //
+        if (ImageName->Length > 520) {  // MAX_PATH * sizeof(WCHAR)
+            status = STATUS_NAME_TOO_LONG;
+            goto Cleanup;
+        }
+
+        node->ImageName.MaximumLength = ImageName->Length + sizeof(WCHAR);
+        node->ImageName.Buffer = (PWCH)ShadowStrikeAllocatePoolWithTag(
+            NonPagedPoolNx,
+            node->ImageName.MaximumLength,
+            PR_POOL_TAG
+        );
+
+        if (node->ImageName.Buffer != NULL) {
+            RtlCopyMemory(node->ImageName.Buffer, ImageName->Buffer, ImageName->Length);
+            node->ImageName.Length = ImageName->Length;
+            node->ImageName.Buffer[node->ImageName.Length / sizeof(WCHAR)] = L'\0';
+
+            //
+            // Check if this is a system process by name
+            //
+            node->IsSystemProcess = PrpIsSystemProcessByName(&node->ImageName);
+        }
+    }
+
+    //
+    // Cache process information (session ID, system process status)
+    // This is done outside the lock as it may call kernel APIs
+    //
+    PrpCacheProcessInfo(node, ProcessId);
+
+    //
+    // Now acquire exclusive lock and insert
+    //
+    KeEnterCriticalRegion();
+    ExAcquirePushLockExclusive(&Graph->NodeLock);
+
+    //
+    // Check capacity UNDER the lock to prevent race
+    //
+    currentCount = Graph->NodeCount;
+    if ((ULONG)currentCount >= PR_MAX_NODES) {
+        ExReleasePushLockExclusive(&Graph->NodeLock);
+        KeLeaveCriticalRegion();
+        status = STATUS_QUOTA_EXCEEDED;
+        goto Cleanup;
+    }
+
+    //
+    // Check if process already exists. If we find an existing node with a
+    // strictly different process create time, the previous owner of this
+    // PID exited without our exit notify firing (rare but possible during
+    // shutdown races) and the kernel reused the PID. Treat the stale node
+    // as removed so the new node can be inserted.
+    //
+    existingNode = PrpFindNodeLocked(internal, ProcessId);
+    if (existingNode != NULL) {
+        BOOLEAN pidReused = FALSE;
+
+        if (node->CreateTime.QuadPart != 0 &&
+            existingNode->CreateTime.QuadPart != 0 &&
+            existingNode->CreateTime.QuadPart != node->CreateTime.QuadPart) {
+            pidReused = TRUE;
+        }
+
+        if (!pidReused) {
+            ExReleasePushLockExclusive(&Graph->NodeLock);
+            KeLeaveCriticalRegion();
+            status = STATUS_OBJECT_NAME_EXISTS;
+            goto Cleanup;
+        }
+
+        //
+        // PID reuse confirmed â€” evict the stale node from lookup tables
+        // AND clean up its relationships so the new insert below succeeds
+        // and we don't leak relationships until graph shutdown. We hold
+        // NodeLock exclusive, so no concurrent PrAddRelationship can be
+        // mid-insert into this stale node's list.
+        //
+        DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
+            "[ProcessRelationship] PID reuse detected for PID %lu (old=%lld new=%lld); evicting stale node\n",
+            HandleToULong(ProcessId),
+            existingNode->CreateTime.QuadPart,
+            node->CreateTime.QuadPart);
+
+        existingNode->Removed = TRUE;
+
+        {
+            PLIST_ENTRY staleEntry;
+            PLIST_ENTRY staleNext;
+            PPR_RELATIONSHIP staleRel;
+
+            staleEntry = existingNode->RelationshipList.Flink;
+            while (staleEntry != &existingNode->RelationshipList) {
+                staleNext = staleEntry->Flink;
+                staleRel = CONTAINING_RECORD(staleEntry, PR_RELATIONSHIP, NodeListEntry);
+
+                RemoveEntryList(&staleRel->NodeListEntry);
+
+                ExAcquirePushLockExclusive(&Graph->RelationshipLock);
+                RemoveEntryList(&staleRel->GlobalListEntry);
+                InterlockedDecrement(&Graph->RelationshipCount);
+                ExReleasePushLockExclusive(&Graph->RelationshipLock);
+
+                PrpFreeRelationship(internal, staleRel);
+                InterlockedDecrement(&existingNode->RelationshipCount);
+                InterlockedIncrement64(&Graph->Stats.RelationshipsRemoved);
+
+                staleEntry = staleNext;
+            }
+        }
+
+        PrpRemoveNodeLocked(internal, existingNode);
+
+        {
+            LONG staleRefCount = InterlockedDecrement(&existingNode->RefCount);
+            if (staleRefCount == 0) {
+                if (existingNode->ImageName.Buffer != NULL) {
+                    ShadowStrikeFreePoolWithTag(existingNode->ImageName.Buffer, PR_POOL_TAG);
+                    existingNode->ImageName.Buffer = NULL;
+                }
+                existingNode->Signature = 0;
+                PrpFreeNode(internal, existingNode);
+            }
+        }
+
+        InterlockedIncrement64(&Graph->Stats.NodesRemoved);
+    }
+
+    //
+    // Add to parent's children list if parent exists
+    //
+    if (ParentId != NULL) {
+        parentNode = PrpFindNodeLocked(internal, ParentId);
+        if (parentNode != NULL) {
+            LONG childCount = parentNode->ChildCount;
+            if (childCount < PR_MAX_CHILDREN) {
+                parentNode->Children[childCount] = ProcessId;
+                InterlockedIncrement(&parentNode->ChildCount);
+                node->DepthFromRoot = parentNode->DepthFromRoot + 1;
+            }
+        } else {
+            //
+            // Parent not in graph - mark as orphan
+            //
+            node->IsOrphan = TRUE;
+        }
+    }
+
+    //
+    // Insert into graph
+    //
+    PrpInsertNodeLocked(internal, node);
+
+    //
+    // Update metrics while still holding lock
+    //
+    PrpUpdateNodeMetricsLocked(internal, node, 0);
+
+    ExReleasePushLockExclusive(&Graph->NodeLock);
+    KeLeaveCriticalRegion();
+
+    //
+    // Update statistics
+    //
+    InterlockedIncrement64(&Graph->Stats.NodesTracked);
+
+    //
+    // Success - don't free node
+    //
+    node = NULL;
+    status = STATUS_SUCCESS;
+
+Cleanup:
+    if (node != NULL) {
+        if (node->ImageName.Buffer != NULL) {
+            ShadowStrikeFreePoolWithTag(node->ImageName.Buffer, PR_POOL_TAG);
+        }
+        node->Signature = 0;
+        PrpFreeNode(internal, node);
+    }
+
+    PrpReleaseGraphReference(internal);
+
+    return status;
+}
+
+_Use_decl_annotations_
+NTSTATUS
+PrRemoveProcess(
+    _In_ PPR_GRAPH Graph,
+    _In_ HANDLE ProcessId
+    )
+{
+    PPR_GRAPH_INTERNAL internal;
+    PPR_PROCESS_NODE node;
+    PPR_PROCESS_NODE parentNode;
+    PPR_PROCESS_NODE childNode;
+    PLIST_ENTRY listEntry;
+    PLIST_ENTRY nextEntry;
+    PPR_RELATIONSHIP relationship;
+    ULONG i;
+    LONG refCount;
+
+    NT_ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
+
+    if (!PrpValidateGraph(Graph)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (ProcessId == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    internal = CONTAINING_RECORD(Graph, PR_GRAPH_INTERNAL, Public);
+
+    if (!PrpTryAcquireGraphReference(internal)) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    //
+    // Acquire exclusive lock for removal
+    //
+    KeEnterCriticalRegion();
+    ExAcquirePushLockExclusive(&Graph->NodeLock);
+
+    node = PrpFindNodeLocked(internal, ProcessId);
+
+    if (node == NULL) {
+        ExReleasePushLockExclusive(&Graph->NodeLock);
+        KeLeaveCriticalRegion();
+        PrpReleaseGraphReference(internal);
+        return STATUS_NOT_FOUND;
+    }
+
+    //
+    // Mark node as removed - this prevents new references
+    //
+    InterlockedExchange(&node->Removed, 1);
+
+    //
+    // Remove from parent's children list
+    //
+    if (node->ParentId != NULL) {
+        parentNode = PrpFindNodeLocked(internal, node->ParentId);
+        if (parentNode != NULL) {
+            for (i = 0; i < (ULONG)parentNode->ChildCount; i++) {
+                if (parentNode->Children[i] == ProcessId) {
+                    //
+                    // Shift remaining children
+                    //
+                    ULONG remaining = parentNode->ChildCount - i - 1;
+                    if (remaining > 0) {
+                        RtlMoveMemory(
+                            &parentNode->Children[i],
+                            &parentNode->Children[i + 1],
+                            remaining * sizeof(HANDLE)
+                        );
+                    }
+                    InterlockedDecrement(&parentNode->ChildCount);
+                    break;
+                }
+            }
+        }
+    }
+
+    //
+    // Mark all children as orphans
+    //
+    for (i = 0; i < (ULONG)node->ChildCount; i++) {
+        childNode = PrpFindNodeLocked(internal, node->Children[i]);
+        if (childNode != NULL) {
+            childNode->IsOrphan = TRUE;
+        }
+    }
+
+    //
+    // Remove from graph lists
+    //
+    PrpRemoveNodeLocked(internal, node);
+
+    //
+    // Free node's relationships WHILE STILL HOLDING THE LOCK
+    // This is critical to prevent use-after-free
+    //
+    listEntry = node->RelationshipList.Flink;
+    while (listEntry != &node->RelationshipList) {
+        nextEntry = listEntry->Flink;
+
+        relationship = CONTAINING_RECORD(listEntry, PR_RELATIONSHIP, NodeListEntry);
+
+        //
+        // Remove from node's list
+        //
+        RemoveEntryList(&relationship->NodeListEntry);
+
+        //
+        // Also remove from global list (need to acquire that lock)
+        //
+        ExAcquirePushLockExclusive(&Graph->RelationshipLock);
+        RemoveEntryList(&relationship->GlobalListEntry);
+        InterlockedDecrement(&Graph->RelationshipCount);
+        ExReleasePushLockExclusive(&Graph->RelationshipLock);
+
+        PrpFreeRelationship(internal, relationship);
+        InterlockedDecrement(&node->RelationshipCount);
+        InterlockedIncrement64(&Graph->Stats.RelationshipsRemoved);
+
+        listEntry = nextEntry;
+    }
+
+    //
+    // Release our reference (the one from being in the graph)
+    //
+    refCount = InterlockedDecrement(&node->RefCount);
+
+    ExReleasePushLockExclusive(&Graph->NodeLock);
+    KeLeaveCriticalRegion();
+
+    //
+    // If refcount is now 0, we can free immediately
+    // Otherwise, someone else holds a reference - they'll free it
+    //
+    if (refCount == 0) {
+        if (node->ImageName.Buffer != NULL) {
+            ShadowStrikeFreePoolWithTag(node->ImageName.Buffer, PR_POOL_TAG);
+        }
+        node->Signature = 0;
+        PrpFreeNode(internal, node);
+    }
+
+    InterlockedIncrement64(&Graph->Stats.NodesRemoved);
+    PrpReleaseGraphReference(internal);
+
+    return STATUS_SUCCESS;
+}
+
+// ============================================================================
+// RELATIONSHIP MANAGEMENT
+// ============================================================================
+
+_Use_decl_annotations_
+NTSTATUS
+PrAddRelationship(
+    _In_ PPR_GRAPH Graph,
+    _In_ PR_RELATIONSHIP_TYPE Type,
+    _In_ HANDLE SourceId,
+    _In_ HANDLE TargetId
+    )
+{
+    NTSTATUS status = STATUS_SUCCESS;
+    PPR_GRAPH_INTERNAL internal;
+    PPR_RELATIONSHIP relationship = NULL;
+    PPR_PROCESS_NODE sourceNode = NULL;
+    PPR_PROCESS_NODE targetNode = NULL;
+    LONG currentCount;
+    KLOCK_QUEUE_HANDLE lockHandle;
+    BOOLEAN inserted = FALSE;
+    UINT32 capturedScore = 0;
+    PR_RELATIONSHIP_TYPE capturedType = Type;
+    PR_RELATIONSHIP_INFO eventCopy;
+
+    NT_ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
+
+    //
+    // Validate parameters
+    //
+    if (!PrpValidateGraph(Graph)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (SourceId == NULL || TargetId == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (Type >= PrRelation_MaxType) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    internal = CONTAINING_RECORD(Graph, PR_GRAPH_INTERNAL, Public);
+
+    if (!PrpTryAcquireGraphReference(internal)) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    //
+    // Check global relationship limit
+    //
+    currentCount = Graph->RelationshipCount;
+    if ((ULONG)currentCount >= PR_MAX_RELATIONSHIPS) {
+        status = STATUS_QUOTA_EXCEEDED;
+        goto Cleanup;
+    }
+
+    //
+    // Allocate relationship
+    //
+    relationship = PrpAllocateRelationship(internal);
+    if (relationship == NULL) {
+        status = STATUS_INSUFFICIENT_RESOURCES;
+        goto Cleanup;
+    }
+
+    RtlZeroMemory(relationship, sizeof(PR_RELATIONSHIP));
+    relationship->Type = Type;
+    relationship->SourceProcessId = SourceId;
+    relationship->TargetProcessId = TargetId;
+    KeQuerySystemTime(&relationship->Timestamp);
+    InitializeListHead(&relationship->NodeListEntry);
+    InitializeListHead(&relationship->GlobalListEntry);
+
+    //
+    // Find source and target nodes while holding shared lock.
+    // CRITICAL: We keep the shared lock held while inserting into the
+    // node's relationship list. This prevents PrRemoveProcess from
+    // freeing the node between our lookup and insertion.
+    //
+    KeEnterCriticalRegion();
+    ExAcquirePushLockShared(&Graph->NodeLock);
+
+    sourceNode = PrpFindNodeLocked(internal, SourceId);
+    targetNode = PrpFindNodeLocked(internal, TargetId);
+
+    //
+    // Calculate score using cached node info (IRQL-safe)
+    //
+    relationship->SuspicionScore = PrpCalculateRelationshipScore(
+        internal,
+        Type,
+        sourceNode,
+        targetNode
+    );
+
+    //
+    // Add to source node's relationship list while still holding NodeLock.
+    // The spin lock protects the list from concurrent modifications by
+    // other PrAddRelationship calls (which also hold NodeLock shared).
+    //
+    if (sourceNode != NULL && !sourceNode->Removed) {
+        LONG nodeRelCount = sourceNode->RelationshipCount;
+        if (nodeRelCount < PR_MAX_CONNECTIONS) {
+            KeAcquireInStackQueuedSpinLock(&sourceNode->RelationshipSpinLock, &lockHandle);
+
+            if (!sourceNode->Removed && sourceNode->RelationshipCount < PR_MAX_CONNECTIONS) {
+                InsertTailList(&sourceNode->RelationshipList, &relationship->NodeListEntry);
+                InterlockedIncrement(&sourceNode->RelationshipCount);
+                inserted = TRUE;
+            }
+
+            KeReleaseInStackQueuedSpinLock(&lockHandle);
+        }
+    }
+
+    //
+    // CRITICAL ORDERING: Insert into the global relationship list BEFORE
+    // releasing NodeLock. If we release NodeLock here, PrRemoveProcess
+    // could acquire NodeLock exclusive, walk the source node's list, and
+    // free this relationship before the global-list insert completes â€”
+    // resulting in a use-after-free write to GlobalListEntry and a corrupt
+    // global list. By performing the insert under NodeLock (shared), we
+    // serialize against PrRemoveProcess (which needs NodeLock exclusive).
+    //
+    // Lock order (NodeLock â†’ RelationshipLock) matches PrRemoveProcess.
+    //
+    if (inserted) {
+        ExAcquirePushLockExclusive(&Graph->RelationshipLock);
+        InsertTailList(&Graph->RelationshipList, &relationship->GlobalListEntry);
+        InterlockedIncrement(&Graph->RelationshipCount);
+        ExReleasePushLockExclusive(&Graph->RelationshipLock);
+
+        //
+        // Snapshot fields we will read after releasing locks. We MUST NOT
+        // dereference 'relationship' once NodeLock is released â€” a concurrent
+        // PrRemoveProcess of the source can free it the moment we drop the
+        // shared lock.
+        //
+        capturedScore = relationship->SuspicionScore;
+        capturedType = relationship->Type;
+        eventCopy.Type = relationship->Type;
+        eventCopy.SourceProcessId = relationship->SourceProcessId;
+        eventCopy.TargetProcessId = relationship->TargetProcessId;
+        eventCopy.Timestamp = relationship->Timestamp;
+        eventCopy.SuspicionScore = relationship->SuspicionScore;
+    }
+
+    ExReleasePushLockShared(&Graph->NodeLock);
+    KeLeaveCriticalRegion();
+
+    //
+    // If the source node was missing/removed/full, fail cleanly.
+    //
+    if (!inserted) {
+        status = (sourceNode == NULL) ? STATUS_NOT_FOUND : STATUS_QUOTA_EXCEEDED;
+        goto Cleanup;
+    }
+
+    //
+    // From this point on, 'relationship' MUST NOT be dereferenced â€” use the
+    // snapshot in 'eventCopy' / 'capturedScore' / 'capturedType' instead.
+    //
+    relationship = NULL;
+
+    //
+    // Update statistics
+    //
+    InterlockedIncrement64(&Graph->Stats.RelationshipsTracked);
+    if (capturedType < PrRelation_MaxType) {
+        InterlockedIncrement64(&Graph->Stats.RelationshipsByType[capturedType]);
+    }
+
+    //
+    // Submit high-scoring relationships to BehaviorEngine for attack-chain
+    // correlation. The relationship graph's unique value is ENRICHED scoring:
+    // cross-session, system-target, orphaned-injector modifiers are layered
+    // on top of the raw type score. Only submit when the enriched score
+    // meets the threshold â€” low-noise signal for kill-chain detection.
+    //
+    // We pass a stack-local copy (eventCopy) â€” never the live pointer â€”
+    // since BehaviorEngine RtlCopyMemory's the buffer synchronously.
+    //
+    if (capturedScore >= PR_BE_SUBMISSION_THRESHOLD) {
+        BEHAVIOR_EVENT_TYPE beType;
+
+        switch (capturedType) {
+        case PrRelation_RemoteThread:
+            beType = BehaviorEvent_RemoteThreadCreate;
+            break;
+        case PrRelation_Injected:
+            beType = BehaviorEvent_ProcessHollowing;
+            break;
+        case PrRelation_HandleDuplication:
+            beType = BehaviorEvent_CrossProcessRead;
+            break;
+        case PrRelation_DebugRelation:
+            beType = BehaviorEvent_DebuggerEvasion;
+            break;
+        default:
+            beType = BehaviorEvent_SuspiciousParentChild;
+            break;
+        }
+
+        BeEngineSubmitEvent(
+            beType,
+            BehaviorCategory_CodeInjection,
+            HandleToULong(SourceId),
+            &eventCopy,
+            sizeof(eventCopy),
+            capturedScore,
+            FALSE,
+            NULL
+            );
+    }
+
+    status = STATUS_SUCCESS;
+
+Cleanup:
+    if (relationship != NULL) {
+        PrpFreeRelationship(internal, relationship);
+    }
+
+    PrpReleaseGraphReference(internal);
+
+    return status;
+}
+
+// ============================================================================
+// QUERY OPERATIONS - RETURN COPIES, NOT POINTERS
+// ============================================================================
+
+_Use_decl_annotations_
+NTSTATUS
+PrGetNodeInfo(
+    _In_ PPR_GRAPH Graph,
+    _In_ HANDLE ProcessId,
+    _Out_ PPR_NODE_INFO NodeInfo
+    )
+{
+    PPR_GRAPH_INTERNAL internal;
+    PPR_PROCESS_NODE node;
+
+    NT_ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
+
+    if (!PrpValidateGraph(Graph)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (ProcessId == NULL || NodeInfo == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    RtlZeroMemory(NodeInfo, sizeof(PR_NODE_INFO));
+
+    internal = CONTAINING_RECORD(Graph, PR_GRAPH_INTERNAL, Public);
+
+    if (!PrpTryAcquireGraphReference(internal)) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    KeEnterCriticalRegion();
+    ExAcquirePushLockShared(&Graph->NodeLock);
+
+    node = PrpFindNodeLocked(internal, ProcessId);
+
+    if (node == NULL || node->Removed) {
+        ExReleasePushLockShared(&Graph->NodeLock);
+        KeLeaveCriticalRegion();
+        InterlockedIncrement64(&Graph->Stats.LookupCount);
+        PrpReleaseGraphReference(internal);
+        return STATUS_NOT_FOUND;
+    }
+
+    //
+    // Copy node data to caller's buffer - SAFE after lock release
+    //
+    PrpCopyNodeToInfo(node, NodeInfo);
+
+    //
+    // Update statistics
+    //
+    InterlockedIncrement64(&Graph->Stats.LookupCount);
+    InterlockedIncrement64(&Graph->Stats.LookupHits);
+
+    ExReleasePushLockShared(&Graph->NodeLock);
+    KeLeaveCriticalRegion();
+
+    PrpReleaseGraphReference(internal);
+
+    return STATUS_SUCCESS;
+}
+
+_Use_decl_annotations_
+NTSTATUS
+PrGetNode(
+    _In_ PPR_GRAPH Graph,
+    _In_ HANDLE ProcessId,
+    _Out_ PPR_PROCESS_NODE* Node
+    )
+{
+    PPR_GRAPH_INTERNAL internal;
+    PPR_PROCESS_NODE node;
+
+    NT_ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
+
+    //
+    // DEPRECATED: This API returns a raw pointer which is unsafe.
+    // Use PrGetNodeInfo instead for new code.
+    //
+
+    if (!PrpValidateGraph(Graph)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (ProcessId == NULL || Node == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    *Node = NULL;
+
+    internal = CONTAINING_RECORD(Graph, PR_GRAPH_INTERNAL, Public);
+
+    if (!PrpTryAcquireGraphReference(internal)) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    KeEnterCriticalRegion();
+    ExAcquirePushLockShared(&Graph->NodeLock);
+
+    node = PrpFindNodeLocked(internal, ProcessId);
+
+    if (node == NULL || node->Removed) {
+        ExReleasePushLockShared(&Graph->NodeLock);
+        KeLeaveCriticalRegion();
+        PrpReleaseGraphReference(internal);
+        return STATUS_NOT_FOUND;
+    }
+
+    //
+    // Acquire a reference so the node stays valid after lock release
+    //
+    if (!PrpAcquireNodeReference(node)) {
+        ExReleasePushLockShared(&Graph->NodeLock);
+        KeLeaveCriticalRegion();
+        PrpReleaseGraphReference(internal);
+        return STATUS_NOT_FOUND;
+    }
+
+    ExReleasePushLockShared(&Graph->NodeLock);
+    KeLeaveCriticalRegion();
+
+    *Node = node;
+
+    //
+    // IMPORTANT: Caller MUST call PrReleaseNode(Graph, Node) when done
+    // to release BOTH the node reference AND the graph reference held here.
+    // We intentionally keep the graph reference alive to prevent PrShutdown
+    // from freeing the node while the caller still holds a pointer.
+    //
+
+    return STATUS_SUCCESS;
+}
+
+/**
+ * @brief Release a node reference acquired via PrGetNode.
+ *
+ * This is the public counterpart to the internal PrpReleaseNodeReference.
+ * Every successful PrGetNode call must be paired with PrReleaseNode.
+ */
+_Use_decl_annotations_
+VOID
+PrReleaseNode(
+    _In_ PPR_GRAPH Graph,
+    _In_ PPR_PROCESS_NODE Node
+    )
+{
+    PPR_GRAPH_INTERNAL internal;
+
+    if (Graph == NULL || Node == NULL) {
+        return;
+    }
+
+    if (!Graph->Initialized) {
+        return;
+    }
+
+    internal = CONTAINING_RECORD(Graph, PR_GRAPH_INTERNAL, Public);
+
+    if (internal->Signature != PR_GRAPH_SIGNATURE) {
+        return;
+    }
+
+    if (Node->Signature != PR_NODE_SIGNATURE) {
+        return;
+    }
+
+    PrpReleaseNodeReference(internal, Node);
+
+    //
+    // Release the graph reference held since PrGetNode.
+    // This keeps the graph alive while the caller holds the node pointer.
+    //
+    PrpReleaseGraphReference(internal);
+}
+
+_Use_decl_annotations_
+NTSTATUS
+PrGetChildren(
+    _In_ PPR_GRAPH Graph,
+    _In_ HANDLE ProcessId,
+    _Out_writes_to_(MaxCount, *Count) HANDLE* Children,
+    _In_ ULONG MaxCount,
+    _Out_ PULONG Count
+    )
+{
+    PPR_GRAPH_INTERNAL internal;
+    PPR_PROCESS_NODE node;
+    ULONG copyCount;
+
+    NT_ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
+
+    if (!PrpValidateGraph(Graph)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (ProcessId == NULL || Children == NULL || Count == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (MaxCount == 0) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    *Count = 0;
+
+    internal = CONTAINING_RECORD(Graph, PR_GRAPH_INTERNAL, Public);
+
+    if (!PrpTryAcquireGraphReference(internal)) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    KeEnterCriticalRegion();
+    ExAcquirePushLockShared(&Graph->NodeLock);
+
+    node = PrpFindNodeLocked(internal, ProcessId);
+
+    if (node == NULL || node->Removed) {
+        ExReleasePushLockShared(&Graph->NodeLock);
+        KeLeaveCriticalRegion();
+        PrpReleaseGraphReference(internal);
+        return STATUS_NOT_FOUND;
+    }
+
+    //
+    // Copy children to caller's buffer - SAFE, just HANDLEs
+    //
+    copyCount = min((ULONG)node->ChildCount, MaxCount);
+
+    if (copyCount > 0) {
+        RtlCopyMemory(Children, node->Children, copyCount * sizeof(HANDLE));
+    }
+
+    *Count = copyCount;
+
+    ExReleasePushLockShared(&Graph->NodeLock);
+    KeLeaveCriticalRegion();
+
+    PrpReleaseGraphReference(internal);
+
+    return STATUS_SUCCESS;
+}
+
+_Use_decl_annotations_
+NTSTATUS
+PrGetRelationships(
+    _In_ PPR_GRAPH Graph,
+    _In_ HANDLE ProcessId,
+    _Out_writes_to_(MaxCount, *Count) PR_RELATIONSHIP_INFO* Relations,
+    _In_ ULONG MaxCount,
+    _Out_ PULONG Count
+    )
+{
+    PPR_GRAPH_INTERNAL internal;
+    PPR_PROCESS_NODE node;
+    PLIST_ENTRY listEntry;
+    PPR_RELATIONSHIP relationship;
+    ULONG count = 0;
+    KLOCK_QUEUE_HANDLE lockHandle;
+
+    NT_ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
+
+    if (!PrpValidateGraph(Graph)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (ProcessId == NULL || Relations == NULL || Count == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (MaxCount == 0) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    *Count = 0;
+    RtlZeroMemory(Relations, MaxCount * sizeof(PR_RELATIONSHIP_INFO));
+
+    internal = CONTAINING_RECORD(Graph, PR_GRAPH_INTERNAL, Public);
+
+    if (!PrpTryAcquireGraphReference(internal)) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    KeEnterCriticalRegion();
+    ExAcquirePushLockShared(&Graph->NodeLock);
+
+    node = PrpFindNodeLocked(internal, ProcessId);
+
+    if (node == NULL || node->Removed) {
+        ExReleasePushLockShared(&Graph->NodeLock);
+        KeLeaveCriticalRegion();
+        PrpReleaseGraphReference(internal);
+        return STATUS_NOT_FOUND;
+    }
+
+    //
+    // Copy relationship data to caller's buffer.
+    // MUST hold RelationshipSpinLock to prevent concurrent PrAddRelationship
+    // from modifying the list while we iterate.
+    //
+    KeAcquireInStackQueuedSpinLock(&node->RelationshipSpinLock, &lockHandle);
+
+    for (listEntry = node->RelationshipList.Flink;
+         listEntry != &node->RelationshipList && count < MaxCount;
+         listEntry = listEntry->Flink) {
+
+        relationship = CONTAINING_RECORD(listEntry, PR_RELATIONSHIP, NodeListEntry);
+
+        Relations[count].Type = relationship->Type;
+        Relations[count].SourceProcessId = relationship->SourceProcessId;
+        Relations[count].TargetProcessId = relationship->TargetProcessId;
+        Relations[count].Timestamp = relationship->Timestamp;
+        Relations[count].SuspicionScore = relationship->SuspicionScore;
+        count++;
+    }
+
+    KeReleaseInStackQueuedSpinLock(&lockHandle);
+
+    *Count = count;
+
+    ExReleasePushLockShared(&Graph->NodeLock);
+    KeLeaveCriticalRegion();
+
+    PrpReleaseGraphReference(internal);
+
+    return STATUS_SUCCESS;
+}
+
+// ============================================================================
+// SUSPICIOUS CLUSTER DETECTION
+// ============================================================================
+
+_Use_decl_annotations_
+NTSTATUS
+PrFindSuspiciousClusters(
+    _In_ PPR_GRAPH Graph,
+    _Out_writes_to_(MaxCount, *Count) HANDLE* Processes,
+    _In_ ULONG MaxCount,
+    _Out_ PULONG Count
+    )
+{
+    PPR_GRAPH_INTERNAL internal;
+    PLIST_ENTRY listEntry;
+    PPR_PROCESS_NODE node;
+    PR_CLUSTER_CONTEXT context;
+    ULONG outputCount = 0;
+    ULONG i, j;
+    BOOLEAN duplicate;
+
+    NT_ASSERT(KeGetCurrentIrql() <= APC_LEVEL);
+
+    if (!PrpValidateGraph(Graph)) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (Processes == NULL || Count == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (MaxCount == 0) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    *Count = 0;
+
+    internal = CONTAINING_RECORD(Graph, PR_GRAPH_INTERNAL, Public);
+
+    if (!PrpTryAcquireGraphReference(internal)) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    KeEnterCriticalRegion();
+    ExAcquirePushLockShared(&Graph->NodeLock);
+
+    //
+    // Iterate through all nodes looking for suspicious clusters
+    //
+    for (listEntry = Graph->NodeList.Flink;
+         listEntry != &Graph->NodeList && outputCount < MaxCount;
+         listEntry = listEntry->Flink) {
+
+        node = CONTAINING_RECORD(listEntry, PR_PROCESS_NODE, ListEntry);
+
+        //
+        // Skip removed nodes
+        //
+        if (node->Removed) {
+            continue;
+        }
+
+        //
+        // Skip nodes with insufficient relationships
+        //
+        if (node->RelationshipCount < PR_CLUSTER_MIN_RELATIONSHIPS) {
+            continue;
+        }
+
+        //
+        // Analyze cluster starting from this node
+        //
+        RtlZeroMemory(&context, sizeof(context));
+        context.CurrentDepth = 0;
+        PrpAnalyzeClusterRecursive(internal, node, &context);
+
+        //
+        // Check if cluster meets suspicion threshold
+        //
+        if (context.TotalScore >= PR_CLUSTER_MIN_SCORE &&
+            context.RelationshipCount >= PR_CLUSTER_MIN_RELATIONSHIPS) {
+
+            //
+            // Add all cluster processes to output, avoiding duplicates
+            //
+            for (i = 0; i < context.ProcessCount && outputCount < MaxCount; i++) {
+                duplicate = FALSE;
+                for (j = 0; j < outputCount; j++) {
+                    if (Processes[j] == context.ProcessIds[i]) {
+                        duplicate = TRUE;
+                        break;
+                    }
+                }
+
+                if (!duplicate) {
+                    Processes[outputCount++] = context.ProcessIds[i];
+                }
+            }
+        }
+    }
+
+    ExReleasePushLockShared(&Graph->NodeLock);
+    KeLeaveCriticalRegion();
+
+    *Count = outputCount;
+
+    PrpReleaseGraphReference(internal);
+
+    return STATUS_SUCCESS;
+}
+
+_Use_decl_annotations_
+NTSTATUS
+PrGetStatistics(
+    _In_ PPR_GRAPH Graph,
+    _Out_ PPR_GRAPH_STATS Stats
+    )
+{
+    ULONG i;
+
+    if (Graph == NULL || Stats == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (!Graph->Initialized) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    //
+    // Copy statistics - atomics ensure consistency
+    //
+    Stats->NodesTracked = Graph->Stats.NodesTracked;
+    Stats->NodesRemoved = Graph->Stats.NodesRemoved;
+    Stats->RelationshipsTracked = Graph->Stats.RelationshipsTracked;
+    Stats->RelationshipsRemoved = Graph->Stats.RelationshipsRemoved;
+    Stats->StartTime = Graph->Stats.StartTime;
+    Stats->LookupCount = Graph->Stats.LookupCount;
+    Stats->LookupHits = Graph->Stats.LookupHits;
+
+    for (i = 0; i < PrRelation_MaxType; i++) {
+        Stats->RelationshipsByType[i] = Graph->Stats.RelationshipsByType[i];
+    }
+
+    return STATUS_SUCCESS;
+}
+
+// ============================================================================
+// PRIVATE HELPER FUNCTIONS - ALLOCATION
+// ============================================================================
+
+static PPR_PROCESS_NODE
+PrpAllocateNode(
+    _In_ PPR_GRAPH_INTERNAL Graph
+    )
+{
+    PPR_PROCESS_NODE node;
+
+    if (!Graph->LookasideInitialized) {
+        node = (PPR_PROCESS_NODE)ShadowStrikeAllocatePoolWithTag(
+            NonPagedPoolNx,
+            sizeof(PR_PROCESS_NODE),
+            PR_POOL_TAG
+        );
+    } else {
+        node = (PPR_PROCESS_NODE)ExAllocateFromNPagedLookasideList(
+            &Graph->NodeLookaside
+        );
+    }
+
+    return node;
+}
+
+static VOID
+PrpFreeNode(
+    _In_ PPR_GRAPH_INTERNAL Graph,
+    _In_ PPR_PROCESS_NODE Node
+    )
+{
+    if (Node == NULL) {
+        return;
+    }
+
+    if (Graph->LookasideInitialized) {
+        ExFreeToNPagedLookasideList(&Graph->NodeLookaside, Node);
+    } else {
+        ShadowStrikeFreePoolWithTag(Node, PR_POOL_TAG);
+    }
+}
+
+static PPR_RELATIONSHIP
+PrpAllocateRelationship(
+    _In_ PPR_GRAPH_INTERNAL Graph
+    )
+{
+    PPR_RELATIONSHIP relationship;
+
+    if (!Graph->LookasideInitialized) {
+        relationship = (PPR_RELATIONSHIP)ShadowStrikeAllocatePoolWithTag(
+            NonPagedPoolNx,
+            sizeof(PR_RELATIONSHIP),
+            PR_POOL_TAG
+        );
+    } else {
+        relationship = (PPR_RELATIONSHIP)ExAllocateFromNPagedLookasideList(
+            &Graph->RelationshipLookaside
+        );
+    }
+
+    return relationship;
+}
+
+static VOID
+PrpFreeRelationship(
+    _In_ PPR_GRAPH_INTERNAL Graph,
+    _In_ PPR_RELATIONSHIP Relationship
+    )
+{
+    if (Relationship == NULL) {
+        return;
+    }
+
+    if (Graph->LookasideInitialized) {
+        ExFreeToNPagedLookasideList(&Graph->RelationshipLookaside, Relationship);
+    } else {
+        ShadowStrikeFreePoolWithTag(Relationship, PR_POOL_TAG);
+    }
+}
+
+// ============================================================================
+// PRIVATE HELPER FUNCTIONS - HASH TABLE
+// ============================================================================
+
+/**
+ * @brief 64-bit safe hash function for process IDs.
+ *
+ * Uses full 64-bit value on x64 systems for better distribution.
+ */
+static ULONG
+PrpHashProcessId(
+    _In_ HANDLE ProcessId,
+    _In_ ULONG BucketCount
+    )
+{
+    ULONG_PTR pid = (ULONG_PTR)ProcessId;
+    ULONG64 hash;
+
+    //
+    // MurmurHash3 finalizer - excellent distribution
+    //
+    hash = (ULONG64)pid;
+    hash ^= hash >> 33;
+    hash *= 0xFF51AFD7ED558CCDULL;
+    hash ^= hash >> 33;
+    hash *= 0xC4CEB9FE1A85EC53ULL;
+    hash ^= hash >> 33;
+
+    return (ULONG)(hash % BucketCount);
+}
+
+static PPR_PROCESS_NODE
+PrpFindNodeLocked(
+    _In_ PPR_GRAPH_INTERNAL Graph,
+    _In_ HANDLE ProcessId
+    )
+{
+    ULONG bucket;
+    PLIST_ENTRY listEntry;
+    PPR_PROCESS_NODE node;
+
+    if (Graph->Public.NodeHash.Buckets == NULL) {
+        return NULL;
+    }
+
+    bucket = PrpHashProcessId(ProcessId, Graph->Public.NodeHash.BucketCount);
+
+    for (listEntry = Graph->Public.NodeHash.Buckets[bucket].Flink;
+         listEntry != &Graph->Public.NodeHash.Buckets[bucket];
+         listEntry = listEntry->Flink) {
+
+        node = CONTAINING_RECORD(listEntry, PR_PROCESS_NODE, HashEntry);
+
+        if (node->ProcessId == ProcessId && !node->Removed) {
+            return node;
+        }
+    }
+
+    return NULL;
+}
+
+static VOID
+PrpInsertNodeLocked(
+    _In_ PPR_GRAPH_INTERNAL Graph,
+    _In_ PPR_PROCESS_NODE Node
+    )
+{
+    ULONG bucket;
+
+    //
+    // Insert into main list
+    //
+    InsertTailList(&Graph->Public.NodeList, &Node->ListEntry);
+    InterlockedIncrement(&Graph->Public.NodeCount);
+
+    //
+    // Insert into hash table
+    //
+    bucket = PrpHashProcessId(Node->ProcessId, Graph->Public.NodeHash.BucketCount);
+    InsertTailList(&Graph->Public.NodeHash.Buckets[bucket], &Node->HashEntry);
+}
+
+static VOID
+PrpRemoveNodeLocked(
+    _In_ PPR_GRAPH_INTERNAL Graph,
+    _In_ PPR_PROCESS_NODE Node
+    )
+{
+    //
+    // Remove from main list
+    //
+    RemoveEntryList(&Node->ListEntry);
+    InterlockedDecrement(&Graph->Public.NodeCount);
+
+    //
+    // Remove from hash table
+    //
+    RemoveEntryList(&Node->HashEntry);
+
+    //
+    // Re-initialize list entries to detect double-removal
+    //
+    InitializeListHead(&Node->ListEntry);
+    InitializeListHead(&Node->HashEntry);
+}
+
+// ============================================================================
+// PRIVATE HELPER FUNCTIONS - SCORING
+// ============================================================================
+
+/**
+ * @brief Calculate suspicion score for a relationship.
+ *
+ * Uses cached node info (SessionId, IsSystemProcess) to avoid
+ * calling kernel APIs that require specific IRQL.
+ */
+static ULONG
+PrpCalculateRelationshipScore(
+    _In_ PPR_GRAPH_INTERNAL Graph,
+    _In_ PR_RELATIONSHIP_TYPE Type,
+    _In_ PPR_PROCESS_NODE SourceNode,
+    _In_ PPR_PROCESS_NODE TargetNode
+    )
+{
+    ULONG score = 0;
+
+    UNREFERENCED_PARAMETER(Graph);
+
+    //
+    // Base score by relationship type
+    //
+    switch (Type) {
+        case PrRelation_ParentChild:
+            score = 0;
+            break;
+
+        case PrRelation_Injected:
+            score = PR_SCORE_INJECTION;
+            break;
+
+        case PrRelation_RemoteThread:
+            score = PR_SCORE_REMOTE_THREAD;
+            break;
+
+        case PrRelation_SharedSection:
+            score = PR_SCORE_SHARED_SECTION;
+            break;
+
+        case PrRelation_HandleDuplication:
+            score = PR_SCORE_HANDLE_DUP;
+            break;
+
+        case PrRelation_DebugRelation:
+            score = PR_SCORE_DEBUG_ATTACH;
+            break;
+
+        default:
+            score = 0;
+            break;
+    }
+
+    //
+    // Apply modifiers based on cached node info
+    //
+    if (SourceNode != NULL && TargetNode != NULL) {
+        //
+        // Cross-session activity is suspicious
+        //
+        if (SourceNode->SessionId != TargetNode->SessionId) {
+            score += PR_SCORE_CROSS_SESSION;
+        }
+
+        //
+        // Targeting system processes is highly suspicious
+        //
+        if (TargetNode->IsSystemProcess) {
+            score += PR_SCORE_SYSTEM_TARGET;
+        }
+
+        //
+        // Source is orphan process (parent terminated)
+        //
+        if (SourceNode->IsOrphan) {
+            score += PR_SCORE_ORPHANED_INJECTOR;
+        }
+
+        //
+        // Multiple relationships from same source
+        //
+        if (SourceNode->RelationshipCount > 5) {
+            score += PR_SCORE_MULTIPLE_TARGETS;
+        }
+    } else if (TargetNode != NULL) {
+        //
+        // Source not in graph but targeting tracked process
+        //
+        if (TargetNode->IsSystemProcess) {
+            score += PR_SCORE_SYSTEM_TARGET;
+        }
+    }
+
+    return score;
+}
+
+/**
+ * @brief Update node metrics recursively.
+ *
+ * Calculates subtree size and depth metrics.
+ */
+static VOID
+PrpUpdateNodeMetricsLocked(
+    _In_ PPR_GRAPH_INTERNAL Graph,
+    _In_ PPR_PROCESS_NODE Node,
+    _In_ ULONG CurrentDepth
+    )
+{
+    PPR_PROCESS_NODE childNode;
+    ULONG subtreeSize = 1;
+    ULONG i;
+
+    //
+    // Prevent infinite recursion
+    //
+    if (CurrentDepth > PR_CLUSTER_MAX_DEPTH) {
+        return;
+    }
+
+    Node->DepthFromRoot = CurrentDepth;
+
+    //
+    // Calculate subtree size by visiting children
+    //
+    for (i = 0; i < (ULONG)Node->ChildCount; i++) {
+        childNode = PrpFindNodeLocked(Graph, Node->Children[i]);
+        if (childNode != NULL && !childNode->Removed) {
+            //
+            // Recursively update child metrics
+            //
+            PrpUpdateNodeMetricsLocked(Graph, childNode, CurrentDepth + 1);
+            subtreeSize += childNode->SubtreeSize;
+        }
+    }
+
+    Node->SubtreeSize = subtreeSize;
+}
+
+/**
+ * @brief Cache process information for IRQL-safe access.
+ *
+ * Called at PASSIVE_LEVEL during node creation.
+ */
+static VOID
+PrpCacheProcessInfo(
+    _In_ PPR_PROCESS_NODE Node,
+    _In_ HANDLE ProcessId
+    )
+{
+    NTSTATUS status;
+    PEPROCESS process = NULL;
+    LONGLONG createTimeQpart;
+
+    NT_ASSERT(KeGetCurrentIrql() == PASSIVE_LEVEL);
+
+    status = PsLookupProcessByProcessId(ProcessId, &process);
+    if (!NT_SUCCESS(status)) {
+        Node->SessionId = 0;
+        //
+        // Leave Node->CreateTime as set by caller (KeQuerySystemTime fallback).
+        // Without an EPROCESS, we cannot retrieve the authoritative process
+        // creation time used for PID-reuse disambiguation.
+        //
+        return;
+    }
+
+    //
+    // Cache session ID
+    //
+    Node->SessionId = PsGetProcessSessionId(process);
+
+    //
+    // Capture the authoritative process creation time from the EPROCESS for
+    // PID-reuse disambiguation. The kernel records process creation time in
+    // 100ns-since-1601 units; identical PID with a strictly different
+    // creation time indicates PID reuse and a stale node that must be
+    // evicted from the graph.
+    //
+    createTimeQpart = PsGetProcessCreateTimeQuadPart(process);
+    if (createTimeQpart != 0) {
+        Node->CreateTime.QuadPart = createTimeQpart;
+    }
+
+    //
+    // Detect system-context processes:
+    // PID 0 (Idle) and PID 4 (System) are always system processes.
+    // Session 0 non-system PIDs running as PsIsSystemProcess are also system.
+    //
+    if ((ULONG_PTR)ProcessId == 0 || (ULONG_PTR)ProcessId == 4) {
+        Node->IsSystemProcess = TRUE;
+    } else if (Node->SessionId == 0 && PsIsSystemProcess(process)) {
+        Node->IsSystemProcess = TRUE;
+    }
+
+    ObDereferenceObject(process);
+}
+
+/**
+ * @brief Check if process is a system process by image name.
+ *
+ * Extracts the filename component from the image path and compares
+ * against the filename component of known system process paths.
+ */
+static BOOLEAN
+PrpIsSystemProcessByName(
+    _In_ PUNICODE_STRING ImageName
+    )
+{
+    const WCHAR** name;
+    UNICODE_STRING compareName;
+    UNICODE_STRING imageFileName;
+    UNICODE_STRING compareFileName;
+    USHORT i;
+
+    if (ImageName == NULL || ImageName->Buffer == NULL || ImageName->Length == 0) {
+        return FALSE;
+    }
+
+    //
+    // Extract filename from input image path (after last backslash)
+    //
+    imageFileName = *ImageName;
+    for (i = ImageName->Length / sizeof(WCHAR); i > 0; i--) {
+        if (ImageName->Buffer[i - 1] == L'\\') {
+            imageFileName.Buffer = &ImageName->Buffer[i];
+            imageFileName.Length = ImageName->Length - (i * sizeof(WCHAR));
+            imageFileName.MaximumLength = imageFileName.Length;
+            break;
+        }
+    }
+
+    for (name = g_SystemProcessNames; *name != NULL; name++) {
+        RtlInitUnicodeString(&compareName, *name);
+
+        //
+        // Extract filename from the known system process path
+        //
+        compareFileName = compareName;
+        for (i = compareName.Length / sizeof(WCHAR); i > 0; i--) {
+            if (compareName.Buffer[i - 1] == L'\\') {
+                compareFileName.Buffer = &compareName.Buffer[i];
+                compareFileName.Length = compareName.Length - (i * sizeof(WCHAR));
+                compareFileName.MaximumLength = compareFileName.Length;
+                break;
+            }
+        }
+
+        //
+        // Compare extracted filenames (case-insensitive)
+        //
+        if (RtlEqualUnicodeString(&imageFileName, &compareFileName, TRUE)) {
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+/**
+ * @brief Check if a process is orphan using cached info.
+ *
+ * IRQL-safe - uses graph data only, no kernel calls.
+ */
+static BOOLEAN
+PrpIsProcessOrphanCached(
+    _In_ PPR_GRAPH_INTERNAL Graph,
+    _In_ HANDLE ProcessId
+    )
+{
+    PPR_PROCESS_NODE node;
+
+    node = PrpFindNodeLocked(Graph, ProcessId);
+    if (node == NULL) {
+        return TRUE;  // Not in graph = orphan for our purposes
+    }
+
+    return node->IsOrphan;
+}
+
+// ============================================================================
+// PRIVATE HELPER FUNCTIONS - CLUSTER ANALYSIS
+// ============================================================================
+
+/**
+ * @brief Analyze cluster recursively with depth limiting.
+ *
+ * Builds a cluster context by following relationships.
+ */
+static VOID
+PrpAnalyzeClusterRecursive(
+    _In_ PPR_GRAPH_INTERNAL Graph,
+    _In_ PPR_PROCESS_NODE Node,
+    _Inout_ PPR_CLUSTER_CONTEXT Context
+    )
+{
+    PLIST_ENTRY listEntry;
+    PPR_RELATIONSHIP relationship;
+    PPR_PROCESS_NODE targetNode;
+    KLOCK_QUEUE_HANDLE lockHandle;
+
+    //
+    // Temporary storage: snapshot relationship targets while holding spin lock,
+    // then recurse after releasing it to avoid recursive spin lock acquisition.
+    //
+    HANDLE targetPids[PR_CLUSTER_MAX_PROCESSES];
+    ULONG targetCount = 0;
+
+    //
+    // Check depth limit to prevent stack overflow
+    //
+    if (Context->CurrentDepth >= PR_CLUSTER_MAX_DEPTH) {
+        return;
+    }
+
+    //
+    // Check if already at max processes
+    //
+    if (Context->ProcessCount >= PR_CLUSTER_MAX_PROCESSES) {
+        return;
+    }
+
+    //
+    // Add this node to cluster if not already present
+    //
+    if (!PrpIsNodeInCluster(Context, Node->ProcessId)) {
+        Context->ProcessIds[Context->ProcessCount++] = Node->ProcessId;
+    }
+
+    //
+    // Snapshot relationships under spin lock to prevent data race
+    // with concurrent PrAddRelationship calls.
+    //
+    KeAcquireInStackQueuedSpinLock(&Node->RelationshipSpinLock, &lockHandle);
+
+    for (listEntry = Node->RelationshipList.Flink;
+         listEntry != &Node->RelationshipList;
+         listEntry = listEntry->Flink) {
+
+        relationship = CONTAINING_RECORD(listEntry, PR_RELATIONSHIP, NodeListEntry);
+
+        Context->RelationshipCount++;
+        Context->TotalScore += relationship->SuspicionScore;
+
+        if (Context->FirstEventTime.QuadPart == 0 ||
+            relationship->Timestamp.QuadPart < Context->FirstEventTime.QuadPart) {
+            Context->FirstEventTime = relationship->Timestamp;
+        }
+
+        if (relationship->Timestamp.QuadPart > Context->LastEventTime.QuadPart) {
+            Context->LastEventTime = relationship->Timestamp;
+        }
+
+        //
+        // Snapshot target PID for post-lock recursion
+        //
+        if (!PrpIsNodeInCluster(Context, relationship->TargetProcessId) &&
+            targetCount < PR_CLUSTER_MAX_PROCESSES) {
+            targetPids[targetCount++] = relationship->TargetProcessId;
+        }
+    }
+
+    KeReleaseInStackQueuedSpinLock(&lockHandle);
+
+    //
+    // Recurse into targets AFTER releasing spin lock.
+    // Recursive spin lock acquisition would deadlock.
+    //
+    for (ULONG i = 0; i < targetCount && Context->ProcessCount < PR_CLUSTER_MAX_PROCESSES; i++) {
+        if (!PrpIsNodeInCluster(Context, targetPids[i])) {
+            targetNode = PrpFindNodeLocked(Graph, targetPids[i]);
+            if (targetNode != NULL && !targetNode->Removed) {
+                Context->ProcessIds[Context->ProcessCount++] = targetPids[i];
+                Context->CurrentDepth++;
+                PrpAnalyzeClusterRecursive(Graph, targetNode, Context);
+                Context->CurrentDepth--;
+            }
+        }
+    }
+}
+
+/**
+ * @brief Check if a process is already in the cluster.
+ */
+static BOOLEAN
+PrpIsNodeInCluster(
+    _In_ PPR_CLUSTER_CONTEXT Context,
+    _In_ HANDLE ProcessId
+    )
+{
+    ULONG i;
+
+    for (i = 0; i < Context->ProcessCount; i++) {
+        if (Context->ProcessIds[i] == ProcessId) {
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
+/**
+ * @brief Copy node data to info structure for safe return.
+ */
+static VOID
+PrpCopyNodeToInfo(
+    _In_ PPR_PROCESS_NODE Node,
+    _Out_ PPR_NODE_INFO Info
+    )
+{
+    Info->ProcessId = Node->ProcessId;
+    Info->ParentId = Node->ParentId;
+    Info->CreateTime = Node->CreateTime;
+    Info->ChildCount = (ULONG)Node->ChildCount;
+    Info->RelationshipCount = (ULONG)Node->RelationshipCount;
+    Info->DepthFromRoot = Node->DepthFromRoot;
+    Info->SubtreeSize = Node->SubtreeSize;
+    Info->IsOrphan = Node->IsOrphan;
+    Info->SessionId = Node->SessionId;
+    Info->IsSystemProcess = Node->IsSystemProcess;
+
+    //
+    // Copy image name
+    //
+    Info->ImageNameLength = 0;
+    RtlZeroMemory(Info->ImageName, sizeof(Info->ImageName));
+
+    if (Node->ImageName.Buffer != NULL && Node->ImageName.Length > 0) {
+        USHORT copyLen = min(Node->ImageName.Length,
+                            (USHORT)(sizeof(Info->ImageName) - sizeof(WCHAR)));
+        RtlCopyMemory(Info->ImageName, Node->ImageName.Buffer, copyLen);
+        Info->ImageNameLength = copyLen;
+    }
+}

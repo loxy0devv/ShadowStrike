@@ -1,0 +1,48 @@
+id: ss-reg-009
+detection_name: "Win32/Registry.COM.HKCUHijack"
+description: "Detects COM object registrations in HKCU that shadow legitimate HKLM COM server registrations. COM hijacking via HKCU allows unprivileged attackers to intercept COM object instantiation by privileged processes — when a process tries to create a COM object, the user-space registration takes precedence, loading the attacker's DLL instead."
+scope: registry
+severity: high
+status: stable
+source: native
+confidence: 0.83
+weight: 2.5
+version: 1
+
+attack:
+  - tactic: TA0003
+    technique: T1546.015
+    name: "Event Triggered Execution: Component Object Model Hijacking"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1546/015/"
+    title: "ATT&CK T1546.015"
+
+logic:
+  and:
+    - field_regex:
+        field: registry.key_path
+        pattern: "(?i)HKCU\\\\SOFTWARE\\\\Classes\\\\CLSID\\\\\\{[0-9a-fA-F\\-]{36}\\}\\\\(InprocServer32|LocalServer32|InprocHandler32)"
+    - field_in:
+        field: registry.operation
+        values:
+          - set_value
+          - create_key
+    - or:
+        - field_regex:
+            field: registry.new_value
+            pattern: "(?i)(temp|appdata|programdata|users\\\\[^\\\\]+\\\\downloads)\\\\.*\\.(dll|exe|ocx)"
+        - field_eq:
+            field: registry.clsid_exists_in_hklm
+            value: "true"
+
+fp_guard:
+  notes:
+    - "Per-user application installs (ClickOnce, Office add-ins, browser extensions) legitimately register COM objects in HKCU. Validate against installed software inventory."
+    - "Development environments may register test COM objects in HKCU during development cycles."
+  suppress:
+    - field: registry.process.name
+      values:
+        - setup.exe
+        - install.exe
+        - msiexec.exe

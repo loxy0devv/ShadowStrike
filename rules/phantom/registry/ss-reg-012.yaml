@@ -1,0 +1,61 @@
+id: ss-reg-012
+detection_name: "Win32/Registry.Defender.DisableProtection"
+description: "Detects registry modifications to Windows Defender keys that disable real-time protection, antispyware, or tamper protection settings. Attackers routinely disable Windows Defender as a defense evasion step before deploying ransomware, executing payloads, or establishing persistence, since these registry keys can be modified without elevated privileges in some configurations."
+scope: registry
+severity: critical
+status: stable
+source: native
+confidence: 0.92
+weight: 3.5
+version: 1
+
+attack:
+  - tactic: TA0005
+    technique: T1562.001
+    name: "Impair Defenses: Disable or Modify Tools"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1562/001/"
+    title: "ATT&CK T1562.001"
+
+logic:
+  and:
+    - field_regex:
+        field: registry.key_path
+        pattern: "(?i)HKLM\\\\SOFTWARE\\\\(Policies\\\\)?Microsoft\\\\Windows Defender"
+    - or:
+        - and:
+            - field_in:
+                field: registry.value_name
+                values:
+                  - "DisableAntiSpyware"
+                  - "DisableAntiVirus"
+                  - "DisableRealtimeMonitoring"
+                  - "DisableBehaviorMonitoring"
+                  - "DisableOnAccessProtection"
+                  - "DisableScanOnRealtimeEnable"
+                  - "DisableIOAVProtection"
+                  - "DisableIntrusionPreventionSystem"
+                  - "TamperProtection"
+                case_insensitive: true
+            - field_eq:
+                field: registry.new_value
+                value: "1"
+    - not:
+        field_in:
+          field: registry.process.name
+          values:
+            - trustedinstaller.exe
+            - msmpeng.exe
+            - securityhealthservice.exe
+          case_insensitive: true
+
+fp_guard:
+  notes:
+    - "Enterprise GPO changes via legitimate admin tooling will trigger this. Correlate with scheduled maintenance windows and authorized GPO changes."
+    - "Security testing environments may legitimately disable Defender for controlled testing."
+  suppress:
+    - field: registry.process.name
+      values:
+        - trustedinstaller.exe
+        - gpupdate.exe

@@ -1,0 +1,37 @@
+id: ss-static-017
+detection_name: "Win32/Injection.Classic"
+description: "Binary contains the classic OpenProcess→VirtualAllocEx→WriteProcessMemory→CreateRemoteThread injection chain."
+scope: static
+severity: critical
+status: stable
+source: native
+confidence: 0.88
+weight: 3.2
+version: 1
+attack:
+  - tactic: TA0005
+    technique: T1055
+    sub_technique: T1055.001
+logic:
+  and:
+    - or:
+        - api: OpenProcess
+        - api: NtOpenProcess
+    - or:
+        - api: VirtualAllocEx
+        - api: NtAllocateVirtualMemory
+    - or:
+        - api: WriteProcessMemory
+        - api: NtWriteVirtualMemory
+    - or:
+        - api: CreateRemoteThread
+        - api: CreateRemoteThreadEx
+        - api: NtCreateThreadEx
+        - api: RtlCreateUserThread
+fp_guard:
+  notes:
+    - "Debuggers and some security tools legitimately use this API combination."
+    - "Suppress for signed security tools."
+  suppress:
+    - field: file.signer.subject
+      regex: "(?i)(x64dbg|OllyDbg|WinDbg|Windbg|Cheat Engine|Process Hacker)"

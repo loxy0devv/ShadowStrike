@@ -1,0 +1,35 @@
+id: ss-static-015
+detection_name: "Win32/CobaltStrike.Beacon"
+description: "Binary contains Cobalt Strike beacon-specific strings or byte signatures."
+scope: static
+severity: critical
+status: stable
+source: native
+confidence: 0.90
+weight: 4.0
+version: 1
+attack:
+  - tactic: TA0011
+    technique: T1071
+    name: "Application Layer Protocol"
+  - tactic: TA0005
+    technique: T1055
+    name: "Process Injection"
+references:
+  - url: "https://www.cobaltstrike.com"
+    title: "Cobalt Strike C2 Framework"
+logic:
+  or:
+    - string: "Cobalt Strike"
+    - string: "cobaltstrike"
+    - string: "malleable_c2"
+    - string: "beacon.x64.dll"
+    - string: "beacon.x86.dll"
+    - string: "ReflectiveDLL"
+    - bytes: "fc e8 89 00 00 00 60 89 e5"
+    - bytes: "fc 48 83 e4 f0 e8 c8 00 00 00"
+    - bytes: "4c 8b d1 b8"
+fp_guard:
+  notes:
+    - "Authorized penetration testers use Cobalt Strike. Require explicit operator allowlist."
+    - "This rule is informational if the source is a verified red team engagement."

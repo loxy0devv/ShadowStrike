@@ -1,0 +1,312 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ShadowStrikePhantomService.vcxproj
+  ==================================
+  Windows service host for PhantomHome. Owns the HomeProductOrchestrator
+  lifecycle and publishes the user-facing named-pipe IPC.
+
+  Links against PhantomCoreLib.lib for engine symbols (Logger, ConfigManager,
+  ScanEngine, etc.). Compiles all PhantomHome product modules inline.
+-->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{A1B27E10-5F3C-4A9A-9E8E-0F6A5B0C9F01}</ProjectGuid>
+    <RootNamespace>ShadowStrikePhantomService</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
+    <UseDebugLibraries Condition="'$(Configuration)'=='Release'">false</UseDebugLibraries>
+    <WholeProgramOptimization Condition="'$(Configuration)'=='Release'">true</WholeProgramOptimization>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+
+  <PropertyGroup>
+    <IntDir>$(ProjectDir)build\$(Configuration)\Service\</IntDir>
+    <OutDir>$(SolutionDir)bin\$(Configuration)\</OutDir>
+    <TargetName>ShadowStrikePhantomService</TargetName>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <LanguageStandard>stdcpp23</LanguageStandard>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalOptions>/Zc:__cplusplus %(AdditionalOptions)</AdditionalOptions>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <PrecompiledHeaderOutputFile>$(IntDir)pch.pch</PrecompiledHeaderOutputFile>
+      <AdditionalIncludeDirectories>$(SolutionDir);$(SolutionDir)include;$(SolutionDir)include\YARA;$(SolutionDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32;_WINDOWS;UNICODE;_UNICODE;NOMINMAX;WIN32_LEAN_AND_MEAN;SHADOWSTRIKE_PRODUCT_HOME=1;GTEST_LINKED_AS_SHARED_LIBRARY=1;GMOCK_LINKED_AS_SHARED_LIBRARY=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>PhantomCoreLib.lib;libyara.lib;libcrypto.lib;libssl.lib;onnxruntime.lib;normaliz.lib;advapi32.lib;ws2_32.lib;userenv.lib;wtsapi32.lib;crypt32.lib;iphlpapi.lib;shell32.lib;ole32.lib;oleaut32.lib;wininet.lib;amsi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(SolutionDir)lib\$(Configuration);$(SolutionDir)vendor;$(SolutionDir)vendor\yara_lib;$(SolutionDir)vendor\onnxruntime\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile>
+      <Optimization>Disabled</Optimization>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+    </ClCompile>
+    <Link>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <!--
+        Force-include every *Wiring.cpp keep-alive symbol so that MSVC
+        /GL + /LTCG + /OPT:REF cannot silently drop the TU that owns the
+        static registrar object.  With whole-program optimisation the linker
+        may inline the empty keep-alive body at every call site in
+        EnsureAllModulesWired() and subsequently elide the originating TU,
+        which would remove the .CRT$XCU entry and prevent the module from
+        registering.  /INCLUDE is evaluated before whole-program code-gen,
+        guaranteeing the TU (and its static initialiser) is retained.
+      -->
+      <ForceSymbolReferences>
+        PhantomHome_KeepAlive_Config;
+        PhantomHome_KeepAlive_EmailProtection;
+        PhantomHome_KeepAlive_USBProtection;
+        PhantomHome_KeepAlive_WebProtection;
+        PhantomHome_KeepAlive_IoT;
+        PhantomHome_KeepAlive_GameMode;
+        PhantomHome_KeepAlive_CryptoMiners;
+        PhantomHome_KeepAlive_BankingTrojanDetector;
+        PhantomHome_KeepAlive_CertificatePinning;
+        PhantomHome_KeepAlive_KeyloggerProtection;
+        PhantomHome_KeepAlive_ScreenshotBlocker;
+        PhantomHome_KeepAlive_SecureBrowser;
+        PhantomHome_KeepAlive_TransactionMonitor;
+        PhantomHome_KeepAlive_Backup;
+        PhantomHome_KeepAlive_CookieManager;
+        PhantomHome_KeepAlive_DataLeakProtection;
+        PhantomHome_KeepAlive_DNSLeakProtection;
+        PhantomHome_KeepAlive_IPLeakProtection;
+        PhantomHome_KeepAlive_LocationPrivacy;
+        PhantomHome_KeepAlive_MicrophoneGuard;
+        PhantomHome_KeepAlive_PrivacyCleaner;
+        PhantomHome_KeepAlive_WebcamProtector
+      </ForceSymbolReferences>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <!-- PCH creation + Service-specific sources (no PCH) -->
+  <ItemGroup>
+    <ClCompile Include="src\pch.cpp">
+      <PrecompiledHeader>Create</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\PhantomCore\Service\ServiceMain.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomHome\Reports\HomeReportsStore.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+  </ItemGroup>
+
+  <!-- PhantomHome product modules -->
+  <ItemGroup>
+    <ClCompile Include="src\Products\Community\PhantomHome\Backup\BackupManager.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Backup\BackupScheduler.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Backup\BackupWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Backup\IncrementalBackup.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Backup\RestoreManager.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\BankingTrojanDetector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\CertificatePinning.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\KeyloggerProtection.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\ScreenshotBlocker.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\SecureBrowser.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\TransactionMonitor.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\wiring\BankingTrojanDetectorWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\wiring\CertificatePinningWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\wiring\KeyloggerProtectionWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\wiring\ScreenshotBlockerWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\wiring\SecureBrowserWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\wiring\TransactionMonitorWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Config\ConfigWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Config\HomeConfigRegistration.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\CryptoMinersProtection\BrowserMinerDetector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\CryptoMinersProtection\CPUUsageAnalyzer.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\CryptoMinersProtection\CryptoMinerDetector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\CryptoMinersProtection\CryptoMinersWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\CryptoMinersProtection\GPUMiningDetector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\CryptoMinersProtection\PoolConnectionDetector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Email\AttachmentScanner.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Email\EmailProtection.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Email\EmailWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Email\OutlookScanner.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Email\PhishingEmailDetector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Email\SpamDetector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Email\ThunderbirdScanner.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\GameMode\GameModeManager.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\GameMode\GameModeWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\GameMode\GameProcessDetector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\GameMode\OverlayProtection.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\GameMode\PerformanceOptimizer.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\HomeProductEntry.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\HomeProductOrchestrator.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\ModeThresholds.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\WiringAnchor.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\IoT\IoTDeviceScanner.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\IoT\IoTWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\IoT\IPLeakProtection.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\IoT\RouterSecurityChecker.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\IoT\SmartHomeProtection.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\IoT\WiFiSecurityAnalyzer.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\CookieManager.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\DataLeakProtection.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\DNSLeakProtection.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\IPLeakProtection.cpp">
+      <ObjectFileName>$(IntDir)Privacy_IPLeakProtection.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\LocationPrivacy.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\MicrophoneGuard.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\PrivacyCleaner.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\WebcamProtector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\wiring\CookieManagerWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\wiring\DataLeakProtectionWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\wiring\DNSLeakProtectionWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\wiring\IPLeakProtectionWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\wiring\LocationPrivacyWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\wiring\MicrophoneGuardWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\wiring\PrivacyCleanerWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\wiring\WebcamProtectorWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\USB_Protection\BadUSBDetector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\USB_Protection\DeviceControlManager.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\USB_Protection\USBAutorunBlocker.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\USB_Protection\USBDeviceMonitor.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\USB_Protection\USBScanner.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\USB_Protection\USBWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\WebProtection\AdBlocker.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\WebProtection\BrowserProtection.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\WebProtection\ChromeExtensionScanner.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\WebProtection\FirefoxAddonScanner.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\WebProtection\MaliciousDownloadBlocker.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\WebProtection\PhishingDetector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\WebProtection\SafeBrowsingAPI.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\WebProtection\TrackerBlocker.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\WebProtection\WebProtectionWiring.cpp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ClInclude Include="src\Products\Community\PhantomHome\UI\IPC\Messages.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\HomeProductOrchestrator.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Reports\HomeReportsStore.hpp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ClInclude Include="src\Products\Community\PhantomXDR\XDRProductEntry.hpp" />
+  </ItemGroup>
+
+  <!-- IPC dispatchers, TierSelector, and EDR/XDR extensions -->
+  <ItemGroup>
+    <ClCompile Include="src\Products\Community\Shared\API\SharedIpcDispatcher.cpp" />
+    <ClCompile Include="src\Products\Community\Shared\TierBoot\TierSelector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\EDRIpcDispatcher.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomXDR\XDRIpcDispatcher.cpp" />
+  </ItemGroup>
+
+  <!-- EDR subsystem implementations required by EDRIpcDispatcher -->
+  <ItemGroup>
+    <ClCompile Include="src\Products\Community\PhantomEDR\EDRProductOrchestrator.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\EDRProductOrchestrator.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\Forensics\EvidenceCollector.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\EvidenceCollector.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\IncidentResponse\IncidentManager.cpp">
+      <ObjectFileName>$(IntDir)EDR\IncidentManager.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\Playbooks\PlaybookEngine.cpp">
+      <ObjectFileName>$(IntDir)EDR\PlaybookEngine.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\ThreatHunting\HuntQueryEngine.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\HuntQueryEngine.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\Vulnerability\VulnScanner.cpp">
+      <ObjectFileName>$(IntDir)EDR\VulnScanner.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\LiveResponse\ProcessInspector.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\ProcessInspector.obj</ObjectFileName>
+    </ClCompile>
+  </ItemGroup>
+
+  <!-- XDR subsystem implementations required by XDRIpcDispatcher + TierSelector -->
+  <ItemGroup>
+    <ClCompile Include="src\Products\Community\PhantomXDR\XDRProductEntry.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)XDR\XDRProductEntry.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomXDR\XDRCorrelation\CorrelationEngine.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)XDR\CorrelationEngine.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomXDR\XDRCorrelation\StorylineBuilder.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)XDR\StorylineBuilder.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomXDR\NetworkDetection\NetworkSensor.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)XDR\NetworkSensor.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomXDR\EmailThreat\EmailAnalyzer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)XDR\EmailAnalyzer.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomXDR\IdentityProtection\ADMonitor.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)XDR\ADMonitor.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomXDR\SOARLocal\SOAREngine.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)XDR\SOAREngine.obj</ObjectFileName>
+    </ClCompile>
+  </ItemGroup>
+
+  <!-- Engine dependency -->
+  <ItemGroup>
+    <ProjectReference Include="PhantomCoreLib.vcxproj">
+      <Project>{8A5C6B4D-2E1F-4A3B-9C7D-0E1F2A3B4C5D}</Project>
+    </ProjectReference>
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
+

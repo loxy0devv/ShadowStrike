@@ -1,0 +1,38 @@
+id: ss-net-006
+detection_name: "Trojan.Stealer.ClipboardExfil"
+description: "Clipboard hijacker pattern: process hooks clipboard and establishes network connection to send stolen data."
+scope: network
+severity: high
+status: stable
+source: native
+confidence: 0.72
+weight: 2.0
+version: 1
+attack:
+  - tactic: TA0009
+    technique: T1115
+    name: "Clipboard Data"
+logic:
+  and:
+    - field_in:
+        field: process.name
+        values: [cmd.exe, powershell.exe, python.exe, node.exe, wscript.exe]
+        case_insensitive: true
+    - field_exists:
+        field: network.destination.ip
+    - field_equals:
+        field: network.direction
+        value: "outbound"
+    - or:
+        - field_contains:
+            field: process.command_line
+            value: "GetClipboardData"
+        - field_contains:
+            field: process.command_line
+            value: "OpenClipboard"
+        - field_contains:
+            field: process.command_line
+            value: "Get-Clipboard"
+fp_guard:
+  notes:
+    - "Cloud paste managers sync clipboard over network legitimately."

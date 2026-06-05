@@ -1,0 +1,49 @@
+id: ss-static-020
+detection_name: "Win32/Qakbot.ConfigMarkers"
+description: "Binary contains Qakbot (Qbot) configuration extraction markers: campaign tag format, XOR-obfuscated C2 list, and bot ID registry key patterns."
+scope: static
+severity: critical
+status: stable
+source: native
+confidence: 0.87
+weight: 3.5
+version: 1
+
+attack:
+  - tactic: TA0005
+    technique: T1027
+    name: "Obfuscated Files or Information"
+  - tactic: TA0011
+    technique: T1071
+    name: "Application Layer Protocol"
+
+references:
+  - url: "https://attack.mitre.org/software/S0650/"
+    title: "ATT&CK Qakbot"
+
+logic:
+  and:
+    - or:
+        - field_regex:
+            field: static.strings
+            pattern: "(?i)(qbot|qakbot|pinkslipbot)"
+        - and:
+            - field_regex:
+                field: static.strings
+                pattern: "(?i)SOFTWARE\\Microsoft\\(Windows|[a-f0-9]{8})"
+            - field_regex:
+                field: static.strings
+                pattern: "(?i)(botid|campaign|version)=[a-z0-9_]{2,20}"
+    - or:
+        - field_regex:
+            field: static.strings
+            pattern: "(?i)WNETADDCONNECTION2"
+        - field_regex:
+            field: static.strings
+            pattern: "(?i)NetShareEnum"
+    - feature: EntropyAbove
+      threshold: 6.5
+
+fp_guard:
+  notes:
+    - "Network administration tools enumerate shares. Require entropy threshold to avoid FPs."

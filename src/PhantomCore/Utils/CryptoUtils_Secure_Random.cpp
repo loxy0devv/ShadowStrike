@@ -1,0 +1,353 @@
+/*
+ * ShadowStrike - Enterprise NGAV/EDR Platform
+ * Copyright (C) 2026 ShadowStrike Security
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+#include"pch.h"
+#include"CryptoUtils.hpp"
+#include "CryptoUtilsCommon.hpp"
+#include<ntstatus.h>
+namespace ShadowStrike {
+	namespace Utils {
+		namespace CryptoUtils {
+
+            // =============================================================================
+            // SecureRandom Implementation
+            // =============================================================================
+
+            SecureRandom::SecureRandom() noexcept {
+#ifdef _WIN32
+                // Open algorithm provider for random number generation
+                BCRYPT_ALG_HANDLE handle = nullptr;
+                const NTSTATUS st = BCryptOpenAlgorithmProvider(
+                    &handle,
+                    BCRYPT_RNG_ALGORITHM,
+                    nullptr,
+                    0
+                );
+
+                if (BCRYPT_SUCCESS(st) && handle != nullptr) {
+                    m_algHandle = handle;
+                    m_initialized = true;
+                }
+                else {
+                    // Initialization failed - will fall back to system RNG
+                    m_algHandle = nullptr;
+                    m_initialized = false;
+                }
+#else
+                m_initialized = false;
+#endif
+            }
+
+            SecureRandom::~SecureRandom() {
+#ifdef _WIN32
+                if (m_algHandle != nullptr) {
+                    BCryptCloseAlgorithmProvider(m_algHandle, 0);
+                    m_algHandle = nullptr;
+                }
+#endif
+                m_initialized = false;
+            }
+
+            bool SecureRandom::Generate(uint8_t* buffer, size_t size, Error* err) noexcept {
+                // Input validation
+                if (buffer == nullptr || size == 0) {
+                    if (err != nullptr) {
+                        err->SetWin32Error(ERROR_INVALID_PARAMETER,
+                            L"Invalid buffer or size for random generation");
+                    }
+                    return false;
+                }
+
+                // Size validation - prevent overflow when casting to ULONG
+                if (size > static_cast<size_t>(ULONG_MAX)) {
+                    if (err != nullptr) {
+                        err->SetWin32Error(ERROR_BUFFER_OVERFLOW,
+                            L"Random generation size exceeds ULONG_MAX");
+                    }
+                    return false;
+                }
+
+#ifdef _WIN32
+                NTSTATUS st = STATUS_UNSUCCESSFUL;
+
+                if (m_initialized && m_algHandle != nullptr) {
+                    // Use our dedicated RNG handle
+                    st = BCryptGenRandom(
+                        m_algHandle,
+                        buffer,
+                        static_cast<ULONG>(size),
+                        0
+                    );
+                }
+                else {
+                    // Fallback to system preferred RNG (always available)
+                    st = BCryptGenRandom(
+                        nullptr,
+                        buffer,
+                        static_cast<ULONG>(size),
+                        BCRYPT_USE_SYSTEM_PREFERRED_RNG
+                    );
+                }
+
+                if (!BCRYPT_SUCCESS(st)) {
+                    // Secure wipe the buffer on failure
+                    SecureWipeMemory(buffer, size);
+
+                    if (err != nullptr) {
+                        err->SetNtStatus(st, L"BCryptGenRandom failed");
+                    }
+                    return false;
+                }
+
+                return true;
+#else
+                // Non-Windows platforms not supported
+                SecureWipeMemory(buffer, size);
+                if (err != nullptr) {
+                    err->SetWin32Error(ERROR_NOT_SUPPORTED, L"Platform not supported");
+                }
+                return false;
+#endif
+            }
+
+            bool SecureRandom::Generate(std::vector<uint8_t>& out, size_t size, Error* err) noexcept {
+                // Handle zero-size request
+                if (size == 0) {
+                    out.clear();
+                    return true;
+                }
+
+                // Validate before allocation — Generate(buffer,size) rejects > ULONG_MAX,
+                // but resize() would attempt a multi-GiB allocation first.
+                // Cap at 256 MiB — no legitimate EDR use-case needs more random bytes.
+                static constexpr size_t kMaxRandomSize = 256ULL * 1024 * 1024;
+                if (size > kMaxRandomSize) {
+                    if (err != nullptr) {
+                        err->SetWin32Error(ERROR_BUFFER_OVERFLOW,
+                            L"Random generation size exceeds 256 MiB cap");
+                    }
+                    return false;
+                }
+
+                try {
+                    out.resize(size);
+                }
+                catch (const std::exception&) {
+                    out.clear();
+                    if (err != nullptr) {
+                        err->SetWin32Error(ERROR_NOT_ENOUGH_MEMORY,
+                            L"Failed to allocate random buffer");
+                    }
+                    return false;
+                }
+
+                if (!Generate(out.data(), size, err)) {
+                    SecureWipeMemory(out.data(), out.size());
+                    out.clear();
+                    return false;
+                }
+
+                return true;
+            }
+
+            std::vector<uint8_t> SecureRandom::Generate(size_t size, Error* err) noexcept {
+                std::vector<uint8_t> out;
+                if (!Generate(out, size, err)) {
+                    return std::vector<uint8_t>();
+                }
+                return out;
+            }
+
+            uint32_t SecureRandom::NextUInt32(Error* err) noexcept {
+                uint32_t val = 0;
+                if (!Generate(reinterpret_cast<uint8_t*>(&val), sizeof(val), err)) {
+                    return 0;
+                }
+                return val;
+            }
+
+            uint64_t SecureRandom::NextUInt64(Error* err) noexcept {
+                uint64_t val = 0;
+                if (!Generate(reinterpret_cast<uint8_t*>(&val), sizeof(val), err)) {
+                    return 0;
+                }
+                return val;
+            }
+
+            uint32_t SecureRandom::NextUInt32(uint32_t min, uint32_t max, Error* err) noexcept {
+                // Validate range
+                if (min >= max) {
+                    return min;
+                }
+
+                const uint32_t range = max - min;
+                if (range == 0) {
+                    return min;
+                }
+
+                // Calculate rejection threshold to avoid modulo bias.
+                // Reject values >= limit to ensure uniform distribution.
+                const uint32_t limit = (UINT32_MAX / range) * range;
+
+                // Call Generate() directly rather than NextUInt32(err) so that
+                // an RNG failure is observable even when the caller did not
+                // supply an Error pointer (NextUInt32(err) returns 0 on failure
+                // which is indistinguishable from a real zero result).
+                uint32_t val = 0;
+                for (uint32_t iter = 0; iter <= MAX_REJECTION_ITERATIONS; ++iter) {
+                    if (!Generate(reinterpret_cast<uint8_t*>(&val), sizeof(val), err)) {
+                        // Generate already populated err on failure.
+                        return min;
+                    }
+                    if (val < limit) {
+                        return min + (val % range);
+                    }
+                }
+
+                if (err != nullptr) {
+                    err->SetWin32Error(ERROR_TIMEOUT,
+                        L"Random range generation exceeded iteration limit");
+                }
+                return min;
+            }
+
+            uint64_t SecureRandom::NextUInt64(uint64_t min, uint64_t max, Error* err) noexcept {
+                // Validate range
+                if (min >= max) {
+                    return min;
+                }
+
+                const uint64_t range = max - min;
+                if (range == 0) {
+                    return min;
+                }
+
+                // Calculate rejection threshold
+                const uint64_t limit = (UINT64_MAX / range) * range;
+
+                uint64_t val = 0;
+                for (uint32_t iter = 0; iter <= MAX_REJECTION_ITERATIONS; ++iter) {
+                    if (!Generate(reinterpret_cast<uint8_t*>(&val), sizeof(val), err)) {
+                        return min;
+                    }
+                    if (val < limit) {
+                        return min + (val % range);
+                    }
+                }
+
+                if (err != nullptr) {
+                    err->SetWin32Error(ERROR_TIMEOUT,
+                        L"Random range generation exceeded iteration limit");
+                }
+                return min;
+            }
+
+            std::string SecureRandom::GenerateAlphanumeric(size_t length, Error* err) noexcept {
+                // Character set for alphanumeric strings
+                static constexpr char alphanum[] =
+                    "0123456789"
+                    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                    "abcdefghijklmnopqrstuvwxyz";
+                static constexpr size_t alphaLen = sizeof(alphanum) - 1;  // Exclude null terminator
+
+                if (length == 0) {
+                    return std::string();
+                }
+
+                std::string out;
+                try {
+                    out.reserve(length);
+
+                    // Use a local Error so that RNG failures are observable
+                    // even when the caller did not supply one. Without this,
+                    // NextUInt32 returns 0 on failure and we would silently
+                    // emit a string of 'alphanum[0]' characters.
+                    Error localErr;
+                    Error& probe = (err != nullptr) ? *err : localErr;
+
+                    for (size_t i = 0; i < length; ++i) {
+                        const uint32_t idx = NextUInt32(0, static_cast<uint32_t>(alphaLen), &probe);
+                        if (probe.HasError()) {
+                            if (out.capacity() > 0) {
+                                SecureWipeMemory(out.data(), out.capacity());
+                            }
+                            return std::string();
+                        }
+                        out.push_back(alphanum[idx]);
+                    }
+
+                    return out;
+                }
+                catch (const std::exception&) {
+                    // Wipe partial random characters before releasing memory
+                    if (out.capacity() > 0) {
+                        SecureWipeMemory(out.data(), out.capacity());
+                    }
+                    if (err != nullptr) {
+                        err->SetWin32Error(ERROR_NOT_ENOUGH_MEMORY,
+                            L"Failed to allocate alphanumeric string");
+                    }
+                    return std::string();
+                }
+            }
+
+            std::string SecureRandom::GenerateHex(size_t byteCount, Error* err) noexcept {
+                if (byteCount == 0) {
+                    return std::string();
+                }
+
+                std::vector<uint8_t> bytes;
+                if (!Generate(bytes, byteCount, err)) {
+                    return std::string();
+                }
+
+                try {
+                    std::string hex = HashUtils::ToHexLower(bytes.data(), bytes.size());
+                    // Wipe raw random bytes — hex string is the intended output
+                    SecureWipeMemory(bytes.data(), bytes.size());
+                    return hex;
+                }
+                catch (const std::exception&) {
+                    SecureWipeMemory(bytes.data(), bytes.size());
+                    if (err != nullptr) {
+                        err->SetWin32Error(ERROR_NOT_ENOUGH_MEMORY,
+                            L"Failed to encode random bytes as hex string");
+                    }
+                    return std::string();
+                }
+            }
+
+            std::string SecureRandom::GenerateBase64(size_t byteCount, Error* err) noexcept {
+                if (byteCount == 0) {
+                    return std::string();
+                }
+
+                std::vector<uint8_t> bytes;
+                if (!Generate(bytes, byteCount, err)) {
+                    return std::string();
+                }
+
+                std::string result = Base64::Encode(bytes);
+
+                // Securely wipe the raw bytes
+                SecureWipeMemory(bytes.data(), bytes.size());
+
+                return result;
+            }
+		}
+	}
+}

@@ -1,0 +1,48 @@
+id: ss-mem-007
+detection_name: "Win32/Memory.ROP.GadgetChain"
+description: "Detects return-oriented programming (ROP) chains by identifying a sequence of return instructions executing from unusual locations — specifically returns landing outside known module boundaries or in non-executable memory. ROP is used to bypass DEP/NX protections by chaining existing code snippets to build malicious control flow."
+scope: memory
+severity: critical
+status: experimental
+source: native
+confidence: 0.78
+weight: 3.0
+version: 1
+
+attack:
+  - tactic: TA0005
+    technique: T1620
+    name: "Reflective Code Loading"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1620/"
+    title: "ATT&CK T1620"
+
+logic:
+  and:
+    - field_gt:
+        field: memory.consecutive_ret_instructions
+        value: 5
+    - field_eq:
+        field: memory.ret_lands_in_known_module
+        value: "false"
+    - field_gt:
+        field: memory.stack_pivot_count
+        value: 2
+    - or:
+        - field_eq:
+            field: memory.stack_pointer_anomaly
+            value: "true"
+        - field_regex:
+            field: memory.call_stack_frames
+            pattern: "(?i)(unknown|0x[0-9a-f]{8}\\+0x[0-9a-f]+)"
+
+fp_guard:
+  notes:
+    - "Obfuscated or packed legitimate software may exhibit similar stack patterns. Validate against signed binary status."
+    - "Anti-cheat software and some DRM solutions use stack manipulation techniques that may appear as ROP gadgets."
+  suppress:
+    - field: memory.process.name
+      values:
+        - BEService.exe
+        - EasyAntiCheat.exe

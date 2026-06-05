@@ -1,0 +1,1565 @@
+/*
+ * ShadowStrike - Enterprise NGAV/EDR Platform
+ * Copyright (C) 2026 ShadowStrike Security
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+#include"pch.h"
+//=============================================================================
+// XMLUtils.cpp
+//
+// ShadowStrike Security Suite - XML Utility Library Implementation
+//
+// Purpose:
+//   Implementation of safe XML parsing, manipulation, and serialization
+//   utilities with comprehensive security hardening.
+//
+// Security Features:
+//   - XML Bomb detection and prevention
+//   - XPath injection validation
+//   - Secure temporary file generation
+//   - Atomic file operations
+//   - Input size and depth limits
+//
+// Copyright (c) 2024-2025 ShadowStrike Security Team
+// This file is part of ShadowStrike, licensed under the GNU Affero General Public License v3.0
+//=============================================================================
+
+#include "XMLUtils.hpp"
+
+#include"../../include/pugixml/pugixml.hpp"
+#include <fstream>
+#include <sstream>
+#include <algorithm>
+#include <charconv>
+#include <functional>
+#include <limits>
+#include <cmath>
+
+#ifdef _WIN32
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <Windows.h>
+#  include <bcrypt.h>
+#  pragma comment(lib, "bcrypt.lib")
+#endif
+
+namespace ShadowStrike {
+namespace Utils {
+namespace XML {
+
+//=============================================================================
+// Internal Constants
+//=============================================================================
+
+namespace {
+
+/// Maximum XPath length to prevent DoS attacks
+constexpr size_t kMaxXPathLength = 1000;
+
+/// Maximum path depth for Set operations
+constexpr size_t kMaxPathDepth = 10;
+
+/// Maximum index value for array access
+constexpr size_t kMaxArrayIndex = 100000;
+
+/// Maximum nodes created in a single Set operation
+constexpr size_t kMaxNodesCreated = 1000;
+
+/// Maximum XML array size for node creation
+constexpr size_t kMaxXmlArraySize = 10000;
+
+/// Maximum node count before rejecting as potential XML bomb
+constexpr size_t kMaxNodeCount = 1000000;
+
+/// Maximum safe XML file size (512 MB)
+constexpr uintmax_t kMaxSafeXmlFileSize = 512ULL * 1024 * 1024;
+
+} // anonymous namespace
+
+//=============================================================================
+// Internal Helper Functions
+//=============================================================================
+
+/**
+ * @brief Calculate line and column numbers from byte offset in UTF-8 text.
+ *
+ * Properly handles:
+ * - Unix line endings (LF)
+ * - Windows line endings (CRLF)
+ * - Classic Mac line endings (CR only)
+ * - UTF-8 multi-byte sequences
+ *
+ * @param text Source text
+ * @param byteOffset Byte offset to locate
+ * @param[out] line 1-based line number
+ * @param[out] col 1-based column number
+ */
+static inline void fillLineCol(
+    std::string_view text, 
+    size_t byteOffset, 
+    size_t& line, 
+    size_t& col
+) noexcept {
+    line = 1;
+    col = 1;
+    
+    // Clamp byte offset to text bounds
+    if (byteOffset > text.size()) {
+        byteOffset = text.size();
+    }
+    
+    for (size_t i = 0; i < byteOffset; ) {
+        // Bounds check before access
+        if (i >= text.size()) {
+            break;
+        }
+        
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        
+        if (c == '\n') {
+            // Unix-style LF
+            ++line;
+            col = 1;
+            ++i;
+        }
+        else if (c == '\r') {
+            // Handle Windows-style CRLF or old Mac CR-only
+            if (i + 1 < text.size() && text[i + 1] == '\n') {
+                // CRLF: skip both CR and LF as single line ending
+                ++line;
+                col = 1;
+                i += 2;
+            }
+            else {
+                // CR-only (old Mac style)
+                ++line;
+                col = 1;
+                ++i;
+            }
+        }
+        else {
+            // UTF-8 multi-byte sequence detection
+            size_t charBytes = 1;
+            
+            if ((c & 0x80) == 0) {
+                // ASCII (0xxxxxxx) - 1 byte
+                charBytes = 1;
+            }
+            else if ((c & 0xE0) == 0xC0) {
+                // 2-byte UTF-8 (110xxxxx 10xxxxxx)
+                charBytes = 2;
+            }
+            else if ((c & 0xF0) == 0xE0) {
+                // 3-byte UTF-8 (1110xxxx 10xxxxxx 10xxxxxx)
+                charBytes = 3;
+            }
+            else if ((c & 0xF8) == 0xF0) {
+                // 4-byte UTF-8 (11110xxx 10xxxxxx 10xxxxxx 10xxxxxx)
+                charBytes = 4;
+            }
+            else {
+                // Invalid UTF-8 lead byte - treat as single byte
+                charBytes = 1;
+            }
+            
+            ++col;
+            i += charBytes;
+            
+            // Prevent overshooting the target offset
+            if (i > byteOffset) {
+                break;
+            }
+        }
+    }
+}
+
+/**
+ * @brief Set error information with text location calculation.
+ *
+ * @param err Error struct to populate (may be nullptr)
+ * @param msg Error message
+ * @param p File path (if applicable)
+ * @param text Source text for location calculation
+ * @param byteOff Byte offset of error
+ */
+static inline void setErr(
+    Error* err, 
+    const char* msg, 
+    const std::filesystem::path& p, 
+    std::string_view text, 
+    size_t byteOff
+) noexcept {
+    if (!err) {
+        return;
+    }
+    
+    try { err->message = msg ? msg : ""; } catch (...) { err->message.clear(); }
+    try { err->path = p; } catch (...) { err->path.clear(); }
+    err->byteOffset = byteOff;
+    fillLineCol(text, byteOff, err->line, err->column);
+}
+
+/**
+ * @brief Set I/O error information (no text location).
+ *
+ * @param err Error struct to populate (may be nullptr)
+ * @param what Error description
+ * @param p File path
+ * @param sysMsg Optional system error message
+ */
+static inline void setIoErr(
+    Error* err, 
+    const char* what, 
+    const std::filesystem::path& p, 
+    const char* sysMsg = nullptr
+) noexcept {
+    if (!err) {
+        return;
+    }
+    
+    try {
+        if (sysMsg && sysMsg[0] != '\0') {
+            err->message = std::string(what) + ": " + sysMsg;
+        }
+        else {
+            err->message = what ? what : "";
+        }
+    } catch (...) {
+        try { err->message = what ? what : ""; } catch (...) { err->message.clear(); }
+    }
+    
+    try { err->path = p; } catch (...) { err->path.clear(); }
+    err->byteOffset = 0;
+    err->line = 0;
+    err->column = 0;
+}
+
+/**
+ * @brief Remove UTF-8 BOM from string if present.
+ *
+ * @param s String to modify in-place
+ */
+static inline void stripUtf8BOM(std::string& s) noexcept {
+    constexpr unsigned char kUtf8Bom[3] = { 0xEF, 0xBB, 0xBF };
+    
+    if (s.size() >= 3) {
+        const auto* data = reinterpret_cast<const unsigned char*>(s.data());
+        if (data[0] == kUtf8Bom[0] && 
+            data[1] == kUtf8Bom[1] && 
+            data[2] == kUtf8Bom[2]) {
+            s.erase(0, 3);
+        }
+    }
+}
+
+/**
+ * @brief Check if character is an ASCII digit.
+ *
+ * @param c Character to check
+ * @return true if '0'-'9'
+ */
+static inline bool isDigit(char c) noexcept {
+    return c >= '0' && c <= '9';
+}
+
+static inline bool isSafeXmlName(std::string_view name) noexcept {
+    if (name.empty() || name.size() > 255) {
+        return false;
+    }
+    const auto isAlpha = [](unsigned char c) noexcept {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+    };
+    const auto isNameChar = [&](unsigned char c) noexcept {
+        return isAlpha(c) || (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
+    };
+    const unsigned char first = static_cast<unsigned char>(name.front());
+    if (!isAlpha(first) && first != '_') {
+        return false;
+    }
+    for (unsigned char c : name) {
+        if (!isNameChar(c)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+//=============================================================================
+// Path Parsing Types and Functions
+//=============================================================================
+
+/**
+ * @brief Represents a single step in a path expression.
+ *
+ * Used internally for parsing dot-notation paths like "a.b[0].c" or "@attr".
+ */
+struct Step {
+    std::string name;          ///< Element name (without @) or attribute name
+    bool isAttribute = false;  ///< true if this step targets an attribute
+    bool hasIndex = false;     ///< true if [N] index was specified
+    size_t index = 0;          ///< 0-based array index (converted to 1-based in XPath)
+};
+
+/**
+ * @brief Parse a dot-notation path into steps.
+ *
+ * Handles formats like:
+ * - "a.b.c" -> [a, b, c]
+ * - "a.b[0].c" -> [a, b{index=0}, c]
+ * - "a.@attr" -> [a, @attr]
+ *
+ * @param sv Input path string
+ * @param[out] out Vector of parsed steps (cleared if input is malicious)
+ *
+ * @security Clears output if XPath injection is detected
+ */
+static void parsePathLike(std::string_view sv, std::vector<Step>& out) noexcept {
+    out.clear();
+    
+    if (sv.empty()) {
+        return;
+    }
+    
+    // If it's already XPath, don't parse
+    if (sv.front() == '/') {
+        return;
+    }
+    
+    try {
+    // Parse dot-separated steps
+    std::string cur;
+    cur.reserve(sv.size());
+    
+    for (size_t i = 0; i < sv.size(); ++i) {
+        const char c = sv[i];
+        
+        if (c == '.') {
+            if (!cur.empty()) {
+                Step st;
+                st.isAttribute = (cur[0] == '@');
+                st.name = st.isAttribute ? cur.substr(1) : cur;
+                out.push_back(std::move(st));
+                cur.clear();
+            }
+        }
+        else {
+            cur.push_back(c);
+        }
+    }
+    
+    // Don't forget the last segment
+    if (!cur.empty()) {
+        Step st;
+        st.isAttribute = (cur[0] == '@');
+        st.name = st.isAttribute ? cur.substr(1) : cur;
+        out.push_back(std::move(st));
+    }
+
+    // Parse array indices from step names
+    for (auto& s : out) {
+        // Skip attributes - they can't have indices
+        if (s.isAttribute) {
+            continue;
+        }
+        
+        const auto lb = s.name.find('[');
+        const auto strayRb = s.name.find(']');
+        if (lb == std::string::npos) {
+            if (strayRb != std::string::npos) {
+                out.clear();
+                return;
+            }
+            continue;
+        }
+
+        if (lb + 1 >= s.name.size()) {
+            out.clear();
+            return;
+        }
+        
+        const auto rb = s.name.find(']', lb + 1);
+        if (rb == std::string::npos || rb != s.name.size() - 1) {
+            out.clear();
+            return;
+        }
+        
+        // Extract index string
+        const std::string idxStr = s.name.substr(lb + 1, rb - (lb + 1));
+        
+        // Validate: must be non-empty and all digits
+        const bool allDigits = !idxStr.empty() && 
+            std::all_of(idxStr.begin(), idxStr.end(), isDigit);
+        
+        // SECURITY: Reject non-digit content (XPath injection attempt)
+        if (!idxStr.empty() && !allDigits) {
+            // Contains operators like '=', '<', '>', etc.
+            // This is likely an XPath injection attempt
+            out.clear();  // Signal rejection by clearing all steps
+            return;
+        }
+        
+        if (allDigits) {
+            try {
+                const unsigned long long idx = std::stoull(idxStr);
+                
+                // SECURITY: Integer overflow protection
+                // Check against both MAX_INDEX and platform size_t limit
+                if (idx > std::numeric_limits<size_t>::max()) {
+                    // Index too large for this platform
+                    s.name = s.name.substr(0, lb);
+                    continue;
+                }
+                
+                if (idx > kMaxArrayIndex) {
+                    // Index exceeds security limit
+                    s.name = s.name.substr(0, lb);
+                    continue;
+                }
+                
+                s.hasIndex = true;
+                s.index = static_cast<size_t>(idx);
+            }
+            catch (const std::out_of_range&) {
+                // Index too large, strip the bracket notation
+                s.name = s.name.substr(0, lb);
+                continue;
+            }
+            catch (const std::invalid_argument&) {
+                // Invalid format, strip the bracket notation
+                s.name = s.name.substr(0, lb);
+                continue;
+            }
+        }
+        
+        // Remove the [N] from the name
+        s.name = s.name.substr(0, lb);
+    }
+
+    for (const auto& s : out) {
+        if (!isSafeXmlName(s.name)) {
+            out.clear();
+            return;
+        }
+    }
+
+    } catch (...) {
+        // OOM or other exception — return empty steps (safe fallback)
+        out.clear();
+    }
+}
+
+//=============================================================================
+// Path Conversion Implementation
+//=============================================================================
+
+std::string ToXPath(std::string_view pathLike) noexcept {
+    try {
+        // Empty path returns current node selector (for relative queries)
+        if (pathLike.empty()) {
+            return std::string(".");
+        }
+        
+        // Already XPath - pass through unchanged
+        if (pathLike.front() == '/') {
+            return std::string(pathLike);
+        }
+
+        // Parse dot-notation into steps
+        std::vector<Step> steps;
+        parsePathLike(pathLike, steps);
+        
+        // SECURITY: Empty steps means rejection (malformed/malicious input)
+        // parsePathLike clears steps if it detects XPath injection
+        if (steps.empty()) {
+            return std::string("__INVALID__");
+        }
+
+        // Build RELATIVE XPath string (no leading slash)
+        // This allows queries to work correctly when called on sub-nodes
+        std::string xp;
+        xp.reserve(pathLike.size() * 2);  // Reserve for efficiency
+        
+        for (size_t i = 0; i < steps.size(); ++i) {
+            const auto& s = steps[i];
+            
+            if (s.isAttribute) {
+                // Attribute access
+                xp.push_back('@');
+                xp.append(s.name);
+            }
+            else {
+                // Element access
+                xp.append(s.name);
+                
+                if (s.hasIndex) {
+                    // XPath uses 1-based indices
+                    xp.push_back('[');
+                    xp.append(std::to_string(s.index + 1));
+                    xp.push_back(']');
+                }
+            }
+            
+            // Add separator between steps
+            if (i + 1 < steps.size()) {
+                xp.push_back('/');
+            }
+        }
+        
+        return xp;
+    }
+    catch (...) {
+        // Any exception results in invalid XPath
+        return std::string("__INVALID__");
+    }
+}
+
+//=============================================================================
+// XML Parsing Implementation
+//=============================================================================
+
+bool Parse(std::string_view xmlText, Document& out, Error* err, const ParseOptions& opt) noexcept {
+    try {
+        // Configure parsing flags
+        unsigned int flags = pugi::parse_default;
+        
+        if (opt.preserveWhitespace) {
+            flags |= pugi::parse_ws_pcdata;
+        }
+        
+        if (!opt.allowComments) {
+            flags &= ~pugi::parse_comments;
+        }
+        
+        // SECURITY: Disable external DTD to prevent XXE attacks
+        if (!opt.loadExternalDtd) {
+            flags &= ~pugi::parse_doctype;
+        }
+        
+        // Track original size for XML bomb detection
+        const size_t originalSize = xmlText.size();
+        
+        // Parse the XML buffer
+        const pugi::xml_parse_result res = out.load_buffer(xmlText.data(),
+            xmlText.size(),
+            flags,
+            pugi::encoding_utf8);// No need for casting.
+        
+        if (!res) {
+            setErr(err, res.description(), {}, xmlText, 
+                   static_cast<size_t>(res.offset));
+            return false;
+        }
+        
+        // SECURITY: Detect XML bomb attacks by checking node expansion ratio
+        if (originalSize > 0) {
+            // Iterative node count with explicit depth limit (prevents stack overflow)
+            constexpr size_t kMaxXmlDepth = 256;
+            size_t nodeCount = 0;
+
+            struct IterFrame {
+                pugi::xml_node node;
+                pugi::xml_node::iterator it;
+                pugi::xml_node::iterator end;
+            };
+            std::vector<IterFrame> stack;
+            stack.reserve(64);
+
+            {
+                IterFrame root_frame;
+                root_frame.node = out;
+                root_frame.it = out.children().begin();
+                root_frame.end = out.children().end();
+                stack.push_back(std::move(root_frame));
+            }
+
+            bool rejected = false;
+            while (!stack.empty()) {
+                auto& frame = stack.back();
+                if (frame.it == frame.end) {
+                    stack.pop_back();
+                    continue;
+                }
+
+                auto child = *(frame.it);
+                ++frame.it;
+                ++nodeCount;
+
+                if (nodeCount > kMaxNodeCount) {
+                    rejected = true;
+                    break;
+                }
+
+                if (stack.size() >= kMaxXmlDepth) {
+                    // Reject excessively deep documents (stack overflow / bomb variant)
+                    rejected = true;
+                    break;
+                }
+
+                if (child.first_child()) {
+                    IterFrame child_frame;
+                    child_frame.node = child;
+                    child_frame.it = child.children().begin();
+                    child_frame.end = child.children().end();
+                    stack.push_back(std::move(child_frame));
+                }
+            }
+
+            if (rejected) {
+                setErr(err,
+                       "Suspicious XML structure detected (possible entity expansion or depth attack)",
+                       {}, xmlText, 0);
+                return false;
+            }
+            
+            // Tiered bomb detection: reject if expansion ratio is suspicious
+            // Normal XML: ~50-100 bytes per node average
+            // Only apply ratio check above 1000 nodes to avoid false positives on compact docs
+            const size_t expectedMaxNodes = originalSize / 10;
+            
+            if (nodeCount > 1000 && nodeCount > expectedMaxNodes) {
+                setErr(err, 
+                       "Suspicious XML structure detected (possible entity expansion attack)", 
+                       {}, xmlText, 0);
+                return false;
+            }
+        }
+        
+        return true;
+    }
+    catch (const std::exception& e) {
+        setErr(err, e.what(), {}, xmlText, 0);
+        return false;
+    }
+    catch (...) {
+        setErr(err, "Unknown XML parse error", {}, xmlText, 0);
+        return false;
+    }
+}
+
+//=============================================================================
+// XML Serialization Implementation
+//=============================================================================
+
+/**
+ * @brief Custom writer for pugixml that writes to a std::string.
+ */
+struct StringWriter : pugi::xml_writer {
+    std::string s;
+    
+    void write(const void* data, size_t size) override {
+        if (data && size > 0) {
+            s.append(static_cast<const char*>(data), size);
+        }
+    }
+};
+
+/**
+ * @brief Internal helper to serialize a node to string.
+ *
+ * @param node Node to serialize
+ * @param[out] out Output string
+ * @param opt Serialization options
+ * @return true on success
+ */
+static bool saveToString(
+    const Node& node, 
+    std::string& out, 
+    const StringifyOptions& opt
+) noexcept {
+    try {
+        StringWriter wr;
+        
+        // Configure formatting flags
+        unsigned int fmt = pugi::format_default;
+        
+        if (!opt.pretty) {
+            fmt = pugi::format_raw;
+        }
+        
+        if (!opt.writeDeclaration) {
+            fmt |= pugi::format_no_declaration;
+        }
+
+        // Build indentation string
+        std::string indent;
+        if (opt.pretty && opt.indentSpaces > 0) {
+            // Clamp indent spaces to reasonable range
+            const int clampedIndent = std::clamp(opt.indentSpaces, 0, 16);
+            indent.assign(static_cast<size_t>(clampedIndent), ' ');
+        }
+
+        // Perform serialization
+        node.print(
+            wr, 
+            opt.pretty ? indent.c_str() : "", 
+            fmt, 
+            pugi::encoding_utf8
+        );
+
+        out = std::move(wr.s);
+        return true;
+    }
+    catch (...) {
+        return false;
+    }
+}
+
+bool Stringify(const Node& node, std::string& out, const StringifyOptions& opt) noexcept {
+    try {
+        out.clear();
+        return saveToString(node, out, opt);
+    }
+    catch (...) {
+        out.clear();
+        return false;
+    }
+}
+
+bool Minify(std::string_view xmlText, std::string& out, Error* err, const ParseOptions& opt) noexcept {
+    try {
+        out.clear();
+        
+        Document doc;
+        if (!Parse(xmlText, doc, err, opt)) {
+            return false;
+        }
+        
+        StringifyOptions so{};
+        so.pretty = false;
+        so.writeDeclaration = true;
+        
+        return Stringify(doc, out, so);
+    }
+    catch (...) {
+        out.clear();
+        return false;
+    }
+}
+
+bool Prettify(std::string_view xmlText, std::string& out, int indentSpaces, Error* err, const ParseOptions& opt) noexcept {
+    try {
+        out.clear();
+        
+        Document doc;
+        if (!Parse(xmlText, doc, err, opt)) {
+            return false;
+        }
+        
+        StringifyOptions so{};
+        so.pretty = true;
+        so.indentSpaces = indentSpaces;
+        so.writeDeclaration = true;
+        
+        return Stringify(doc, out, so);
+    }
+    catch (...) {
+        out.clear();
+        return false;
+    }
+}
+
+
+//=============================================================================
+// File I/O Implementation
+//=============================================================================
+
+bool LoadFromFile(
+    const std::filesystem::path& path, 
+    Document& out, 
+    Error* err, 
+    const ParseOptions& opt, 
+    size_t maxBytes
+) noexcept {
+    try {
+        // Open file FIRST, then get size from handle (eliminates TOCTOU)
+        std::ifstream ifs(path, std::ios::in | std::ios::binary | std::ios::ate);
+        if (!ifs) {
+            setIoErr(err, "Failed to open file", path);
+            return false;
+        }
+        
+        // Get size from the open handle's seek position
+        const auto fileSize = static_cast<size_t>(ifs.tellg());
+        ifs.seekg(0, std::ios::beg);
+        
+        // SECURITY: Enforce maximum file size to prevent memory exhaustion
+        if (fileSize > kMaxSafeXmlFileSize) {
+            setIoErr(err, "File exceeds maximum safe size (512 MB)", path);
+            return false;
+        }
+        
+        // Check against user-specified limit
+        if (fileSize > maxBytes) {
+            setIoErr(err, "File exceeds specified size limit", path);
+            return false;
+        }
+        
+        // Allocate buffer
+        std::string buf;
+        try {
+            buf.resize(fileSize);
+        }
+        catch (const std::bad_alloc&) {
+            setIoErr(err, "Memory allocation failed for file content", path);
+            return false;
+        }
+        
+        // Read file content
+        if (fileSize > 0) {
+            ifs.read(buf.data(), static_cast<std::streamsize>(fileSize));
+            
+            // SECURITY: Verify complete file read
+            const auto bytesRead = ifs.gcount();
+            
+            if (!ifs && !ifs.eof()) {
+                setIoErr(err, "Failed to read file", path);
+                return false;
+            }
+            
+            // Verify we read the expected amount
+            if (static_cast<size_t>(bytesRead) != fileSize) {
+                setIoErr(err, "Incomplete file read", path);
+                return false;
+            }
+            
+            // Resize to actual bytes read (should match, but be defensive)
+            buf.resize(static_cast<size_t>(bytesRead));
+        }
+        
+        // Remove UTF-8 BOM if present
+        stripUtf8BOM(buf);
+        
+        // Parse the content
+        return Parse(buf, out, err, opt);
+    }
+    catch (const std::exception& e) {
+        setIoErr(err, e.what(), path);
+        return false;
+    }
+    catch (...) {
+        setIoErr(err, "Unknown error loading XML file", path);
+        return false;
+    }
+}
+
+bool SaveToFile(
+    const std::filesystem::path& path, 
+    const Node& node, 
+    Error* err, 
+    const SaveOptions& opt
+) noexcept {
+    try {
+        // Serialize XML to string
+        std::string content;
+        if (!Stringify(node, content, opt)) {
+            setIoErr(err, "XML stringify failed", path);
+            return false;
+        }
+        
+        // Add UTF-8 BOM if requested
+        if (opt.writeBOM) {
+            constexpr unsigned char kUtf8Bom[3] = { 0xEF, 0xBB, 0xBF };
+            content.insert(content.begin(), kUtf8Bom, kUtf8Bom + 3);
+        }
+
+        // Ensure parent directory exists
+        const auto dir = path.parent_path().empty() 
+            ? std::filesystem::current_path() 
+            : path.parent_path();
+            
+        std::error_code ec;
+        if (!std::filesystem::exists(dir, ec)) {
+            std::filesystem::create_directories(dir, ec);
+            if (ec) {
+                setIoErr(err, "Failed to create directory", path, ec.message().c_str());
+                return false;
+            }
+        }
+
+        if (opt.atomicReplace) {
+            // ============================================================
+            // Atomic write-then-rename path
+            // ============================================================
+
+#ifdef _WIN32
+            // Generate temp filename using OS CSPRNG (BCryptGenRandom)
+            uint64_t randomBytes = 0;
+            if (!BCRYPT_SUCCESS(::BCryptGenRandom(
+                    nullptr,
+                    reinterpret_cast<PUCHAR>(&randomBytes),
+                    sizeof(randomBytes),
+                    BCRYPT_USE_SYSTEM_PREFERRED_RNG))) {
+                // Fallback: use GetTickCount64 + PID (less secure but functional)
+                randomBytes = ::GetTickCount64() ^ (static_cast<uint64_t>(::GetCurrentProcessId()) << 32);
+            }
+            
+            // Build temp filename (only random ID — no PID/TID/time leak)
+            wchar_t tempName[64];
+            _snwprintf_s(tempName, _countof(tempName), _TRUNCATE,
+                         L".ss_tmp_%016llx.xml", randomBytes);
+            
+            const auto tempPath = dir / tempName;
+
+            // Create temp file exclusively (CREATE_NEW prevents symlink attacks)
+            HANDLE hFile = ::CreateFileW(
+                tempPath.c_str(),
+                GENERIC_WRITE,
+                0,                              // No sharing during write
+                nullptr,
+                CREATE_NEW,                     // Fail if already exists (anti-symlink)
+                FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_SEQUENTIAL_SCAN,
+                nullptr);
+            
+            if (hFile == INVALID_HANDLE_VALUE) {
+                setIoErr(err, "Failed to create temp file exclusively", tempPath);
+                return false;
+            }
+
+            // Write content
+            size_t totalWritten = 0;
+            const DWORD toWrite = static_cast<DWORD>(
+                (std::min)(content.size(), static_cast<size_t>(MAXDWORD)));
+            DWORD written = 0;
+            
+             BOOL writeOk = ::WriteFile(hFile, content.data(), toWrite, &written, nullptr);
+             totalWritten += written;
+             
+             // For files > 4GB (unlikely for XML but defensive)
+             if (writeOk && content.size() > static_cast<size_t>(written)) {
+                 const char* remaining = content.data() + written;
+                 size_t left = content.size() - written;
+                 while (left > 0 && writeOk) {
+                     DWORD chunk = static_cast<DWORD>((std::min)(left, static_cast<size_t>(MAXDWORD)));
+                     writeOk = ::WriteFile(hFile, remaining, chunk, &written, nullptr);
+                     if (writeOk && written == 0) {
+                         writeOk = FALSE;
+                         break;
+                     }
+                     remaining += written;
+                     left -= written;
+                     totalWritten += written;
+                 }
+             }
+ 
+             // Flush to disk
+             BOOL flushOk = TRUE;
+             if (writeOk) {
+                 flushOk = ::FlushFileBuffers(hFile);
+             }
+             ::CloseHandle(hFile);
+ 
+             if (!writeOk || !flushOk || totalWritten != content.size()) {
+                 ::DeleteFileW(tempPath.c_str());
+                 setIoErr(err, "Failed to write temp file", tempPath);
+                 return false;
+            }
+
+            // Atomic rename with write-through
+            if (!::MoveFileExW(
+                    tempPath.c_str(), 
+                    path.c_str(), 
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+                        
+                const DWORD lastError = ::GetLastError();
+                ::DeleteFileW(tempPath.c_str());
+                setIoErr(err, "MoveFileExW failed", path, 
+                         std::to_string(static_cast<unsigned long>(lastError)).c_str());
+                return false;
+            }
+#else
+            // POSIX path: mkstemp for exclusive temp creation
+            std::string tempTemplate = (dir / ".ss_tmp_XXXXXX.xml").string();
+            int fd = mkstemps(tempTemplate.data(), 4); // 4 = strlen(".xml")
+            if (fd < 0) {
+                setIoErr(err, "Failed to create temp file", path);
+                return false;
+            }
+            
+            ssize_t written = write(fd, content.data(), content.size());
+            fsync(fd);
+            close(fd);
+            
+            if (written < 0 || static_cast<size_t>(written) != content.size()) {
+                unlink(tempTemplate.c_str());
+                setIoErr(err, "Failed to write temp file", path);
+                return false;
+            }
+            
+            // rename() atomically replaces the destination on same FS
+            std::filesystem::rename(tempTemplate, path, ec);
+            if (ec) {
+                unlink(tempTemplate.c_str());
+                setIoErr(err, "Failed to rename temp file", path, ec.message().c_str());
+                return false;
+            }
+#endif
+        }
+        else {
+            // ============================================================
+            // Non-atomic direct write (no temp file created)
+            // ============================================================
+            std::ofstream ofs(path, std::ios::out | std::ios::binary | std::ios::trunc);
+             if (!ofs) {
+                 setIoErr(err, "Failed to open file for write", path);
+                 return false;
+             }
+             if (content.size() > static_cast<size_t>((std::numeric_limits<std::streamsize>::max)())) {
+                 setIoErr(err, "XML content exceeds stream write limit", path);
+                 return false;
+             }
+             
+             ofs.write(content.data(), static_cast<std::streamsize>(content.size()));
+            if (!ofs) {
+                setIoErr(err, "Failed to write file", path);
+                return false;
+            }
+            
+            ofs.flush();
+        }
+        
+        return true;
+    }
+    catch (const std::exception& e) {
+        setIoErr(err, e.what(), path);
+        return false;
+    }
+    catch (...) {
+        setIoErr(err, "Unknown error saving XML file", path);
+        return false;
+    }
+}
+
+
+//=============================================================================
+// XPath Validation Helper
+//=============================================================================
+
+/**
+ * @brief Validate XPath for safe characters only.
+ *
+ * SECURITY: Prevents XPath injection by allowing only a whitelist of characters.
+ * Allowed: alphanumeric, /, @, [, ], _, -, .
+ * Rejected: =, <, >, (, ), |, !, *, $, ', ", etc.
+ *
+ * @param xp XPath string to validate
+ * @return true if XPath contains only safe characters
+ */
+static inline bool isXPathSafe(const std::string& xp) noexcept {
+    // Check length limit
+    if (xp.size() > kMaxXPathLength) {
+        return false;
+    }
+    
+    // Check for invalid sentinel
+    if (xp == "__INVALID__") {
+        return false;
+    }
+    
+    // SECURITY: Reject parent axis traversal (.. allows escaping intended subtree)
+    if (xp.find("..") != std::string::npos) {
+        return false;
+    }
+    
+    // Validate each character
+    for (const char c : xp) {
+        // Alphanumeric characters are safe
+        if (std::isalnum(static_cast<unsigned char>(c))) {
+            continue;
+        }
+        
+        // Safe path characters
+        if (c == '/' || c == '@' || c == '[' || c == ']' || 
+            c == '_' || c == '-' || c == '.') {
+            continue;
+        }
+        
+        // Any other character is potentially dangerous
+        return false;
+    }
+    
+    return true;
+}
+
+//=============================================================================
+// Query Helper Implementation
+//=============================================================================
+
+bool Contains(const Node& root, std::string_view pathLike) noexcept {
+    try {
+        const std::string xp = ToXPath(pathLike);
+        
+        // SECURITY: Validate XPath before execution
+        if (!isXPathSafe(xp)) {
+            return false;
+        }
+        
+        const pugi::xpath_node xn = root.select_node(xp.c_str());
+        return static_cast<bool>(xn);
+    }
+    catch (...) {
+        return false;
+    }
+}
+
+/**
+ * @brief Internal helper to get text content from node or attribute.
+ *
+ * @param root Root node to search from
+ * @param pathLike Path expression
+ * @param[out] out Text content
+ * @return true if found and text extracted
+ */
+static bool getNodeOrAttrText(
+    const Node& root, 
+    std::string_view pathLike, 
+    std::string& out
+) noexcept {
+    try {
+        const std::string xp = ToXPath(pathLike);
+        
+        // SECURITY: Validate XPath before execution
+        if (!isXPathSafe(xp)) {
+            return false;
+        }
+        
+        const pugi::xpath_node xn = root.select_node(xp.c_str());
+        if (!xn) {
+            return false;
+        }
+        
+        // Extract text from attribute or node
+        if (xn.attribute()) {
+            out = xn.attribute().value();
+            return true;
+        }
+        
+        if (xn.node()) {
+            out = xn.node().text().as_string();
+            return true;
+        }
+        
+        return false;
+    }
+    catch (...) {
+        return false;
+    }
+}
+
+bool GetText(const Node& root, std::string_view pathLike, std::string& out) noexcept {
+    try {
+        out.clear();
+        return getNodeOrAttrText(root, pathLike, out);
+    }
+    catch (...) {
+        out.clear();
+        return false;
+    }
+}
+
+//=============================================================================
+// Typed Getter Implementation
+//=============================================================================
+
+/**
+ * @brief Parse boolean from string.
+ *
+ * Recognizes multiple representations of boolean values:
+ * - True: "1", "true", "TRUE", "True", "yes", "YES", "Yes", "on", "ON", "On"
+ * - False: "0", "false", "FALSE", "False", "no", "NO", "No", "off", "OFF", "Off"
+ *
+ * @param s Input string
+ * @param[out] v Boolean value
+ * @return true if valid boolean representation
+ */
+static inline bool parseBool(std::string_view s, bool& v) noexcept {
+    // True values (comprehensive set for enterprise compatibility)
+    if (s == "1" || s == "true" || s == "TRUE" || s == "True" ||
+        s == "yes" || s == "YES" || s == "Yes" ||
+        s == "on" || s == "ON" || s == "On") {
+        v = true;
+        return true;
+    }
+    
+    // False values (comprehensive set for enterprise compatibility)
+    if (s == "0" || s == "false" || s == "FALSE" || s == "False" ||
+        s == "no" || s == "NO" || s == "No" ||
+        s == "off" || s == "OFF" || s == "Off") {
+        v = false;
+        return true;
+    }
+    
+    return false;
+}
+
+bool GetBool(const Node& root, std::string_view pathLike, bool& out) noexcept {
+    try {
+        std::string s;
+        if (!GetText(root, pathLike, s)) {
+            return false;
+        }
+        return parseBool(s, out);
+    }
+    catch (...) {
+        return false;
+    }
+}
+
+bool GetInt64(const Node& root, std::string_view pathLike, int64_t& out) noexcept {
+    try {
+        std::string s;
+        if (!GetText(root, pathLike, s)) {
+            return false;
+        }
+        
+        if (s.empty()) {
+            return false;
+        }
+        
+        const char* b = s.data();
+        const char* e = s.data() + s.size();
+        
+        const auto res = std::from_chars(b, e, out, 10);
+        
+        // Ensure entire string was consumed
+        return res.ec == std::errc{} && res.ptr == e;
+    }
+    catch (...) {
+        return false;
+    }
+}
+
+bool GetUInt64(const Node& root, std::string_view pathLike, uint64_t& out) noexcept {
+    try {
+        std::string s;
+        if (!GetText(root, pathLike, s)) {
+            return false;
+        }
+        
+        if (s.empty()) {
+            return false;
+        }
+        
+        const char* b = s.data();
+        const char* e = s.data() + s.size();
+        
+        const auto res = std::from_chars(b, e, out, 10);
+        
+        // Ensure entire string was consumed
+        return res.ec == std::errc{} && res.ptr == e;
+    }
+    catch (...) {
+        return false;
+    }
+}
+
+bool GetDouble(const Node& root, std::string_view pathLike, double& out) noexcept {
+    try {
+        std::string s;
+        if (!GetText(root, pathLike, s)) {
+            return false;
+        }
+        
+        if (s.empty()) {
+            return false;
+        }
+        
+        const char* b = s.data();
+        const char* e = s.data() + s.size();
+        
+        // Use std::from_chars for consistent, locale-independent parsing
+        // Note: MSVC supports std::from_chars for floating-point since VS2019 16.4
+        const auto res = std::from_chars(b, e, out);
+        
+        // Ensure entire string was consumed and no error occurred
+        if (res.ec != std::errc{} || res.ptr != e) {
+            return false;
+        }
+        
+        // SECURITY: Reject non-finite values (infinity, NaN)
+        // These can cause issues in calculations and comparisons
+        if (!std::isfinite(out)) {
+            return false;
+        }
+        
+        return true;
+    }
+    catch (...) {
+        return false;
+    }
+}
+
+//=============================================================================
+// Mutation Operations Implementation
+//=============================================================================
+
+bool Set(Node& root, std::string_view pathLike, std::string_view value) noexcept {
+    try {
+        if (pathLike.empty()) {
+            return false;
+        }
+        
+        // Handle XPath format (starts with '/')
+        if (pathLike.front() == '/') {
+            const std::string xp(pathLike);
+            
+            // SECURITY: Validate XPath to prevent injection attacks
+            if (!isXPathSafe(xp)) {
+                return false;
+            }
+            
+            pugi::xpath_node xn = root.select_node(xp.c_str());
+            if (!xn) {
+                return false;
+            }
+            
+            // Set attribute value
+            if (xn.attribute()) {
+                return xn.attribute().set_value(std::string(value).c_str());
+            }
+            
+            // Set node text value
+            if (xn.node()) {
+                xn.node().text() = std::string(value).c_str();
+                return true;
+            }
+            
+            return false;
+        }
+
+        // Parse dot-notation path into steps
+        std::vector<Step> steps;
+        parsePathLike(pathLike, steps);
+        
+        if (steps.empty()) {
+            return false;
+        }
+        
+        // SECURITY: Enforce maximum path depth to prevent stack overflow
+        if (steps.size() > kMaxPathDepth) {
+            return false;
+        }
+
+        // Initialize current node from root
+        Node cur = root;
+        if (cur.type() == pugi::node_document) {
+            if (!cur.first_child()) {
+                // Create first element if document is empty
+                if (steps[0].isAttribute) {
+                    return false;  // Cannot set attribute at document root
+                }
+                
+                auto child = cur.append_child(steps[0].name.c_str());
+                if (!child) {
+                    return false;
+                }
+            }
+            cur = cur.first_child();
+            
+            // Handle root name mismatch scenarios
+            if (!steps[0].isAttribute && std::string(cur.name()) != steps[0].name) {
+                // Document already has a different root - cannot add another
+                if (root.first_child() && root.first_child().next_sibling()) {
+                    return false;
+                }
+            }
+        }
+
+        // Determine parent node and starting step index
+        Node parent = root.type() == pugi::node_document ? root.first_child() : root;
+        
+        size_t startStep = 0;
+        if (root.type() == pugi::node_document && parent) {
+            // Skip first step if it matches the document root name
+            if (!steps[0].isAttribute && std::string(parent.name()) == steps[0].name) {
+                startStep = 1;
+            }
+        }
+        
+        // SECURITY: Track total nodes created to prevent resource exhaustion
+        size_t totalNodesCreated = 0;
+        
+        // Iterate through path steps
+        for (size_t i = startStep; i < steps.size(); ++i) {
+            const Step& s = steps[i];
+            const bool isLastStep = (i + 1 == steps.size());
+            
+            if (s.isAttribute) {
+                // Attributes can only be set on the last step
+                if (!isLastStep) {
+                    return false;
+                }
+                
+                if (!parent) {
+                    return false;
+                }
+                
+                // Get or create attribute
+                auto attr = parent.attribute(s.name.c_str());
+                if (!attr) {
+                    attr = parent.append_attribute(s.name.c_str());
+                    if (!attr) {
+                        return false;
+                    }
+                }
+                
+                return attr.set_value(std::string(value).c_str());
+            }
+            else {
+                // Find existing child node matching the step
+                Node found;
+                size_t foundIdx = 0;
+                
+                for (Node child = parent.child(s.name.c_str()); 
+                     child; 
+                     child = child.next_sibling(s.name.c_str())) {
+                    if (!s.hasIndex || foundIdx == s.index) {
+                        found = child;
+                        break;
+                    }
+                    ++foundIdx;
+                }
+                
+                // Create node if not found
+                if (!found) {
+                    if (!s.hasIndex || s.index == 0) {
+                        // Simple case: create single node
+                        found = parent.append_child(s.name.c_str());
+                        if (!found) {
+                            return false;
+                        }
+                        ++totalNodesCreated;
+                    }
+                    else {
+                        // Count existing siblings
+                        size_t existingCount = 0;
+                        for (Node child = parent.child(s.name.c_str()); 
+                             child; 
+                             child = child.next_sibling(s.name.c_str())) {
+                            ++existingCount;
+                            
+                            // Prevent infinite loop on malformed XML
+                            if (existingCount > kMaxXmlArraySize) {
+                                return false;
+                            }
+                        }
+
+                        // SECURITY: Check array size limit
+                        if (s.index > kMaxXmlArraySize) {
+                            return false;
+                        }
+                        
+                        // Calculate nodes needed
+                        const size_t nodesToCreate = (s.index >= existingCount) 
+                            ? (s.index - existingCount + 1) 
+                            : 0;
+                        
+                        // SECURITY: Check per-step node creation limit
+                        if (nodesToCreate > kMaxNodesCreated) {
+                            return false;
+                        }
+                        
+                        totalNodesCreated += nodesToCreate;
+                        
+                        // SECURITY: Check total node budget
+                        if (totalNodesCreated > kMaxNodesCreated) {
+                            return false;
+                        }
+
+                        // Create required nodes
+                        for (size_t cnt = existingCount; cnt <= s.index; ++cnt) {
+                            auto child = parent.append_child(s.name.c_str());
+                            if (!child) {
+                                return false;
+                            }
+                        }
+                        
+                        // Find the target node
+                        size_t idx = 0;
+                        for (Node child = parent.child(s.name.c_str()); 
+                             child; 
+                             child = child.next_sibling(s.name.c_str())) {
+                            if (idx == s.index) {
+                                found = child;
+                                break;
+                            }
+                            ++idx;
+                        }
+                    }
+                    
+                    if (!found) {
+                        return false;
+                    }
+                }
+                
+                // Set value on last step, or continue traversal
+                if (isLastStep) {
+                    found.text() = std::string(value).c_str();
+                    return true;
+                }
+                
+                parent = found;
+            }
+        }
+        
+        return false;
+    }
+    catch (...) {
+        return false;
+    }
+}
+
+bool Erase(Node& root, std::string_view pathLike) noexcept {
+    try {
+        const std::string xp = ToXPath(pathLike);
+        
+        // SECURITY: Validate XPath to prevent injection attacks
+        if (!isXPathSafe(xp)) {
+            return false;
+        }
+        
+        pugi::xpath_node xn = root.select_node(xp.c_str());
+        if (!xn) {
+            return false;
+        }
+        
+        // Handle attribute deletion
+        if (xn.attribute()) {
+            Node parentNode = xn.parent();
+            if (!parentNode) {
+                return false;
+            }
+            return parentNode.remove_attribute(xn.attribute());
+        }
+        
+        // Handle node deletion
+        if (xn.node()) {
+            auto n = xn.node();
+            auto p = n.parent();
+            if (p) {
+                return p.remove_child(n);
+            }
+        }
+        
+        return false;
+    }
+    catch (...) {
+        return false;
+    }
+}
+
+		}// namespace XML
+	}// namespace Utils
+}// namespace ShadowStrike

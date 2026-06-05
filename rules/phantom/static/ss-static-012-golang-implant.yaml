@@ -1,0 +1,36 @@
+id: ss-static-012
+detection_name: "Win32/Implant.GoLang"
+description: "Binary compiled with Go contains network + execution APIs — common pattern in malware using Go due to static linking."
+scope: static
+severity: medium
+status: stable
+source: native
+confidence: 0.62
+weight: 1.5
+version: 1
+attack:
+  - tactic: TA0011
+    technique: T1071
+    name: "Application Layer Protocol"
+logic:
+  and:
+    - or:
+        - string: "go.buildid"
+        - string: "runtime.goroutine"
+        - string: "main.main"
+        - string: "golang"
+    - or:
+        - string: "crypto/tls"
+        - string: "net/http"
+        - string: "os/exec"
+    - unsigned
+    - not:
+        section:
+          value: ".debug"
+fp_guard:
+  notes:
+    - "Many legitimate Go tools are unsigned. Require unsigned + unknown/new file."
+    - "Software like Terraform, Docker are Go binaries but are signed and well-known."
+  suppress:
+    - field: file.signer.subject
+      regex: "(?i)(HashiCorp|Docker|Google|Cloudflare)"

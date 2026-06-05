@@ -1,0 +1,29 @@
+id: ss-static-010
+detection_name: "Win32/Shellcode.Donut"
+description: "Binary contains Donut or similar position-independent shellcode markers — memory-only execution vehicle."
+scope: static
+severity: critical
+status: stable
+source: native
+confidence: 0.88
+weight: 3.0
+version: 1
+attack:
+  - tactic: TA0005
+    technique: T1027
+    name: "Obfuscated Files or Information"
+  - tactic: TA0005
+    technique: T1620
+    name: "Reflective Code Loading"
+logic:
+  or:
+    - string: "donut"
+    - string: "D-Nut"
+    - string: "CLRCreateInstance"
+    - string: "ICLRRuntimeHost"
+    - bytes: "fc 48 83 e4 f0 e8"
+    - bytes: "58 5b 5a 59 41 58 41 59 41 5a 48 8d 64 24 20"
+fp_guard:
+  notes:
+    - ".NET injection tools and C2 frameworks use Donut-generated shellcode."
+    - "Pentest authorized ranges should be on allowlist."

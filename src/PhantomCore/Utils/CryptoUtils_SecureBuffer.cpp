@@ -1,0 +1,239 @@
+/*
+ * ShadowStrike - Enterprise NGAV/EDR Platform
+ * Copyright (C) 2026 ShadowStrike Security
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+#include"pch.h"
+#include"CryptoUtils.hpp"
+#include"CryptoUtilsCommon.hpp"
+
+namespace ShadowStrike {
+	namespace Utils {
+		namespace CryptoUtils {
+
+			// =============================================================================
+			// SecureBuffer Implementation
+			// =============================================================================
+			template<typename T>
+			SecureBuffer<T>::SecureBuffer(size_t size) : m_size(0) {
+				if (size > 0) allocate(size);
+			}
+
+			template<typename T>
+			SecureBuffer<T>::~SecureBuffer() {
+				deallocate();
+			}
+
+			template<typename T>
+			SecureBuffer<T>::SecureBuffer(SecureBuffer&& other) noexcept
+				: m_data(other.m_data), m_size(other.m_size), m_locked(other.m_locked)
+			{
+				other.m_data = nullptr;
+				other.m_size = 0;
+				other.m_locked = false;
+			}
+
+			template<typename T>
+			SecureBuffer<T>& SecureBuffer<T>::operator=(SecureBuffer&& other) noexcept {
+				if (this != &other) {
+					deallocate();
+					m_data = other.m_data;
+					m_size = other.m_size;
+					m_locked = other.m_locked;
+					other.m_data = nullptr;
+					other.m_size = 0;
+					other.m_locked = false;
+				}
+				return *this;
+			}
+
+			template<typename T>
+			void SecureBuffer<T>::Resize(size_t newSize) {
+				if (newSize == m_size) return;
+				deallocate();
+				if (newSize > 0) allocate(newSize);
+			}
+
+			template<typename T>
+			void SecureBuffer<T>::Clear() {
+				deallocate();
+			}
+
+			template<typename T>
+			void SecureBuffer<T>::CopyFrom(const T* src, size_t count) {
+				Resize(count);
+				if (count > 0 && m_data && src) {
+					std::memcpy(m_data, src, count * sizeof(T));
+				}
+			}
+
+			template<typename T>
+			void SecureBuffer<T>::CopyFrom(const std::vector<T>& src) {
+				CopyFrom(src.data(), src.size());
+			}
+
+			template<typename T>
+			void SecureBuffer<T>::allocate(size_t size) {
+				// Reset lock state before any allocation attempt
+				m_locked = false;
+
+				// Overflow guard: size * sizeof(T) must not wrap
+				if (size > SIZE_MAX / sizeof(T)) {
+					m_data = nullptr;
+					m_size = 0;
+					return;
+				}
+
+				// Cap at 256 MiB — no legitimate EDR use-case needs a larger secure buffer
+				static constexpr size_t kMaxSecureBufferBytes = 256ULL * 1024 * 1024;
+				const size_t byteCount = size * sizeof(T);
+				if (byteCount > kMaxSecureBufferBytes) {
+					m_data = nullptr;
+					m_size = 0;
+					return;
+				}
+
+#ifdef _WIN32
+				m_data = static_cast<T*>(VirtualAlloc(nullptr, byteCount, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+				if (m_data) {
+					m_size = size;
+					// Track lock state — VirtualLock can fail due to working set quota
+					m_locked = (VirtualLock(m_data, byteCount) != FALSE);
+				}
+#else
+				m_data = static_cast<T*>(std::malloc(byteCount));
+				if (m_data) m_size = size;
+#endif
+			}
+
+			template<typename T>
+			void SecureBuffer<T>::deallocate() {
+				if (m_data) {
+					SecureWipeMemory(m_data, m_size * sizeof(T));
+#ifdef _WIN32
+					if (m_locked) {
+						VirtualUnlock(m_data, m_size * sizeof(T));
+						m_locked = false;
+					}
+					VirtualFree(m_data, 0, MEM_RELEASE);
+#else
+					std::free(m_data);
+#endif
+					m_data = nullptr;
+					m_size = 0;
+				}
+			}
+
+			// Explicit instantiation
+			template class SecureBuffer<uint8_t>;
+			template class SecureBuffer<char>;
+			template class SecureBuffer<wchar_t>;
+
+			// =============================================================================
+			// SecureString Implementation	
+			// =============================================================================
+			SecureString::SecureString(std::string_view str) {
+				Assign(str);
+			}
+
+			SecureString::SecureString(std::wstring_view str) {
+				Assign(str);
+			}
+
+			SecureString::~SecureString() {
+				Clear();
+			}
+
+			SecureString::SecureString(SecureString&& other) noexcept
+				: m_buffer(std::move(other.m_buffer))
+			{
+			}
+
+			SecureString& SecureString::operator=(SecureString&& other) noexcept {
+				if (this != &other) {
+					m_buffer = std::move(other.m_buffer);
+				}
+				return *this;
+			}
+
+			void SecureString::Assign(std::string_view str) {
+				if (str.empty()) {
+					Clear();
+					return;
+				}
+
+				// Allocate str.size()+1 for null terminator, but only copy str.size()
+				// bytes from the source — string_view is NOT guaranteed null-terminated.
+				m_buffer.Resize(str.size() + 1);
+				if (m_buffer.Data() == nullptr || m_buffer.Size() != str.size() + 1) {
+					Clear();
+					return;
+				}
+				std::memcpy(m_buffer.Data(), str.data(), str.size());
+				m_buffer.Data()[str.size()] = '\0';
+			}
+
+			void SecureString::Assign(std::wstring_view str) {
+				// UTF-16 → UTF-8 conversion using Windows API
+				if (str.empty()) {
+					Clear();
+					return;
+				}
+
+				// WideCharToMultiByte takes int — guard against truncation on huge strings
+				if (str.size() > static_cast<size_t>(INT_MAX)) {
+					Clear();
+					return;
+				}
+
+				int sizeNeeded = WideCharToMultiByte(CP_UTF8, 0, str.data(), static_cast<int>(str.size()),
+					nullptr, 0, nullptr, nullptr);
+				if (sizeNeeded <= 0) {
+					Clear();
+					return;
+				}
+
+				std::string narrow(sizeNeeded, '\0');
+				const int written = WideCharToMultiByte(CP_UTF8, 0, str.data(),
+					static_cast<int>(str.size()),
+					&narrow[0], sizeNeeded, nullptr, nullptr);
+				if (written <= 0 || written != sizeNeeded) {
+					// Conversion failed or produced an unexpected length.
+					// Wipe whatever may have been partially written before clearing.
+					SecureWipeMemory(narrow.data(), narrow.size());
+					Clear();
+					return;
+				}
+
+				// Copy to secure buffer
+				Assign(narrow);
+
+				// SECURITY: Securely clear the temporary string
+				SecureWipeMemory(narrow.data(), narrow.size());
+			}
+
+			void SecureString::Clear() {
+				m_buffer.Clear();
+			}
+
+			std::string_view SecureString::ToStringView() const noexcept {
+				if (m_buffer.Empty()) return std::string_view();
+				return std::string_view(m_buffer.Data(), m_buffer.Size() > 0 ? m_buffer.Size() - 1 : 0);
+			}
+
+
+		}//namespace CryptoUtils
+	}// namespace Utils
+}// namespace ShadowStrike

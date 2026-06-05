@@ -1,0 +1,84 @@
+id: ss-seq-012
+detection_name: "Win32/Sequence.Discovery.PrivEsc.CredDump"
+description: "Detects a post-exploitation attack chain: system discovery commands followed by a privilege escalation attempt, culminating in credential dumping activity. This sequence is characteristic of an attacker who has gained initial foothold, surveys the environment, escalates privileges, and then harvests credentials for further lateral movement."
+scope: sequence
+severity: critical
+status: stable
+source: native
+confidence: 0.85
+weight: 4.0
+version: 1
+
+attack:
+  - tactic: TA0007
+    technique: T1082
+    name: "System Information Discovery"
+  - tactic: TA0004
+    technique: T1068
+    name: "Exploitation for Privilege Escalation"
+  - tactic: TA0006
+    technique: T1003
+    name: "OS Credential Dumping"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1082/"
+    title: "ATT&CK T1082"
+  - url: "https://attack.mitre.org/techniques/T1003/"
+    title: "ATT&CK T1003"
+
+logic:
+  sequence:
+    - id: step1_discovery
+      within: 600s
+      event:
+        and:
+          - field_in:
+              field: process.name
+              values:
+                - systeminfo.exe
+                - whoami.exe
+                - ipconfig.exe
+                - net.exe
+                - nltest.exe
+              case_insensitive: true
+          - field_eq:
+              field: process.user
+              value: "{{host.non_admin_user}}"
+    - id: step2_privesc
+      within: 900s
+      after: step1_discovery
+      event:
+        or:
+          - field_regex:
+              field: process.command_line
+              pattern: "(?i)(bypassuac|fodhelper|eventvwr|sdclt|cmstp|wscript.*uac)"
+          - field_regex:
+              field: process.command_line
+              pattern: "(?i)(juicypotato|rottenpotato|sweetpotato|printspoofer)"
+          - and:
+              - field_eq:
+                  field: process.integrity_level
+                  value: "high"
+              - field_eq:
+                  field: process.parent.integrity_level
+                  value: "medium"
+    - id: step3_cred_dump
+      within: 600s
+      after: step2_privesc
+      event:
+        or:
+          - field_regex:
+              field: process.command_line
+              pattern: "(?i)(sekurlsa|lsadump|mimikatz|procdump.*lsass|sqldumper.*lsass)"
+          - field_regex:
+              field: memory.target_process.name
+              pattern: "(?i)lsass\\.exe"
+
+fp_guard:
+  notes:
+    - "Red team exercises and authorized penetration tests will produce this exact sequence. Validate against authorized testing windows."
+    - "Security tooling that runs discovery checks followed by privilege validation may partially match."
+  suppress:
+    - field: process.user
+      values:
+        - "DOMAIN\\pentest_svc"

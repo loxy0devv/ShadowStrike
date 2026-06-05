@@ -1,0 +1,31 @@
+id: ss-seq-009
+detection_name: "Win32/Macro.EmailDelivery"
+description: "Email client spawned an Office document which executed a macro that launched a shell — phishing macro chain."
+scope: sequence
+severity: critical
+status: stable
+source: native
+confidence: 0.88
+weight: 3.5
+version: 1
+attack:
+  - tactic: TA0002
+    technique: T1566
+    sub_technique: T1566.001
+logic:
+  sequence:
+    - field_in:
+        field: process.parent.name
+        values: [OUTLOOK.EXE, THUNDERBIRD.EXE, MAILBIRD.EXE]
+        case_insensitive: true
+    - field_in:
+        field: process.name
+        values: [WINWORD.EXE, EXCEL.EXE, POWERPNT.EXE]
+        case_insensitive: true
+    - field_in:
+        field: process.name
+        values: [cmd.exe, powershell.exe, wscript.exe, cscript.exe, mshta.exe]
+        case_insensitive: true
+fp_guard:
+  notes:
+    - "This 3-step chain is a very strong signal with very few benign exceptions."

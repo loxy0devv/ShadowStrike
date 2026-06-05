@@ -1,0 +1,57 @@
+id: ss-mem-009
+detection_name: "Win32/Memory.SectionInject.RemoteProcess"
+description: "Detects creation of a mapped view of a section object in a remote process's address space. This is a common process injection technique where attackers create a shared section, write shellcode or a payload into it, then map a view into the target process and redirect execution, avoiding the more easily-monitored WriteProcessMemory/CreateRemoteThread combination."
+scope: memory
+severity: critical
+status: stable
+source: native
+confidence: 0.88
+weight: 3.0
+version: 1
+
+attack:
+  - tactic: TA0004
+    technique: T1055.003
+    name: "Process Injection: Thread Execution Hijacking"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1055/003/"
+    title: "ATT&CK T1055.003"
+
+logic:
+  and:
+    - field_eq:
+        field: memory.operation
+        value: "map_view_of_section"
+    - field_eq:
+        field: memory.target_process_is_self
+        value: "false"
+    - field_eq:
+        field: memory.section_protection
+        value: "PAGE_EXECUTE_READ"
+    - not:
+        field_in:
+          field: memory.process.name
+          values:
+            - csrss.exe
+            - lsass.exe
+            - svchost.exe
+            - services.exe
+          case_insensitive: true
+    - not:
+        field_in:
+          field: memory.target_process.name
+          values:
+            - conhost.exe
+            - dwm.exe
+          case_insensitive: true
+
+fp_guard:
+  notes:
+    - "Legitimate IPC mechanisms using named sections may trigger this rule. Validate section name and both process identities."
+    - "Graphics drivers and rendering engines map executable sections across process boundaries for GPU communication."
+  suppress:
+    - field: memory.process.name
+      values:
+        - dwm.exe
+        - audiodg.exe

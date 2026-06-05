@@ -1,0 +1,46 @@
+id: ss-seq-002
+detection_name: "Ransomware.AttackChain.Generic"
+description: "Ransomware execution chain: suspicious process → shadow copy deletion → bulk file modification."
+scope: sequence
+severity: critical
+status: stable
+source: native
+confidence: 0.90
+weight: 4.0
+version: 1
+attack:
+  - tactic: TA0040
+    technique: T1486
+    name: "Data Encrypted for Impact"
+  - tactic: TA0040
+    technique: T1490
+    name: "Inhibit System Recovery"
+logic:
+  sequence:
+    - or:
+        - field_contains:
+            field: process.command_line
+            value: "delete shadows"
+        - field_contains:
+            field: process.command_line
+            value: "shadowcopy delete"
+        - field_contains:
+            field: process.command_line
+            value: "recoveryenabled no"
+    - or:
+        - field_regex:
+            field: file.path
+            value: "(?i)\\.(locked|encrypted|crypt|ransom)$"
+        - field_contains:
+            field: file.path
+            value: "README"
+        - field_contains:
+            field: file.path
+            value: "HOW_TO"
+        - field_contains:
+            field: file.path
+            value: "DECRYPT"
+fp_guard:
+  notes:
+    - "Both signals required in sequence — VSS deletion alone is insufficient."
+    - "This rule catches the kill-chain, not individual actions."

@@ -1,0 +1,57 @@
+id: ss-file-012
+detection_name: "Win32/SAM.NTDS.HiveCopy.CredentialTheft"
+description: "Detects file copy or read operations targeting the SAM, NTDS.dit, or SECURITY registry hive files outside of normal system paths. Copying these files enables offline credential extraction (password hash dumping) without triggering live LSASS access, bypassing many credential-access controls."
+scope: file
+severity: critical
+status: stable
+source: native
+confidence: 0.93
+weight: 3.5
+version: 1
+
+attack:
+  - tactic: TA0006
+    technique: T1003.002
+    name: "OS Credential Dumping: Security Account Manager"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1003/002/"
+    title: "ATT&CK T1003.002"
+  - url: "https://attack.mitre.org/techniques/T1003/003/"
+    title: "ATT&CK T1003.003 - NTDS"
+
+logic:
+  and:
+    - or:
+        - field_regex:
+            field: file.source_path
+            pattern: "(?i)C:\\\\Windows\\\\System32\\\\config\\\\(SAM|SECURITY|SYSTEM|NTDS)"
+        - field_regex:
+            field: file.source_path
+            pattern: "(?i)\\\\NTDS\\\\ntds\\.dit$"
+        - field_regex:
+            field: file.path
+            pattern: "(?i)(SAM|ntds\\.dit|SECURITY|SYSTEM)(\\.(bak|copy|tmp|save|dump|hive|export))?$"
+    - not:
+        field_in:
+          field: file.process.name
+          values:
+            - ntbackup.exe
+            - wbengine.exe
+            - svchost.exe
+          case_insensitive: true
+    - not:
+        field_regex:
+          field: file.destination_path
+          pattern: "(?i)C:\\\\Windows\\\\(System32|SysWOW64|WinSxS)\\\\"
+
+fp_guard:
+  notes:
+    - "Windows Backup (wbengine, ntbackup) legitimately accesses these hives via VSS. The rule excludes known backup processes."
+    - "Volume Shadow Copy operations and system restore may trigger access but typically via VSS paths."
+  suppress:
+    - field: file.process.name
+      values:
+        - wbengine.exe
+        - vssvc.exe
+        - ntbackup.exe

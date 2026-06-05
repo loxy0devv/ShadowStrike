@@ -1,0 +1,34 @@
+id: ss-reg-005
+detection_name: "Win32/Evasion.ETWDisable"
+description: "Event Tracing for Windows disabled or tampered via registry — defense evasion."
+scope: registry
+severity: high
+status: stable
+source: native
+confidence: 0.88
+weight: 2.8
+version: 1
+attack:
+  - tactic: TA0005
+    technique: T1562
+    sub_technique: T1562.006
+    name: "Impair Defenses: Indicator Blocking"
+logic:
+  and:
+    - or:
+        - field_contains:
+            field: registry.key
+            value: "\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Diagnostics\\EventLog"
+        - field_contains:
+            field: registry.key
+            value: "\\SYSTEM\\CurrentControlSet\\Control\\WMI"
+        - field_contains:
+            field: registry.key
+            value: "\\SOFTWARE\\Policies\\Microsoft\\Windows\\EventLog"
+    - or:
+        - field_in:
+            field: registry.value
+            values: [Enabled, MaxSize, AutoBackupLogFiles, LoggingEnabled]
+fp_guard:
+  notes:
+    - "Group Policy legitimately manages ETW/EventLog settings."

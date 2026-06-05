@@ -1,0 +1,45 @@
+id: ss-proc-017
+detection_name: "Win32/Evasion.DefenderExclusion"
+description: "Windows Defender exclusion added via PowerShell or command line — AV evasion preparation."
+scope: process
+severity: high
+status: stable
+source: native
+confidence: 0.85
+weight: 2.5
+version: 1
+attack:
+  - tactic: TA0005
+    technique: T1562
+    sub_technique: T1562.001
+    name: "Impair Defenses: Disable or Modify Tools"
+logic:
+  and:
+    - field_in:
+        field: process.name
+        values: [powershell.exe, pwsh.exe]
+        case_insensitive: true
+    - or:
+        - field_contains:
+            field: process.command_line
+            value: "Add-MpPreference"
+        - field_contains:
+            field: process.command_line
+            value: "Set-MpPreference"
+    - or:
+        - field_contains:
+            field: process.command_line
+            value: "ExclusionPath"
+        - field_contains:
+            field: process.command_line
+            value: "ExclusionExtension"
+        - field_contains:
+            field: process.command_line
+            value: "ExclusionProcess"
+        - field_contains:
+            field: process.command_line
+            value: "DisableRealtimeMonitoring"
+fp_guard:
+  notes:
+    - "Security admins add exclusions for known-good directories."
+    - "Correlate with non-admin session or unusual parent process."

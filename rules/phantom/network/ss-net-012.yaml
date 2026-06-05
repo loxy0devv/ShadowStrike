@@ -1,0 +1,57 @@
+id: ss-net-012
+detection_name: "Win32/FTP.Exfiltration.Outbound"
+description: "Detects outbound FTP connections (port 20/21) initiated by processes that are not FTP client applications, or FTP connections to non-corporate external hosts. FTP is a common exfiltration channel because it is plaintext, easy to script, and may be allowed through poorly-configured firewalls."
+scope: network
+severity: high
+status: stable
+source: native
+confidence: 0.82
+weight: 2.0
+version: 1
+
+attack:
+  - tactic: TA0010
+    technique: T1048.003
+    name: "Exfiltration Over Alternative Protocol: Exfiltration Over Unencrypted Non-C2 Protocol"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1048/003/"
+    title: "ATT&CK T1048.003"
+
+logic:
+  and:
+    - or:
+        - field_eq:
+            field: network.destination_port
+            value: 21
+        - field_eq:
+            field: network.destination_port
+            value: 20
+    - field_eq:
+        field: network.direction
+        value: "outbound"
+    - not:
+        field_regex:
+          field: network.destination_ip
+          pattern: "^(10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)"
+    - not:
+        field_in:
+          field: network.process.name
+          values:
+            - ftp.exe
+            - winscp.exe
+            - filezilla.exe
+            - coreftp.exe
+            - smartftp.exe
+          case_insensitive: true
+
+fp_guard:
+  notes:
+    - "Legitimate FTP clients are excluded; the rule fires on unexpected processes using FTP. Validate against known data transfer workflows."
+    - "Some legacy line-of-business applications use FTP for file transfers to vendor systems."
+  suppress:
+    - field: network.process.name
+      values:
+        - ftp.exe
+        - winscp.exe
+        - filezilla.exe

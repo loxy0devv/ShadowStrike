@@ -1,0 +1,43 @@
+id: ss-proc-006
+detection_name: "Win32/DLL.Sideload"
+description: "Legitimate signed binary loaded a DLL from a non-system directory — probable DLL sideloading."
+scope: image
+severity: high
+status: stable
+source: native
+confidence: 0.75
+weight: 2.0
+version: 1
+attack:
+  - tactic: TA0005
+    technique: T1574
+    sub_technique: T1574.002
+    name: "Hijack Execution Flow: DLL Side-Loading"
+logic:
+  and:
+    - field_equals:
+        field: image.signed
+        value: "false"
+    - field_not_in:
+        field: process.name
+        values: [chrome.exe, msedge.exe, firefox.exe, node.exe, python.exe, java.exe]
+        case_insensitive: true
+    - or:
+        - field_contains:
+            field: image.path
+            value: "\\Users\\"
+        - field_contains:
+            field: image.path
+            value: "\\AppData\\"
+        - field_contains:
+            field: image.path
+            value: "\\Temp\\"
+        - field_contains:
+            field: image.path
+            value: "\\ProgramData\\"
+    - signer_untrusted:
+        field: file.signer.trusted
+fp_guard:
+  notes:
+    - "Many portable applications and dev tools load unsigned DLLs from user directories."
+    - "Correlate with other signals — unsigned DLL alone is weak."

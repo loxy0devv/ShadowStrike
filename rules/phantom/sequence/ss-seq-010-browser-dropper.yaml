@@ -1,0 +1,43 @@
+id: ss-seq-010
+detection_name: "Win32/Dropper.BrowserDownload"
+description: "Browser downloaded an executable that was then executed — drive-by or malvertising delivery chain."
+scope: sequence
+severity: high
+status: stable
+source: native
+confidence: 0.80
+weight: 2.8
+version: 1
+attack:
+  - tactic: TA0002
+    technique: T1204
+    sub_technique: T1204.002
+logic:
+  sequence:
+    - and:
+        - field_in:
+            field: process.name
+            values: [chrome.exe, msedge.exe, firefox.exe, iexplore.exe, brave.exe]
+            case_insensitive: true
+        - or:
+            - field_ends_with:
+                field: file.path
+                value: ".exe"
+                case_insensitive: true
+            - field_ends_with:
+                field: file.path
+                value: ".msi"
+                case_insensitive: true
+    - and:
+        - field_in:
+            field: process.parent.name
+            values: [chrome.exe, msedge.exe, firefox.exe, iexplore.exe, brave.exe, explorer.exe]
+            case_insensitive: true
+        - field_not_in:
+            field: process.name
+            values: [chrome.exe, msedge.exe, firefox.exe, brave.exe, iexplore.exe, msiexec.exe]
+            case_insensitive: true
+fp_guard:
+  notes:
+    - "Users commonly download and run software installers from browsers."
+    - "Require the new process to also exhibit suspicious behavior."

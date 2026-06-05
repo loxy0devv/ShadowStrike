@@ -1,0 +1,34 @@
+id: ss-net-005
+detection_name: "Win32/C2.TorNetwork"
+description: "Process connected to known Tor guard relay ports or Onion domain — anonymous C2 channel."
+scope: network
+severity: high
+status: stable
+source: native
+confidence: 0.75
+weight: 2.2
+version: 1
+attack:
+  - tactic: TA0011
+    technique: T1090
+    sub_technique: T1090.003
+    name: "Proxy: Multi-hop Proxy"
+logic:
+  or:
+    - field_in:
+        field: network.destination.port
+        values: ["9001", "9030", "9050", "9051", "9150", "9151"]
+    - field_regex:
+        field: network.destination.host
+        value: "(?i)\\.onion$"
+    - and:
+        - field_equals:
+            field: process.name
+            value: "tor.exe"
+            case_insensitive: true
+        - field_exists:
+            field: network.destination.ip
+fp_guard:
+  notes:
+    - "Privacy-conscious users and journalists legitimately use Tor."
+    - "Context required — Tor use from server workloads or IT assets is high signal."

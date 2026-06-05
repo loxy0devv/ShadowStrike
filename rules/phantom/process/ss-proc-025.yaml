@@ -1,0 +1,57 @@
+id: ss-proc-025
+detection_name: "Win32/Mshta.RemoteVBScript.Execution"
+description: "Detects mshta.exe executing inline VBScript, JScript, or fetching remote HTA content via URL. Attackers use mshta to bypass application whitelisting by embedding malicious script in HTML Application files or providing remote URLs, enabling code execution outside of standard script host monitoring."
+scope: process
+severity: high
+status: stable
+source: native
+confidence: 0.88
+weight: 2.5
+version: 1
+
+attack:
+  - tactic: TA0005
+    technique: T1218.005
+    name: "System Binary Proxy Execution: Mshta"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1218/005/"
+    title: "ATT&CK T1218.005"
+  - url: "https://lolbas-project.github.io/lolbas/Binaries/Mshta/"
+    title: "LOLBAS Mshta"
+
+logic:
+  and:
+    - field_in:
+        field: process.name
+        values:
+          - mshta.exe
+        case_insensitive: true
+    - or:
+        - field_regex:
+            field: process.command_line
+            pattern: "(?i)vbscript:"
+        - field_regex:
+            field: process.command_line
+            pattern: "(?i)javascript:"
+        - field_regex:
+            field: process.command_line
+            pattern: "(?i)(http|https|ftp)://"
+        - field_regex:
+            field: process.command_line
+            pattern: "(?i)\\\\\\\\[0-9]{1,3}\\."
+        - field_contains:
+            field: process.command_line
+            value: "WScript.Shell"
+
+fp_guard:
+  notes:
+    - "Legitimate enterprise HTA applications may be hosted on internal web servers. Allowlist known internal HTA deployment URLs."
+    - "Some legacy line-of-business applications use mshta for UI rendering."
+  suppress:
+    - field: process.command_line
+      values:
+        - "\\\\internal.corp\\"
+    - field: process.parent.name
+      values:
+        - explorer.exe

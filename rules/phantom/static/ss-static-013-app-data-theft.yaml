@@ -1,0 +1,40 @@
+id: ss-static-013
+detection_name: "Trojan.Stealer.AppData"
+description: "Binary imports wallet, cryptocurrency, and app-data access patterns consistent with broad-scope stealer."
+scope: static
+severity: high
+status: stable
+source: native
+confidence: 0.72
+weight: 2.0
+version: 1
+attack:
+  - tactic: TA0009
+    technique: T1005
+    name: "Data from Local System"
+logic:
+  and:
+    - or:
+        - string: "metamask"
+        - string: "electrum"
+        - string: "atomic wallet"
+        - string: "exodus"
+        - string: "coinbase"
+        - string: "wallet.dat"
+        - string: "keystore"
+        - string: "mnemonic"
+        - string: "seed phrase"
+    - or:
+        - api: SHGetFolderPathA
+        - api: SHGetFolderPathW
+        - api: SHGetKnownFolderPath
+        - string: "AppData"
+        - string: "APPDATA"
+    - or:
+        - api: CryptUnprotectData
+        - api: BCryptDecrypt
+        - string: "DecryptValue"
+fp_guard:
+  notes:
+    - "Crypto portfolio trackers legitimately reference wallet paths."
+    - "Require unsigned binary from unknown origin."

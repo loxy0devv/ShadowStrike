@@ -1,0 +1,49 @@
+id: ss-net-003
+detection_name: "Win32/ReverseShell.OutboundConn"
+description: "Common shell process established an outbound network connection — likely reverse shell or payload download."
+scope: network
+severity: critical
+status: stable
+source: native
+confidence: 0.85
+weight: 3.0
+version: 1
+attack:
+  - tactic: TA0011
+    technique: T1059
+    name: "Command and Scripting Interpreter"
+  - tactic: TA0011
+    technique: T1105
+    name: "Ingress Tool Transfer"
+logic:
+  and:
+    - field_in:
+        field: process.name
+        values:
+          - cmd.exe
+          - powershell.exe
+          - pwsh.exe
+          - bash.exe
+          - sh.exe
+          - wsl.exe
+          - python.exe
+          - python3.exe
+        case_insensitive: true
+    - field_exists:
+        field: network.destination.ip
+    - field_equals:
+        field: network.direction
+        value: "outbound"
+    - field_not_in:
+        field: process.parent.name
+        values:
+          - explorer.exe
+          - Terminal.exe
+          - WindowsTerminal.exe
+          - Code.exe
+          - devenv.exe
+        case_insensitive: true
+fp_guard:
+  notes:
+    - "Developers legitimately run PowerShell/bash with outbound connections."
+    - "Require parent to be suspicious (office, lolbin, etc.) before escalating."

@@ -1,0 +1,36 @@
+id: ss-reg-004
+detection_name: "Win32/Persist.ServiceInstall"
+description: "A new Windows service was registered by a non-system process — common persistence via service creation."
+scope: registry
+severity: medium
+status: stable
+source: native
+confidence: 0.60
+weight: 1.5
+version: 1
+attack:
+  - tactic: TA0003
+    technique: T1543
+    sub_technique: T1543.003
+    name: "Create or Modify System Process: Windows Service"
+logic:
+  and:
+    - field_contains:
+        field: registry.key
+        value: "\\System\\CurrentControlSet\\Services"
+    - field_equals:
+        field: registry.value
+        value: "ImagePath"
+    - field_not_in:
+        field: process.name
+        values:
+          - msiexec.exe
+          - services.exe
+          - sc.exe
+          - TrustedInstaller.exe
+          - SYSTEM
+        case_insensitive: true
+fp_guard:
+  notes:
+    - "Service installers legitimately register services via registry."
+    - "Require parent to be from temp directory or unsigned."

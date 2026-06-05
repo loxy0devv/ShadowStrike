@@ -1,0 +1,54 @@
+id: ss-file-007
+detection_name: "Win32/OfficeMacro.ScriptDropper"
+description: "Detects Office applications (Word, Excel, PowerPoint) writing script files (.vbs, .js, .ps1, .bat, .cmd, .hta) to disk. This pattern is consistent with macro-based droppers that extract and stage payloads from embedded Office documents, a primary initial access vector in phishing campaigns."
+scope: file
+severity: critical
+status: stable
+source: native
+confidence: 0.92
+weight: 3.0
+version: 1
+
+attack:
+  - tactic: TA0001
+    technique: T1566.001
+    name: "Phishing: Spearphishing Attachment"
+  - tactic: TA0002
+    technique: T1059
+    name: "Command and Scripting Interpreter"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1566/001/"
+    title: "ATT&CK T1566.001"
+  - url: "https://attack.mitre.org/techniques/T1059/"
+    title: "ATT&CK T1059"
+
+logic:
+  and:
+    - field_in:
+        field: file.process.name
+        values:
+          - winword.exe
+          - excel.exe
+          - powerpnt.exe
+          - msaccess.exe
+          - mspub.exe
+          - onenote.exe
+        case_insensitive: true
+    - or:
+        - field_regex:
+            field: file.path
+            pattern: "(?i)\\.(vbs|vbe|js|jse|ps1|psm1|bat|cmd|hta|wsf|wsh)$"
+        - field_regex:
+            field: file.path
+            pattern: "(?i)(temp|appdata|programdata|users\\\\[^\\\\]+\\\\downloads)\\\\.*\\.(exe|dll|scr|com)"
+
+fp_guard:
+  notes:
+    - "Some Office add-ins may write script helper files during installation. Validate against known add-in paths."
+    - "Development environments with Office VBA macros building automation scripts may trigger this."
+  suppress:
+    - field: file.path
+      values:
+        - "C:\\Program Files\\Microsoft Office\\"
+        - "C:\\Program Files (x86)\\Microsoft Office\\"

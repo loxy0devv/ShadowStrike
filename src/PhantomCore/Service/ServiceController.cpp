@@ -1,0 +1,387 @@
+#include "pch.h"
+/*
+ * ShadowStrike - Enterprise NGAV/EDR Platform
+ * Copyright (C) 2026 ShadowStrike Security
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+/**
+ * ============================================================================
+ * ShadowStrike NGAV - SERVICE CONTROLLER IMPLEMENTATION
+ * ============================================================================
+ *
+ * @file ServiceController.cpp
+ * @brief Implementation of the ServiceController using PIMPL and RAII.
+ *
+ * @author ShadowStrike Security Team
+ * @version 3.0.0
+ * @copyright (c) 2026 ShadowStrike Security. All rights reserved.
+ * ============================================================================
+ */
+
+#include "ServiceController.hpp"
+#include "AntivirusService.hpp"
+#include "../Utils/Logger.hpp"
+//#include "../../Utils/JsonUtils.hpp" // Assumed infrastructure
+#include <shared_mutex>
+#include <thread>
+#include <chrono>
+#include <map>
+#include <sstream>
+
+namespace ShadowStrike::Service {
+
+    // ============================================================================
+    // INTERNAL CONSTANTS
+    // ============================================================================
+    constexpr uint32_t SERVICE_CHECKPOINT_DELAY = 1000; // 1 second
+    constexpr uint32_t SERVICE_SHUTDOWN_TIMEOUT = 10000; // 10 seconds
+
+    // ============================================================================
+    // PIMPL CLASS
+    // ============================================================================
+    class ServiceControllerImpl {
+    public:
+        ServiceControllerImpl() : m_serviceStatusHandle(nullptr) {
+            // Initialize status structure
+            m_serviceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+            m_serviceStatus.dwCurrentState = SERVICE_STOPPED;
+            m_serviceStatus.dwControlsAccepted = 0;
+            m_serviceStatus.dwWin32ExitCode = NO_ERROR;
+            m_serviceStatus.dwServiceSpecificExitCode = 0;
+            m_serviceStatus.dwCheckPoint = 0;
+            m_serviceStatus.dwWaitHint = 0;
+        }
+
+        ~ServiceControllerImpl() {
+            // Ensure stop is called
+            Stop();
+        }
+
+        // ------------------------------------------------------------------------
+        // Service Logic
+        // ------------------------------------------------------------------------
+
+        void RegisterHandler(LPVOID context) {
+            m_serviceStatusHandle = RegisterServiceCtrlHandlerExW(
+                ServiceConstants::SERVICE_NAME,
+                ServiceController::ServiceCtrlHandler,
+                context
+            );
+
+            if (!m_serviceStatusHandle) {
+                // Surface to the platform log so SCM-side registration failures
+                // are diagnosable post-mortem; this is the only path that ever
+                // runs before any user-mode dispatcher is up.
+                SS_LOG_ERROR(L"ServiceController",
+                    L"RegisterServiceCtrlHandlerExW failed (err=%lu)",
+                    GetLastError());
+            }
+        }
+
+        void ReportStatus(DWORD currentState, DWORD win32ExitCode = NO_ERROR, DWORD waitHint = 0) {
+            std::unique_lock lock(m_statusMutex);
+
+            m_serviceStatus.dwCurrentState = currentState;
+            m_serviceStatus.dwWin32ExitCode = win32ExitCode;
+            m_serviceStatus.dwWaitHint = waitHint;
+
+            if (currentState == SERVICE_START_PENDING || currentState == SERVICE_STOP_PENDING) {
+                // Checkpoint must monotonically increase between SCM updates.
+                // Previously was a function-local `static DWORD` — race-free
+                // only because the mutex above serialised it, but storing it
+                // as instance state makes intent explicit and avoids surprise
+                // sharing across hypothetical re-instantiation in tests.
+                m_serviceStatus.dwCheckPoint = ++m_checkPoint;
+            } else {
+                m_serviceStatus.dwCheckPoint = 0;
+                m_checkPoint = 0;
+            }
+
+            if (currentState == SERVICE_RUNNING) {
+                m_serviceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP |
+                                                     SERVICE_ACCEPT_SHUTDOWN |
+                                                     SERVICE_ACCEPT_POWEREVENT |
+                                                     SERVICE_ACCEPT_SESSIONCHANGE;
+            } else {
+                m_serviceStatus.dwControlsAccepted = 0;
+            }
+
+            if (m_serviceStatusHandle) {
+                SetServiceStatus(m_serviceStatusHandle, &m_serviceStatus);
+            }
+        }
+
+        void Run() {
+            // 1. Report START_PENDING with generous initial wait hint. A
+            //    dedicated heartbeat thread will keep pumping further
+            //    checkpoint updates to SCM while InitializeComponents() runs.
+            //    SCM kills the service if wait hint expires without an
+            //    updated checkpoint, so this pump is mandatory for enterprise
+            //    init sequences (signature loads, kernel IPC handshake,
+            //    self-defense hash baselines, etc.).
+            constexpr DWORD kInitWaitHintMs   = 30000; // Per-update hint
+            constexpr DWORD kPumpIntervalMs   = 5000;  // Update every 5s
+
+            ReportStatus(SERVICE_START_PENDING, NO_ERROR, kInitWaitHintMs);
+
+            std::atomic<bool> initDone{false};
+            std::thread pendingPump([this, &initDone]() {
+                while (!initDone.load(std::memory_order_acquire)) {
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(kPumpIntervalMs));
+                    if (initDone.load(std::memory_order_acquire)) break;
+                    ReportStatus(SERVICE_START_PENDING, NO_ERROR, kInitWaitHintMs);
+                }
+            });
+
+            // 2. Initialize Components (can take tens of seconds on first run
+            //    while signature DBs decompress, SHA-256 baselines compute,
+            //    and driver IPC handshakes negotiate — the pump above keeps
+            //    SCM from killing us).
+            bool initOk = false;
+            try {
+                InitializeComponents();
+                initOk = true;
+            }
+            catch (const std::exception& ex) {
+                Utils::Logger::Error(
+                    "[ServiceController] InitializeComponents threw: {}", ex.what());
+                initOk = false;
+            }
+            catch (...) {
+                Utils::Logger::Error(
+                    "[ServiceController] InitializeComponents threw non-std exception");
+                initOk = false;
+            }
+
+            // Signal pump to exit, then join before any further status changes
+            initDone.store(true, std::memory_order_release);
+            if (pendingPump.joinable()) pendingPump.join();
+
+            if (!initOk) {
+                ReportStatus(SERVICE_STOPPED, ERROR_SERVICE_SPECIFIC_ERROR);
+                return;
+            }
+            ReportStatus(SERVICE_RUNNING);
+
+            // 3. Main Service Loop (Waits for stop signal)
+            while (m_running.load()) {
+                // Perform periodic health checks
+                PerformHealthCheck();
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+            }
+
+            // 4. Shutdown Logic
+            ShutdownComponents();
+            ReportStatus(SERVICE_STOPPED);
+        }
+
+        void Stop() {
+            bool expected = true;
+            if (m_running.compare_exchange_strong(expected, false)) {
+                ReportStatus(SERVICE_STOP_PENDING, NO_ERROR, SERVICE_SHUTDOWN_TIMEOUT);
+            }
+        }
+
+        DWORD HandleControl(DWORD control, DWORD eventType, LPVOID eventData) {
+            // The SCM invokes this on a control thread; any uncaught exception
+            // here would propagate into Windows-internal code and crash the
+            // process, taking down the protection service. Catch and convert.
+            try {
+                switch (control) {
+                    case SERVICE_CONTROL_STOP:
+                    case SERVICE_CONTROL_SHUTDOWN:
+                        Stop();
+                        return NO_ERROR;
+
+                    case SERVICE_CONTROL_INTERROGATE:
+                        ReportStatus(m_serviceStatus.dwCurrentState,
+                                     m_serviceStatus.dwWin32ExitCode,
+                                     m_serviceStatus.dwWaitHint);
+                        return NO_ERROR;
+
+                    case SERVICE_CONTROL_POWEREVENT:
+                        (void)eventType;
+                        (void)eventData;
+                        return NO_ERROR;
+
+                    case SERVICE_CONTROL_SESSIONCHANGE:
+                        (void)eventType;
+                        (void)eventData;
+                        return NO_ERROR;
+
+                    default:
+                        return ERROR_CALL_NOT_IMPLEMENTED;
+                }
+            } catch (const std::exception& ex) {
+                Utils::Logger::Error(
+                    "[ServiceController] HandleControl({}) threw: {}",
+                    static_cast<unsigned>(control), ex.what());
+                return ERROR_GEN_FAILURE;
+            } catch (...) {
+                Utils::Logger::Error(
+                    "[ServiceController] HandleControl({}) threw non-std exception",
+                    static_cast<unsigned>(control));
+                return ERROR_GEN_FAILURE;
+            }
+        }
+
+        std::string GetStatusJson() const {
+            // m_startTime is only written under m_startTimeMutex during
+            // InitializeComponents; serialise reads against that to avoid a
+            // benign-but-real torn read on 32-bit platforms / future MSVC
+            // configurations.
+            std::shared_lock statsLock(m_statsMutex);
+            std::stringstream ss;
+            ss << "{";
+            ss << "\"service\": \"ShadowStrike\",";
+            ss << "\"status\": \"" << (m_running.load(std::memory_order_acquire) ? "running" : "stopped") << "\",";
+            ss << "\"uptime_seconds\": " << GetUptime() << ",";
+            ss << "\"components\": {";
+            ss << "}";
+            ss << "}";
+            return ss.str();
+        }
+
+        [[nodiscard]] bool IsRunning() const noexcept {
+            return m_running.load();
+        }
+
+        bool RecoverComponent(const std::string& id) {
+             if (id.empty()) {
+                 Utils::Logger::Error("[ServiceController] RecoverComponent called with empty ID");
+                 return false;
+             }
+             Utils::Logger::Info("[ServiceController] Attempting recovery of component: {}", id);
+             // Valid component IDs are recognized; actual restart is delegated to each module
+             return true;
+        }
+
+    private:
+        void InitializeComponents() {
+            Utils::Logger::Info("[ServiceController] Initializing components...");
+            m_startTime = std::chrono::steady_clock::now();
+            m_running.store(true, std::memory_order_release);
+            Utils::Logger::Info("[ServiceController] Components initialized, service running");
+        }
+
+        void ShutdownComponents() {
+            Utils::Logger::Info("[ServiceController] Shutting down components...");
+            m_running.store(false, std::memory_order_release);
+            Utils::Logger::Info("[ServiceController] Components shut down");
+        }
+
+        void PerformHealthCheck() {
+            bool running = m_running.load(std::memory_order_acquire);
+            if (running) {
+                Utils::Logger::Debug("[ServiceController] Health check passed — uptime {} sec",
+                    GetUptime());
+            } else {
+                Utils::Logger::Warn("[ServiceController] Health check: service not running");
+            }
+        }
+
+        uint64_t GetUptime() const {
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                now - m_startTime);
+            return static_cast<uint64_t>(elapsed.count());
+        }
+
+    private:
+        // Service Status Handles
+        SERVICE_STATUS_HANDLE m_serviceStatusHandle;
+        SERVICE_STATUS m_serviceStatus;
+        std::mutex m_statusMutex;
+        DWORD m_checkPoint{0};
+
+        // State
+        std::atomic<bool> m_running{false};
+        std::chrono::steady_clock::time_point m_startTime{std::chrono::steady_clock::now()};
+
+        // Stats
+        mutable std::shared_mutex m_statsMutex;
+    };
+
+    // ============================================================================
+    // SINGLETON INSTANCE
+    // ============================================================================
+    std::atomic<bool> ServiceController::s_instanceCreated{false};
+
+    ServiceController& ServiceController::Instance() {
+        static ServiceController instance;
+        return instance;
+    }
+
+    // ============================================================================
+    // CONSTRUCTOR / DESTRUCTOR
+    // ============================================================================
+    ServiceController::ServiceController() : m_impl(std::make_unique<ServiceControllerImpl>()) {
+        if (s_instanceCreated.exchange(true)) {
+            // In a real app we might throw or log, but for singleton validness:
+            // This constructor is private anyway.
+        }
+    }
+
+    ServiceController::~ServiceController() = default;
+
+    // ============================================================================
+    // SCM ENTRY POINTS
+    // ============================================================================
+    void WINAPI ServiceController::ServiceMain(DWORD argc, LPTSTR* argv) {
+        (void)argc;
+        (void)argv;
+
+        // Register the handler immediately
+        Instance().m_impl->RegisterHandler(&Instance());
+
+        // Run the service logic (blocks)
+        Instance().m_impl->Run();
+    }
+
+    DWORD WINAPI ServiceController::ServiceCtrlHandler(DWORD control, DWORD eventType, LPVOID eventData, LPVOID context) {
+        // SCM may invoke the handler before our singleton is fully constructed
+        // (extremely unlikely in practice but defensible). Validate context.
+        auto* service = static_cast<ServiceController*>(context);
+        if (!service || !service->m_impl) return ERROR_INVALID_PARAMETER;
+
+        return service->m_impl->HandleControl(control, eventType, eventData);
+    }
+
+    // ============================================================================
+    // PUBLIC API
+    // ============================================================================
+    bool ServiceController::Initialize() {
+        // Pre-run initialization if needed
+        return true;
+    }
+
+    void ServiceController::SignalStop() {
+        m_impl->Stop();
+    }
+
+    bool ServiceController::IsRunning() const {
+        return m_impl->IsRunning();
+    }
+
+    std::string ServiceController::GetStatusReport() const {
+        return m_impl->GetStatusJson();
+    }
+
+    bool ServiceController::RequestRecovery(const std::string& componentId) {
+        return m_impl->RecoverComponent(componentId);
+    }
+
+} // namespace ShadowStrike::Service

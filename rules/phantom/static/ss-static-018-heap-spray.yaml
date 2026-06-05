@@ -1,0 +1,27 @@
+id: ss-static-018
+detection_name: "Win32/Exploit.HeapSpray"
+description: "Binary contains a large contiguous memory allocation pattern with repetitive content — heap spray for exploit reliability."
+scope: static
+severity: high
+status: stable
+source: native
+confidence: 0.72
+weight: 2.0
+version: 1
+attack:
+  - tactic: TA0004
+    technique: T1068
+logic:
+  and:
+    - or:
+        - bytes: "0d 0d 0d 0d 0d 0d 0d 0d"
+        - bytes: "90 90 90 90 90 90 90 90"
+        - bytes: "41 41 41 41 41 41 41 41"
+    - or:
+        - api: HeapAlloc
+        - api: GlobalAlloc
+        - api: VirtualAlloc
+    - unsigned
+fp_guard:
+  notes:
+    - "NOP sleds appear in some legitimate assembly code. Require unsigned binary."

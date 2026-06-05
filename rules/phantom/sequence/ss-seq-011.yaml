@@ -1,0 +1,83 @@
+id: ss-seq-011
+detection_name: "Win32/Sequence.PhishingMacro.DropperBeacon"
+description: "Detects a multi-stage phishing attack sequence: an Office application executing a macro that drops a payload to disk, followed by execution of the dropped binary, followed by outbound network connections to external infrastructure. This end-to-end sequence covers the complete initial compromise chain from document open to C2 establishment."
+scope: sequence
+severity: critical
+status: stable
+source: native
+confidence: 0.88
+weight: 4.0
+version: 1
+
+attack:
+  - tactic: TA0001
+    technique: T1566
+    name: "Phishing"
+  - tactic: TA0011
+    technique: T1105
+    name: "Ingress Tool Transfer"
+  - tactic: TA0011
+    technique: T1071
+    name: "Application Layer Protocol"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1566/"
+    title: "ATT&CK T1566"
+  - url: "https://attack.mitre.org/techniques/T1105/"
+    title: "ATT&CK T1105"
+
+logic:
+  sequence:
+    - id: step1_office_macro
+      within: 300s
+      event:
+        and:
+          - field_in:
+              field: process.name
+              values:
+                - winword.exe
+                - excel.exe
+                - powerpnt.exe
+              case_insensitive: true
+          - field_in:
+              field: file.operation
+              values:
+                - create
+          - field_regex:
+              field: file.path
+              pattern: "(?i)(temp|appdata|programdata)\\\\.*\\.(exe|dll|vbs|ps1|bat|hta)"
+    - id: step2_payload_exec
+      within: 600s
+      after: step1_office_macro
+      event:
+        and:
+          - field_eq:
+              field: process.parent.name
+              value: "{{step1_office_macro.process.name}}"
+          - field_regex:
+              field: process.executable_path
+              pattern: "(?i)(temp|appdata|programdata)\\\\.*\\.(exe|dll)"
+    - id: step3_beacon
+      within: 300s
+      after: step2_payload_exec
+      event:
+        and:
+          - field_eq:
+              field: network.process.pid
+              value: "{{step2_payload_exec.process.pid}}"
+          - field_eq:
+              field: network.direction
+              value: "outbound"
+          - not:
+              field_regex:
+                field: network.destination_ip
+                pattern: "^(10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)"
+
+fp_guard:
+  notes:
+    - "Automated document testing pipelines may trigger step 1. The full 3-step sequence reduces false positives significantly."
+    - "Software that processes Office documents and downloads updates may match partial sequences."
+  suppress:
+    - field: process.user
+      values:
+        - "DOMAIN\\svc_docprocessing"

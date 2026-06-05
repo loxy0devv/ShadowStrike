@@ -1,0 +1,30 @@
+id: ss-mem-002
+detection_name: "Win32/Evasion.DirectSyscall"
+description: "Thread executed a syscall instruction outside ntdll — direct syscall to evade user-mode hooks."
+scope: memory
+severity: high
+status: stable
+source: native
+confidence: 0.90
+weight: 2.8
+version: 1
+attack:
+  - tactic: TA0005
+    technique: T1106
+    name: "Native API"
+  - tactic: TA0005
+    technique: T1055
+    name: "Process Injection"
+logic:
+  and:
+    - field_equals:
+        field: deep.finding
+        value: "3"
+    - field_not_in:
+        field: process.name
+        values: [ntoskrnl.exe, hal.dll, ntdll.dll, wow64cpu.dll]
+        case_insensitive: true
+fp_guard:
+  notes:
+    - "Some optimization-focused libraries use direct syscalls. Correlate with other injection signals."
+    - "Electron/Node.js apps occasionally trigger this. Suppress known-good signed applications."

@@ -1,0 +1,495 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ShadowStrikePhantomUI.vcxproj
+  =============================
+  Qt 6 / QML desktop client for ShadowStrike Phantom Home.
+
+  Requires:
+    - Qt 6.7 LTS MSVC build (default path: C:\Qt\6.7.3\msvc2019_64)
+      Override via environment variable  Qt6_ROOT  if installed elsewhere.
+
+  MOC + RCC are invoked via <CustomBuild> so this project has no runtime
+  dependency on the Qt VSAddin. Header-based Q_OBJECT emitters must be
+  listed under <QtMoc> below.
+
+  The EXE statically embeds all QML assets through qml.qrc, so the shipped
+  binary has zero loose QML files.
+-->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <ProjectGuid>{B2C38F21-7A4D-4B1B-8F7D-0A0B4C1D2E02}</ProjectGuid>
+    <RootNamespace>ShadowStrikePhantomUI</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
+    <UseDebugLibraries Condition="'$(Configuration)'=='Release'">false</UseDebugLibraries>
+    <WholeProgramOptimization Condition="'$(Configuration)'=='Release'">true</WholeProgramOptimization>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+
+  <PropertyGroup>
+    <Qt6_ROOT Condition="'$(Qt6_ROOT)'==''">C:\Qt\6.7.3\msvc2019_64</Qt6_ROOT>
+    <QtBin>$(Qt6_ROOT)\bin</QtBin>
+    <QtInc>$(Qt6_ROOT)\include</QtInc>
+    <QtLib>$(Qt6_ROOT)\lib</QtLib>
+    <IntDir>$(ProjectDir)build\$(Configuration)\UI\</IntDir>
+    <OutDir>$(SolutionDir)bin\$(Configuration)\</OutDir>
+    <TargetName>ShadowStrikePhantomUI</TargetName>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <QtLibSuffix Condition="'$(Configuration)'=='Debug'">d</QtLibSuffix>
+    <QtLibSuffix Condition="'$(Configuration)'=='Release'"></QtLibSuffix>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <LanguageStandard>stdcpplatest</LanguageStandard>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
+      <ConformanceMode>true</ConformanceMode>
+      <AdditionalOptions>/Zc:__cplusplus %(AdditionalOptions)</AdditionalOptions>
+      <WarningLevel>Level3</WarningLevel>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+      <AdditionalIncludeDirectories>$(SolutionDir)include;$(SolutionDir)include\YARA;$(SolutionDir)src;$(QtInc);$(QtInc)\QtCore;$(QtInc)\QtGui;$(QtInc)\QtQml;$(QtInc)\QtQuick;$(QtInc)\QtQuickControls2;$(QtInc)\QtSvg;$(QtInc)\QtWidgets;$(IntDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32;_WINDOWS;UNICODE;_UNICODE;NOMINMAX;WIN32_LEAN_AND_MEAN;QT_CORE_LIB;QT_GUI_LIB;QT_QML_LIB;QT_QUICK_LIB;QT_QUICKCONTROLS2_LIB;SHADOWSTRIKE_PRODUCT_HOME=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EntryPointSymbol>mainCRTStartup</EntryPointSymbol>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(QtLib);$(SolutionDir)lib\$(Configuration);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>PhantomCoreLib.lib;Qt6Core$(QtLibSuffix).lib;Qt6Gui$(QtLibSuffix).lib;Qt6Qml$(QtLibSuffix).lib;Qt6Quick$(QtLibSuffix).lib;Qt6QuickControls2$(QtLibSuffix).lib;Qt6Widgets$(QtLibSuffix).lib;Qt6Svg$(QtLibSuffix).lib;Qt6Network$(QtLibSuffix).lib;advapi32.lib;user32.lib;dwmapi.lib;ws2_32.lib;userenv.lib;wtsapi32.lib;rpcrt4.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile>
+      <Optimization>Disabled</Optimization>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDebugDLL</RuntimeLibrary>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <PreprocessorDefinitions>NDEBUG;QT_NO_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+    </ClCompile>
+    <Link>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <!-- ====================================================================
+       C++ sources
+       ==================================================================== -->
+  <ItemGroup>
+    <ClCompile Include="src\Products\Community\PhantomHome\UI\Client\main.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomHome\UI\Client\WiringStub.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomHome\UI\Client\WindowActivator.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\ProtectionViewModel.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\ModulesListModel.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\ScanViewModel.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\QuarantineModel.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\ReportsModel.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\SettingsViewModel.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\PgtiViewModel.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\RecommendationsModel.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\ZeroTrustViewModel.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\PrivacyViewModel.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\PerformanceViewModel.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomHome\UI\Client\IPC\PipeClient.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomHome\UI\IPC\Messages.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomHome\UI\PerfBudget\PerfBudget.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\UI\Accessibility\HighContrastContext.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\UI\Shared\ModuleCatalog.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <!-- RCC generated output for assets.qrc -->
+    <ClCompile Include="$(IntDir)qrc_assets.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomHome\UI\I18n\Translator.cpp" />
+    <!-- MOC outputs are generated into $(IntDir) and included via CustomBuild. -->
+    <ClCompile Include="$(IntDir)moc_ProtectionViewModel.cpp">
+      <ExcludedFromBuild Condition="!Exists('$(IntDir)moc_ProtectionViewModel.cpp')">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="$(IntDir)moc_ModulesListModel.cpp">
+      <ExcludedFromBuild Condition="!Exists('$(IntDir)moc_ModulesListModel.cpp')">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="$(IntDir)moc_ScanViewModel.cpp">
+      <ExcludedFromBuild Condition="!Exists('$(IntDir)moc_ScanViewModel.cpp')">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="$(IntDir)moc_QuarantineModel.cpp">
+      <ExcludedFromBuild Condition="!Exists('$(IntDir)moc_QuarantineModel.cpp')">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="$(IntDir)moc_ReportsModel.cpp">
+      <ExcludedFromBuild Condition="!Exists('$(IntDir)moc_ReportsModel.cpp')">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="$(IntDir)moc_SettingsViewModel.cpp">
+      <ExcludedFromBuild Condition="!Exists('$(IntDir)moc_SettingsViewModel.cpp')">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="$(IntDir)moc_PgtiViewModel.cpp">
+      <ExcludedFromBuild Condition="!Exists('$(IntDir)moc_PgtiViewModel.cpp')">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="$(IntDir)moc_RecommendationsModel.cpp">
+      <ExcludedFromBuild Condition="!Exists('$(IntDir)moc_RecommendationsModel.cpp')">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="$(IntDir)moc_ZeroTrustViewModel.cpp">
+      <ExcludedFromBuild Condition="!Exists('$(IntDir)moc_ZeroTrustViewModel.cpp')">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="$(IntDir)moc_PrivacyViewModel.cpp">
+      <ExcludedFromBuild Condition="!Exists('$(IntDir)moc_PrivacyViewModel.cpp')">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="$(IntDir)moc_PerformanceViewModel.cpp">
+      <ExcludedFromBuild Condition="!Exists('$(IntDir)moc_PerformanceViewModel.cpp')">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="$(IntDir)moc_PerfBudget.cpp">
+      <ExcludedFromBuild Condition="!Exists('$(IntDir)moc_PerfBudget.cpp')">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="$(IntDir)moc_HighContrastContext.cpp">
+      <ExcludedFromBuild Condition="!Exists('$(IntDir)moc_HighContrastContext.cpp')">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="$(IntDir)moc_PipeClient.cpp">
+      <ExcludedFromBuild Condition="!Exists('$(IntDir)moc_PipeClient.cpp')">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="$(IntDir)moc_WindowActivator.cpp">
+      <ExcludedFromBuild Condition="!Exists('$(IntDir)moc_WindowActivator.cpp')">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="$(IntDir)qrc_qml.cpp">
+      <ExcludedFromBuild Condition="!Exists('$(IntDir)qrc_qml.cpp')">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="$(IntDir)qrc_translations.cpp">
+      <ExcludedFromBuild Condition="!Exists('$(IntDir)qrc_translations.cpp')">true</ExcludedFromBuild>
+    </ClCompile>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ClInclude Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\ProtectionViewModel.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\ModulesListModel.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\ScanViewModel.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\QuarantineModel.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\ReportsModel.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\SettingsViewModel.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\PgtiViewModel.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\RecommendationsModel.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\ZeroTrustViewModel.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\PrivacyViewModel.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\PerformanceViewModel.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\UI\Client\IPC\PipeClient.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\UI\Client\WindowActivator.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\UI\IPC\Messages.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\UI\PerfBudget\PerfBudget.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\UI\Accessibility\HighContrastContext.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\UI\I18n\Translator.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\UI\Shared\ModuleCatalog.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\UI\Shared\TrayUiArgs.hpp" />
+  </ItemGroup>
+
+  <!-- ====================================================================
+       MOC: run moc.exe on every header that has Q_OBJECT
+       ==================================================================== -->
+  <ItemGroup>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\ProtectionViewModel.hpp">
+      <Message>MOC ProtectionViewModel.hpp</Message>
+      <Command>"$(QtBin)\moc.exe" -DQ_OS_WIN -I"$(SolutionDir)src" -I"$(QtInc)" -I"$(QtInc)\QtCore" -I"$(QtInc)\QtGui" -I"$(QtInc)\QtQml" -o "$(IntDir)moc_ProtectionViewModel.cpp" "%(FullPath)"</Command>
+      <Outputs>$(IntDir)moc_ProtectionViewModel.cpp</Outputs>
+    </CustomBuild>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\ModulesListModel.hpp">
+      <Message>MOC ModulesListModel.hpp</Message>
+      <Command>"$(QtBin)\moc.exe" -DQ_OS_WIN -I"$(SolutionDir)src" -I"$(QtInc)" -I"$(QtInc)\QtCore" -I"$(QtInc)\QtGui" -I"$(QtInc)\QtQml" -o "$(IntDir)moc_ModulesListModel.cpp" "%(FullPath)"</Command>
+      <Outputs>$(IntDir)moc_ModulesListModel.cpp</Outputs>
+    </CustomBuild>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\ScanViewModel.hpp">
+      <Message>MOC ScanViewModel.hpp</Message>
+      <Command>"$(QtBin)\moc.exe" -DQ_OS_WIN -I"$(SolutionDir)src" -I"$(QtInc)" -I"$(QtInc)\QtCore" -I"$(QtInc)\QtGui" -I"$(QtInc)\QtQml" -o "$(IntDir)moc_ScanViewModel.cpp" "%(FullPath)"</Command>
+      <Outputs>$(IntDir)moc_ScanViewModel.cpp</Outputs>
+    </CustomBuild>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\QuarantineModel.hpp">
+      <Message>MOC QuarantineModel.hpp</Message>
+      <Command>"$(QtBin)\moc.exe" -DQ_OS_WIN -I"$(SolutionDir)src" -I"$(QtInc)" -I"$(QtInc)\QtCore" -I"$(QtInc)\QtGui" -I"$(QtInc)\QtQml" -o "$(IntDir)moc_QuarantineModel.cpp" "%(FullPath)"</Command>
+      <Outputs>$(IntDir)moc_QuarantineModel.cpp</Outputs>
+    </CustomBuild>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\ReportsModel.hpp">
+      <Message>MOC ReportsModel.hpp</Message>
+      <Command>"$(QtBin)\moc.exe" -DQ_OS_WIN -I"$(SolutionDir)src" -I"$(QtInc)" -I"$(QtInc)\QtCore" -I"$(QtInc)\QtGui" -I"$(QtInc)\QtQml" -o "$(IntDir)moc_ReportsModel.cpp" "%(FullPath)"</Command>
+      <Outputs>$(IntDir)moc_ReportsModel.cpp</Outputs>
+    </CustomBuild>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\SettingsViewModel.hpp">
+      <Message>MOC SettingsViewModel.hpp</Message>
+      <Command>"$(QtBin)\moc.exe" -DQ_OS_WIN -I"$(SolutionDir)src" -I"$(QtInc)" -I"$(QtInc)\QtCore" -I"$(QtInc)\QtGui" -I"$(QtInc)\QtQml" -o "$(IntDir)moc_SettingsViewModel.cpp" "%(FullPath)"</Command>
+      <Outputs>$(IntDir)moc_SettingsViewModel.cpp</Outputs>
+    </CustomBuild>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\PgtiViewModel.hpp">
+      <Message>MOC PgtiViewModel.hpp</Message>
+      <Command>"$(QtBin)\moc.exe" -DQ_OS_WIN -I"$(SolutionDir)src" -I"$(QtInc)" -I"$(QtInc)\QtCore" -I"$(QtInc)\QtGui" -I"$(QtInc)\QtQml" -o "$(IntDir)moc_PgtiViewModel.cpp" "%(FullPath)"</Command>
+      <Outputs>$(IntDir)moc_PgtiViewModel.cpp</Outputs>
+    </CustomBuild>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\RecommendationsModel.hpp">
+      <Message>MOC RecommendationsModel.hpp</Message>
+      <Command>"$(QtBin)\moc.exe" -DQ_OS_WIN -I"$(SolutionDir)src" -I"$(QtInc)" -I"$(QtInc)\QtCore" -I"$(QtInc)\QtGui" -I"$(QtInc)\QtQml" -o "$(IntDir)moc_RecommendationsModel.cpp" "%(FullPath)"</Command>
+      <Outputs>$(IntDir)moc_RecommendationsModel.cpp</Outputs>
+    </CustomBuild>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\ZeroTrustViewModel.hpp">
+      <Message>MOC ZeroTrustViewModel.hpp</Message>
+      <Command>"$(QtBin)\moc.exe" -DQ_OS_WIN -I"$(SolutionDir)src" -I"$(QtInc)" -I"$(QtInc)\QtCore" -I"$(QtInc)\QtGui" -I"$(QtInc)\QtQml" -o "$(IntDir)moc_ZeroTrustViewModel.cpp" "%(FullPath)"</Command>
+      <Outputs>$(IntDir)moc_ZeroTrustViewModel.cpp</Outputs>
+    </CustomBuild>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\PrivacyViewModel.hpp">
+      <Message>MOC PrivacyViewModel.hpp</Message>
+      <Command>"$(QtBin)\moc.exe" -DQ_OS_WIN -I"$(SolutionDir)src" -I"$(QtInc)" -I"$(QtInc)\QtCore" -I"$(QtInc)\QtGui" -I"$(QtInc)\QtQml" -o "$(IntDir)moc_PrivacyViewModel.cpp" "%(FullPath)"</Command>
+      <Outputs>$(IntDir)moc_PrivacyViewModel.cpp</Outputs>
+    </CustomBuild>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\ViewModels\PerformanceViewModel.hpp">
+      <Message>MOC PerformanceViewModel.hpp</Message>
+      <Command>"$(QtBin)\moc.exe" -DQ_OS_WIN -I"$(SolutionDir)src" -I"$(QtInc)" -I"$(QtInc)\QtCore" -I"$(QtInc)\QtGui" -I"$(QtInc)\QtQml" -o "$(IntDir)moc_PerformanceViewModel.cpp" "%(FullPath)"</Command>
+      <Outputs>$(IntDir)moc_PerformanceViewModel.cpp</Outputs>
+    </CustomBuild>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\PerfBudget\PerfBudget.hpp">
+      <Message>MOC PerfBudget.hpp</Message>
+      <Command>"$(QtBin)\moc.exe" -DQ_OS_WIN -I"$(SolutionDir)src" -I"$(QtInc)" -I"$(QtInc)\QtCore" -I"$(QtInc)\QtGui" -I"$(QtInc)\QtQml" -o "$(IntDir)moc_PerfBudget.cpp" "%(FullPath)"</Command>
+      <Outputs>$(IntDir)moc_PerfBudget.cpp</Outputs>
+    </CustomBuild>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Accessibility\HighContrastContext.hpp">
+      <Message>MOC HighContrastContext.hpp</Message>
+      <Command>"$(QtBin)\moc.exe" -DQ_OS_WIN -I"$(SolutionDir)src" -I"$(QtInc)" -I"$(QtInc)\QtCore" -I"$(QtInc)\QtGui" -I"$(QtInc)\QtQml" -o "$(IntDir)moc_HighContrastContext.cpp" "%(FullPath)"</Command>
+      <Outputs>$(IntDir)moc_HighContrastContext.cpp</Outputs>
+    </CustomBuild>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\IPC\PipeClient.hpp">
+      <Message>MOC PipeClient.hpp</Message>
+      <Command>"$(QtBin)\moc.exe" -DQ_OS_WIN -I"$(SolutionDir)src" -I"$(QtInc)" -I"$(QtInc)\QtCore" -I"$(QtInc)\QtGui" -I"$(QtInc)\QtQml" -o "$(IntDir)moc_PipeClient.cpp" "%(FullPath)"</Command>
+      <Outputs>$(IntDir)moc_PipeClient.cpp</Outputs>
+    </CustomBuild>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\WindowActivator.hpp">
+      <Message>MOC WindowActivator.hpp</Message>
+      <Command>"$(QtBin)\moc.exe" -DQ_OS_WIN -I"$(SolutionDir)src" -I"$(QtInc)" -I"$(QtInc)\QtCore" -I"$(QtInc)\QtGui" -I"$(QtInc)\QtQml" -o "$(IntDir)moc_WindowActivator.cpp" "%(FullPath)"</Command>
+      <Outputs>$(IntDir)moc_WindowActivator.cpp</Outputs>
+    </CustomBuild>
+  </ItemGroup>
+
+  <!-- ====================================================================
+       RCC: embed QML into the binary
+       ==================================================================== -->
+  <ItemGroup>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\qml\qml.qrc">
+      <Message>RCC qml.qrc</Message>
+      <Command>"$(QtBin)\rcc.exe" --name qml --output "$(IntDir)qrc_qml.cpp" "%(FullPath)"</Command>
+      <Outputs>$(IntDir)qrc_qml.cpp</Outputs>
+      <AdditionalInputs>src\Products\Community\PhantomHome\UI\Client\qml\Main.qml;src\Products\Community\PhantomHome\UI\Client\qml\Theming\Theme.qml;src\Products\Community\PhantomHome\UI\Client\qml\Theming\qmldir;src\Products\Community\PhantomHome\UI\Client\qml\Components\Card.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\EmptyState.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\FastScanTile.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\GhostButton.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\HeadlineTicker.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\HeroShield.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\IconButton.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\ModePillRow.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\ModuleCard.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\PageHost.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\PGTIFeedRow.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\PrimaryButton.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\RecommendationCard.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\SearchBar.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\SectionTitle.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\Sidebar.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\SidebarItem.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\StatusChip.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\ThreatRow.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\ToggleSwitch.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\TopBar.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\TrustSlider.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\qmldir;src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\AlertIcon.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\BackIcon.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\CheckIcon.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\CloseIcon.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\EyeIcon.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\GaugeIcon.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\GearIcon.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\InfoIcon.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\LockIcon.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\RefreshIcon.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\SearchIcon.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\ShieldIcon.qml;src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\qmldir;src\Products\Community\PhantomHome\UI\Client\qml\Accessibility\FocusRing.qml;src\Products\Community\PhantomHome\UI\Client\qml\Accessibility\HighContrast.qml;src\Products\Community\PhantomHome\UI\Client\qml\Accessibility\_HOWTO_A11Y.qml;src\Products\Community\PhantomHome\UI\Client\qml\Accessibility\qmldir;src\Products\Community\PhantomHome\UI\Client\qml\Pages\MainPage.qml;src\Products\Community\PhantomHome\UI\Client\qml\Pages\ModuleDetailPage.qml;src\Products\Community\PhantomHome\UI\Client\qml\Pages\PerformancePage.qml;src\Products\Community\PhantomHome\UI\Client\qml\Pages\PgtiDetailPage.qml;src\Products\Community\PhantomHome\UI\Client\qml\Pages\PrivacyPage.qml;src\Products\Community\PhantomHome\UI\Client\qml\Pages\QuarantineSubroute.qml;src\Products\Community\PhantomHome\UI\Client\qml\Pages\ReportsSubroute.qml;src\Products\Community\PhantomHome\UI\Client\qml\Pages\SecurityPage.qml;src\Products\Community\PhantomHome\UI\Client\qml\Pages\SettingsPage.qml;src\Products\Community\PhantomHome\UI\Client\qml\Pages\ZeroTrustDetailPage.qml</AdditionalInputs>
+    </CustomBuild>
+  </ItemGroup>
+
+  <!-- Pure reference items (not built). -->
+  <ItemGroup>
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Main.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Theming\Theme.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Theming\qmldir" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\Card.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\EmptyState.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\FastScanTile.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\GhostButton.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\HeadlineTicker.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\HeroShield.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\IconButton.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\ModePillRow.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\ModuleCard.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\PageHost.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\PGTIFeedRow.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\PrimaryButton.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\RecommendationCard.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\SearchBar.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\SectionTitle.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\Sidebar.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\SidebarItem.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\StatusChip.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\ThreatRow.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\ToggleSwitch.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\TopBar.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\TrustSlider.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\qmldir" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\AlertIcon.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\BackIcon.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\CheckIcon.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\CloseIcon.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\EyeIcon.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\GaugeIcon.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\GearIcon.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\InfoIcon.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\LockIcon.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\RefreshIcon.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\SearchIcon.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\ShieldIcon.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Components\Icons\qmldir" />
+    <!-- Accessibility QML module -->
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Accessibility\FocusRing.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Accessibility\HighContrast.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Accessibility\_HOWTO_A11Y.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Accessibility\qmldir" />
+    <!-- Pages -->
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Pages\MainPage.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Pages\ModuleDetailPage.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Pages\PerformancePage.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Pages\PgtiDetailPage.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Pages\PrivacyPage.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Pages\QuarantineSubroute.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Pages\ReportsSubroute.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Pages\SecurityPage.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Pages\SettingsPage.qml" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\Pages\ZeroTrustDetailPage.qml" />
+    <!-- QRC manifests -->
+    <None Include="src\Products\Community\PhantomHome\UI\Client\qml\qml.qrc" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\assets.qrc" />
+    <None Include="src\Products\Community\PhantomHome\UI\Client\translations\translations.qrc" />
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+
+  <ItemGroup>
+    <ProjectReference Include="PhantomCoreLib.vcxproj">
+      <Project>{8A5C6B4D-2E1F-4A3B-9C7D-0E1F2A3B4C5D}</Project>
+    </ProjectReference>
+  </ItemGroup>
+
+  <!-- Windows resource script: embeds the branded app icon (ID 1) and
+       VERSIONINFO into the final .exe so Explorer, taskbar, and the
+       Qt ApplicationWindow decoration render the ShadowStrike mark. -->
+  <ItemGroup>
+    <ResourceCompile Include="src\Products\Community\PhantomHome\UI\Client\app.rc" />
+  </ItemGroup>
+
+  <!-- Copy required Qt runtime DLLs, plugins, and Qt translations next to the executable post-build. -->
+  <Target Name="DeployQtRuntime" AfterTargets="Link">
+    <Exec Command='"$(QtBin)\windeployqt.exe" --qmldir "$(SolutionDir)src\Products\Community\PhantomHome\UI\Client\qml" --no-system-d3d-compiler --no-opengl-sw "$(OutDir)$(TargetName).exe"' />
+  </Target>
+
+  <!-- ====================================================================
+       lrelease: compile .ts → .qm for each supported locale
+       ==================================================================== -->
+  <ItemGroup>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\translations\phantomhome_en_US.ts">
+      <Message>lrelease en_US</Message>
+      <Command>if not exist "$(IntDir)translations" mkdir "$(IntDir)translations"
+"$(QtBin)\lrelease.exe" "%(FullPath)" -qm "$(IntDir)translations\phantomhome_en_US.qm"</Command>
+      <Outputs>$(IntDir)translations\phantomhome_en_US.qm</Outputs>
+    </CustomBuild>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\translations\phantomhome_de_DE.ts">
+      <Message>lrelease de_DE</Message>
+      <Command>if not exist "$(IntDir)translations" mkdir "$(IntDir)translations"
+"$(QtBin)\lrelease.exe" "%(FullPath)" -qm "$(IntDir)translations\phantomhome_de_DE.qm"</Command>
+      <Outputs>$(IntDir)translations\phantomhome_de_DE.qm</Outputs>
+    </CustomBuild>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\translations\phantomhome_tr_TR.ts">
+      <Message>lrelease tr_TR</Message>
+      <Command>if not exist "$(IntDir)translations" mkdir "$(IntDir)translations"
+"$(QtBin)\lrelease.exe" "%(FullPath)" -qm "$(IntDir)translations\phantomhome_tr_TR.qm"</Command>
+      <Outputs>$(IntDir)translations\phantomhome_tr_TR.qm</Outputs>
+    </CustomBuild>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\translations\phantomhome_ja_JP.ts">
+      <Message>lrelease ja_JP</Message>
+      <Command>if not exist "$(IntDir)translations" mkdir "$(IntDir)translations"
+"$(QtBin)\lrelease.exe" "%(FullPath)" -qm "$(IntDir)translations\phantomhome_ja_JP.qm"</Command>
+      <Outputs>$(IntDir)translations\phantomhome_ja_JP.qm</Outputs>
+    </CustomBuild>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\translations\phantomhome_es_ES.ts">
+      <Message>lrelease es_ES</Message>
+      <Command>if not exist "$(IntDir)translations" mkdir "$(IntDir)translations"
+"$(QtBin)\lrelease.exe" "%(FullPath)" -qm "$(IntDir)translations\phantomhome_es_ES.qm"</Command>
+      <Outputs>$(IntDir)translations\phantomhome_es_ES.qm</Outputs>
+    </CustomBuild>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\translations\phantomhome_fr_FR.ts">
+      <Message>lrelease fr_FR</Message>
+      <Command>if not exist "$(IntDir)translations" mkdir "$(IntDir)translations"
+"$(QtBin)\lrelease.exe" "%(FullPath)" -qm "$(IntDir)translations\phantomhome_fr_FR.qm"</Command>
+      <Outputs>$(IntDir)translations\phantomhome_fr_FR.qm</Outputs>
+    </CustomBuild>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\translations\phantomhome_pt_BR.ts">
+      <Message>lrelease pt_BR</Message>
+      <Command>if not exist "$(IntDir)translations" mkdir "$(IntDir)translations"
+"$(QtBin)\lrelease.exe" "%(FullPath)" -qm "$(IntDir)translations\phantomhome_pt_BR.qm"</Command>
+      <Outputs>$(IntDir)translations\phantomhome_pt_BR.qm</Outputs>
+    </CustomBuild>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\translations\phantomhome_ru_RU.ts">
+      <Message>lrelease ru_RU</Message>
+      <Command>if not exist "$(IntDir)translations" mkdir "$(IntDir)translations"
+"$(QtBin)\lrelease.exe" "%(FullPath)" -qm "$(IntDir)translations\phantomhome_ru_RU.qm"</Command>
+      <Outputs>$(IntDir)translations\phantomhome_ru_RU.qm</Outputs>
+    </CustomBuild>
+  </ItemGroup>
+
+  <!-- ====================================================================
+       RCC: embed compiled translation resources into the binary
+       ==================================================================== -->
+  <ItemGroup>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\assets.qrc">
+      <Message>RCC assets.qrc</Message>
+      <Command>"$(QtBin)\rcc.exe" --name assets --output "$(IntDir)qrc_assets.cpp" "%(FullPath)"</Command>
+      <Outputs>$(IntDir)qrc_assets.cpp</Outputs>
+      <AdditionalInputs>src\Products\Community\PhantomHome\UI\Client\qml\assets\logo.png;src\Products\Community\PhantomHome\UI\Client\qml\icons\back.svg;src\Products\Community\PhantomHome\UI\Client\qml\icons\chevron_left.svg;src\Products\Community\PhantomHome\UI\Client\qml\icons\chevron_right.svg;src\Products\Community\PhantomHome\UI\Client\qml\icons\close.svg;src\Products\Community\PhantomHome\UI\Client\qml\icons\eye.svg;src\Products\Community\PhantomHome\UI\Client\qml\icons\gauge.svg;src\Products\Community\PhantomHome\UI\Client\qml\icons\gear.svg;src\Products\Community\PhantomHome\UI\Client\qml\icons\lock.svg;src\Products\Community\PhantomHome\UI\Client\qml\icons\refresh.svg;src\Products\Community\PhantomHome\UI\Client\qml\icons\search.svg;src\Products\Community\PhantomHome\UI\Client\qml\icons\shield.svg</AdditionalInputs>
+    </CustomBuild>
+    <CustomBuild Include="src\Products\Community\PhantomHome\UI\Client\translations\translations.qrc">
+      <Message>RCC translations.qrc</Message>
+      <Command>if not exist "$(IntDir)translations" mkdir "$(IntDir)translations"
+copy /Y "%(FullPath)" "$(IntDir)translations\translations.qrc"
+"$(QtBin)\rcc.exe" --name translations --output "$(IntDir)qrc_translations.cpp" "$(IntDir)translations\translations.qrc"</Command>
+      <Outputs>$(IntDir)qrc_translations.cpp</Outputs>
+      <AdditionalInputs>$(IntDir)translations\phantomhome_en_US.qm;$(IntDir)translations\phantomhome_de_DE.qm;$(IntDir)translations\phantomhome_tr_TR.qm;$(IntDir)translations\phantomhome_ja_JP.qm;$(IntDir)translations\phantomhome_es_ES.qm;$(IntDir)translations\phantomhome_fr_FR.qm;$(IntDir)translations\phantomhome_pt_BR.qm;$(IntDir)translations\phantomhome_ru_RU.qm</AdditionalInputs>
+    </CustomBuild>
+  </ItemGroup>
+
+</Project>

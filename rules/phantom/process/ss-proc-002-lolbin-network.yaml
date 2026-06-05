@@ -1,0 +1,64 @@
+id: ss-proc-002
+detection_name: "Win32/LOLBin.NetworkActivity"
+description: "Living-off-the-land binary established a network connection — unusual for the binary's expected role."
+scope: process
+severity: medium
+status: stable
+source: native
+confidence: 0.70
+weight: 1.5
+version: 1
+
+attack:
+  - tactic: TA0011
+    technique: T1105
+    name: "Ingress Tool Transfer"
+  - tactic: TA0011
+    technique: T1071
+    name: "Application Layer Protocol"
+
+logic:
+  and:
+    - field_in:
+        field: process.name
+        values:
+          - certutil.exe
+          - bitsadmin.exe
+          - mshta.exe
+          - regsvr32.exe
+          - rundll32.exe
+          - cmstp.exe
+          - installutil.exe
+          - msiexec.exe
+          - wmic.exe
+          - desktopimgdownldr.exe
+          - esentutl.exe
+          - expand.exe
+          - extrac32.exe
+          - findstr.exe
+          - makecab.exe
+          - mavinject.exe
+          - msdeploy.exe
+          - pcalua.exe
+          - replace.exe
+          - rpcping.exe
+          - runscripthelper.exe
+          - syncappvpublishingserver.exe
+          - mpcmdrun.exe
+          - dnscmd.exe
+        case_insensitive: true
+    - or:
+        - field_exists:
+            field: network.destination.ip
+        - field_exists:
+            field: network.destination.host
+
+fp_guard:
+  notes:
+    - "certutil.exe -urlcache is a known admin pattern for certificate retrieval."
+    - "msiexec.exe /i http:// is legitimate for remote MSI deployments in some enterprises."
+  suppress:
+    - field: process.parent.name
+      values:
+        - msiexec.exe
+        - svchost.exe

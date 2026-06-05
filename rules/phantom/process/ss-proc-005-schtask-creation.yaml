@@ -1,0 +1,40 @@
+id: ss-proc-005
+detection_name: "Win32/Persist.ScheduledTask"
+description: "Scheduled task created by a non-system process — common persistence and execution mechanism."
+scope: process
+severity: medium
+status: stable
+source: native
+confidence: 0.65
+weight: 1.5
+version: 1
+attack:
+  - tactic: TA0003
+    technique: T1053
+    sub_technique: T1053.005
+    name: "Scheduled Task/Job: Scheduled Task"
+logic:
+  and:
+    - or:
+        - field_in:
+            field: process.name
+            values: [schtasks.exe, at.exe]
+            case_insensitive: true
+        - field_contains:
+            field: process.command_line
+            value: "schtasks"
+    - or:
+        - field_contains:
+            field: process.command_line
+            value: "/create"
+        - field_contains:
+            field: process.command_line
+            value: "-create"
+    - field_not_in:
+        field: process.parent.name
+        values: [services.exe, svchost.exe, msiexec.exe, TrustedInstaller.exe]
+        case_insensitive: true
+fp_guard:
+  notes:
+    - "Software installers regularly create scheduled tasks."
+    - "Suppress when parent is a known enterprise deployment tool."

@@ -1,0 +1,34 @@
+id: ss-reg-002
+detection_name: "Win32/Evasion.AMSIBypass"
+description: "Registry modification that disables AMSI scanning — used by malware to bypass script detection."
+scope: registry
+severity: critical
+status: stable
+source: native
+confidence: 0.92
+weight: 3.5
+version: 1
+attack:
+  - tactic: TA0005
+    technique: T1562
+    sub_technique: T1562.001
+    name: "Impair Defenses: Disable or Modify Tools"
+logic:
+  and:
+    - or:
+        - field_contains:
+            field: registry.key
+            value: "\\Software\\Microsoft\\Windows Script\\Settings"
+        - field_contains:
+            field: registry.key
+            value: "AMSI\\Providers"
+    - or:
+        - field_equals:
+            field: registry.value
+            value: "AmsiEnable"
+        - field_equals:
+            field: registry.value
+            value: "AmsiInitFailed"
+fp_guard:
+  notes:
+    - "This modification has essentially no legitimate use case outside controlled testing."

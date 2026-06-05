@@ -1,0 +1,56 @@
+id: ss-proc-026
+detection_name: "Win32/InstallUtil.CodeLoad.Abuse"
+description: "Detects InstallUtil.exe executing arbitrary .NET assemblies via the /logfile= trick or /installtype= parameter abuse. Attackers leverage InstallUtil as a trusted .NET binary to load and run malicious code through the Installer class, bypassing application control and code-signing requirements."
+scope: process
+severity: high
+status: stable
+source: native
+confidence: 0.87
+weight: 2.5
+version: 1
+
+attack:
+  - tactic: TA0005
+    technique: T1218.004
+    name: "System Binary Proxy Execution: InstallUtil"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1218/004/"
+    title: "ATT&CK T1218.004"
+  - url: "https://lolbas-project.github.io/lolbas/Binaries/Installutil/"
+    title: "LOLBAS InstallUtil"
+
+logic:
+  and:
+    - field_in:
+        field: process.name
+        values:
+          - installutil.exe
+        case_insensitive: true
+    - or:
+        - field_regex:
+            field: process.command_line
+            pattern: "(?i)/logfile=\\s*\\S*\\.(exe|dll|txt|dat)"
+        - field_regex:
+            field: process.command_line
+            pattern: "(?i)/installtype=notransaction"
+        - field_regex:
+            field: process.command_line
+            pattern: "(?i)(temp|appdata|programdata|users)\\\\.*\\.(exe|dll)"
+        - field_regex:
+            field: process.command_line
+            pattern: "(?i)/u\\s+.*\\.(exe|dll)"
+
+fp_guard:
+  notes:
+    - "Legitimate .NET application installers use InstallUtil. Alert should be reviewed against software deployment windows."
+    - "Development machines may invoke InstallUtil frequently during build/test cycles."
+  suppress:
+    - field: process.parent.name
+      values:
+        - msiexec.exe
+        - devenv.exe
+        - msbuild.exe
+    - field: process.command_line
+      values:
+        - "C:\\Windows\\Microsoft.NET\\"

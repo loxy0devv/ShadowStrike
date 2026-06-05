@@ -1,0 +1,39 @@
+id: ss-proc-011
+detection_name: "Win32/HVNC.RemoteDesktop"
+description: "Hidden VNC / HRDP-style activity: desktop creation, WTSVirtualChannel, or RDP hijacking patterns."
+scope: process
+severity: critical
+status: stable
+source: native
+confidence: 0.80
+weight: 3.0
+version: 1
+attack:
+  - tactic: TA0011
+    technique: T1021
+    sub_technique: T1021.005
+    name: "Remote Services: VNC"
+logic:
+  or:
+    - and:
+        - field_contains:
+            field: process.command_line
+            value: "CreateDesktop"
+        - unsigned
+    - and:
+        - field_contains:
+            field: process.command_line
+            value: "WTSVirtualChannelOpen"
+        - field_not_in:
+            field: process.name
+            values: [mstsc.exe, msrdc.exe, vmware-view.exe, citrix.exe]
+            case_insensitive: true
+    - field_regex:
+        field: process.command_line
+        value: "(?i)(hidden|stealth|hrdp|hvnc|hidden.vnc|rfb.port)"
+fp_guard:
+  notes:
+    - "Remote support tools (AnyDesk, TeamViewer, RealVNC) legitimately create virtual desktops."
+  suppress:
+    - field: file.signer.subject
+      regex: "(?i)(AnyDesk|TeamViewer|RealVNC|UltraVNC|TigerVNC)"

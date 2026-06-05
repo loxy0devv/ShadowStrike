@@ -1,0 +1,52 @@
+id: ss-reg-007
+detection_name: "Win32/Registry.IFEO.DebuggerHijack"
+description: "Detects creation or modification of Image File Execution Options (IFEO) Debugger values, which redirect process execution to an attacker-specified binary whenever the targeted executable is launched. Attackers use IFEO hijacking for persistence (e.g., replacing sethc.exe or utilman.exe with cmd.exe for accessibility backdoors) and for evading binary execution controls."
+scope: registry
+severity: critical
+status: stable
+source: native
+confidence: 0.91
+weight: 3.5
+version: 1
+
+attack:
+  - tactic: TA0003
+    technique: T1546.012
+    name: "Event Triggered Execution: Image File Execution Options Injection"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1546/012/"
+    title: "ATT&CK T1546.012"
+
+logic:
+  and:
+    - field_regex:
+        field: registry.key_path
+        pattern: "(?i)HKLM\\\\SOFTWARE\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\Image File Execution Options\\\\.*"
+    - field_eq:
+        field: registry.value_name
+        value: "Debugger"
+    - field_in:
+        field: registry.operation
+        values:
+          - set_value
+          - create_key
+    - not:
+        field_in:
+          field: registry.process.name
+          values:
+            - devenv.exe
+            - vsjitdebugger.exe
+            - msvsmon.exe
+          case_insensitive: true
+
+fp_guard:
+  notes:
+    - "Visual Studio and debugging tools legitimately set IFEO Debugger values. Validate the debugger path points to a known, signed debugger binary."
+    - "Anti-malware and EDR products may set IFEO entries for monitoring specific processes."
+  suppress:
+    - field: registry.new_value
+      values:
+        - "C:\\Program Files\\Microsoft Visual Studio\\"
+        - "C:\\Program Files (x86)\\Microsoft Visual Studio\\"
+        - "vsjitdebugger.exe"

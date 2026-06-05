@@ -1,0 +1,1621 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>18.0</VCProjectVersion>
+    <ProjectGuid>{7E511BF5-F27B-BF5E-7FE3-AF087A6A05F1}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.props" />
+  </ImportGroup>
+  <ImportGroup Label="Shared">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <LinkIncremental>true</LinkIncremental>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <LinkIncremental>false</LinkIncremental>
+    <IntDir>$(ProjectDir)build\$(Configuration)\</IntDir>
+    <OutDir>$(SolutionDir)bin\$(Configuration)\</OutDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <LinkIncremental>true</LinkIncremental>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <LinkIncremental>false</LinkIncremental>
+    <IntDir>$(ProjectDir)build\$(Configuration)\</IntDir>
+    <OutDir>$(SolutionDir)bin\$(Configuration)\</OutDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level3</WarningLevel>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <SubSystem>Windows</SubSystem>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <PreprocessorDefinitions>GTEST_LINKED_AS_SHARED_LIBRARY=1
+;GMOCK_LINKED_AS_SHARED_LIBRARY=1</PreprocessorDefinitions>
+      <WarningLevel>Level3</WarningLevel>
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <PrecompiledHeaderOutputFile>$(IntDir)$pch.pch</PrecompiledHeaderOutputFile>
+      <LanguageStandard>stdcpp23</LanguageStandard>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)include\YARA;$(ProjectDir)src;C:\Program Files (x86)\Windows Kits\10\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <SubSystem>Console</SubSystem>
+      <AdditionalDependencies>gtest.lib;gtest_main.lib;gmock.lib;gmock_main.lib;advapi32.lib;ws2_32.lib;libcrypto.lib;libssl.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(ProjectDir)vendor;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level3</WarningLevel>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <SubSystem>Windows</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <PreprocessorDefinitions>GTEST_LINKED_AS_SHARED_LIBRARY=1
+;GMOCK_LINKED_AS_SHARED_LIBRARY=1</PreprocessorDefinitions>
+      <WarningLevel>Level3</WarningLevel>
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <PrecompiledHeaderOutputFile>$(IntDir)$pch.pch</PrecompiledHeaderOutputFile>
+      <LanguageStandard>stdcpp23</LanguageStandard>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)include\YARA;$(ProjectDir)src;C:\Program Files (x86)\Windows Kits\10\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <SubSystem>Console</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <AdditionalDependencies>gtest.lib;gtest_main.lib;gmock.lib;gmock_main.lib;advapi32.lib;ws2_32.lib;libcrypto.lib;libssl.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(ProjectDir)vendor;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+  </ItemDefinitionGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+    <Import Project="$(VCTargetsPath)\BuildCustomizations\masm.targets" />
+  </ImportGroup>
+  <ItemGroup>
+    <ClCompile Include="PhantomDisassembler\Decoder.cpp" />
+    <ClCompile Include="PhantomDisassembler\Formatter.cpp" />
+    <ClCompile Include="PhantomEmulator\Analysis\APISequenceAnalyzer.cpp" />
+    <ClCompile Include="PhantomEmulator\Analysis\BehaviorMonitor.cpp" />
+    <ClCompile Include="PhantomEmulator\Analysis\CryptoDetector.cpp" />
+    <ClCompile Include="PhantomEmulator\Analysis\DKOMDetector.cpp" />
+    <ClCompile Include="PhantomEmulator\Analysis\DotNetAnalyzer.cpp" />
+    <ClCompile Include="PhantomEmulator\Analysis\EvasionDetector.cpp" />
+    <ClCompile Include="PhantomEmulator\Analysis\IOCExtractor.cpp" />
+    <ClCompile Include="PhantomEmulator\Analysis\MemoryForensics.cpp" />
+    <ClCompile Include="PhantomEmulator\Analysis\MITREMapper.cpp" />
+    <ClCompile Include="PhantomEmulator\Analysis\MLClassifier.cpp" />
+    <ClCompile Include="PhantomEmulator\Analysis\NetworkBehaviorAnalyzer.cpp" />
+    <ClCompile Include="PhantomEmulator\Analysis\PerformanceProfiler.cpp" />
+    <ClCompile Include="PhantomEmulator\Analysis\StringExtractor.cpp" />
+    <ClCompile Include="PhantomEmulator\Analysis\ThreatScorer.cpp" />
+    <ClCompile Include="PhantomEmulator\Analysis\UnpackingEngine.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\Accel\CryptoAccelerator.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\Accel\MemoryScanAccel.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\Accel\SIMDEngine.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CLR\MetadataParser.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CLR\MSILDisassembler.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CLR\MSILInterpreter.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\CPU.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\ExceptionDispatcher.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\Executor\AESNIOps.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\Executor\AMXOps.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\Executor\ArithmeticOps.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\Executor\AVX2Ops.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\Executor\AVX512Ops.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\Executor\BitManip.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\Executor\CETOps.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\Executor\ControlFlow.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\Executor\DataTransfer.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\Executor\Decoder\InstructionDecoder.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\Executor\FlagOps.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\Executor\FMAOps.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\Executor\FPUOps.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\Executor\LogicOps.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\Executor\SHAOps.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\Executor\ShiftRotate.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\Executor\SSE2Ops.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\Executor\SSE4Ops.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\Executor\StackOps.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\Executor\StringOps.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\Executor\SystemOps.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\HardwareBreakpoints.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\CPU\State\CPUState.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\JIT\JITCompiler.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\JIT\JITOptimizer.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\Kernel\DriverLoader.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\Kernel\KernelAddressSpace.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\Kernel\KernelStructures.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\Kernel\MSREmulation.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\Kernel\RingTransition.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\Loader\ExportResolver.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\Loader\HashResolver.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\Loader\ImportResolver.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\Loader\PELoader.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\Loader\PEParser.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\Loader\RelocApplier.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\Loader\ResourceParser.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\Loader\ShellcodeLoader.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\Loader\TLSHandler.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\Memory\MemoryTracker.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\Memory\TaintTracker.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\Memory\VirtualMemory.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\Threading\SyncPrimitives.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\Threading\ThreadScheduler.cpp" />
+    <ClCompile Include="PhantomEmulator\Core\WoW64\WoW64Layer.cpp" />
+    <ClCompile Include="PhantomEmulator\Integration\EmulationSession.cpp" />
+    <ClCompile Include="PhantomEmulator\Integration\KernelIPCBridge.cpp" />
+    <ClCompile Include="PhantomEmulator\Integration\ProcessManager.cpp" />
+    <ClCompile Include="PhantomEmulator\Integration\ResultConverter.cpp" />
+    <ClCompile Include="PhantomEmulator\Integration\YaraScanner.cpp" />
+    <ClCompile Include="PhantomEmulator\VirtualOS\AntiEvasion\DebuggerAntiEvasion.cpp" />
+    <ClCompile Include="PhantomEmulator\VirtualOS\AntiEvasion\EnvironmentAntiEvasion.cpp" />
+    <ClCompile Include="PhantomEmulator\VirtualOS\AntiEvasion\TimingAntiEvasion.cpp" />
+    <ClCompile Include="PhantomEmulator\VirtualOS\AntiEvasion\VMAntiEvasion.cpp" />
+    <ClCompile Include="PhantomEmulator\VirtualOS\EnvironmentBuilder.cpp" />
+    <ClCompile Include="PhantomEmulator\VirtualOS\SystemDLLContent.cpp" />
+    <ClCompile Include="PhantomEmulator\VirtualOS\VirtualFileSystem.cpp" />
+    <ClCompile Include="PhantomEmulator\VirtualOS\VirtualNetwork.cpp" />
+    <ClCompile Include="PhantomEmulator\VirtualOS\VirtualProcess.cpp" />
+    <ClCompile Include="PhantomEmulator\VirtualOS\VirtualRegistry.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Advapi32\CredentialAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Advapi32\CryptAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Advapi32\RegistryAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Advapi32\RegistryExtAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Advapi32\SecurityAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Advapi32\ServiceAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Advapi32\ServiceExtAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Amsi\AmsiAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\APIDispatcher.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Bcrypt\BcryptAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\HandleTable.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Kernel32\APCInjectionAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Kernel32\ConsoleAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Kernel32\EnvAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Kernel32\ErrorAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Kernel32\FileAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Kernel32\FileExtAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Kernel32\FileMappingAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Kernel32\LibraryAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Kernel32\MemoryAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Kernel32\ProcessAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Kernel32\StringAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Kernel32\SyncAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Kernel32\ThreadAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Kernel32\TimeAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Kernel\KernelAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Ntdll\EtwAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Ntdll\Ldr.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Ntdll\NtFile.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Ntdll\NtMemory.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Ntdll\NtProcess.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Ntdll\NtRegistry.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Ntdll\NtSync.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Ntdll\NtSystem.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Ntdll\NtThread.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Ntdll\NtToken.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Ntdll\Rtl.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Ntdll\Syscall.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Ole32\COMAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Ole32\WmiEmulation.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Shell32\ShellAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Urlmon\UrlmonAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\User32\InputCaptureAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\User32\WindowAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Vss\VssAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Winhttp\WinHttpAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Wininet\HttpStreamAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Wininet\InternetAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Ws2_32\DnsAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Ws2_32\SocketAPI.cpp" />
+    <ClCompile Include="PhantomEmulator\WinAPI\Ws2_32\WSAAsyncAPI.cpp" />
+    <ClCompile Include="src\PhantomCore\AI\CortexConfig.cpp" />
+    <ClCompile Include="src\PhantomCore\AI\FeatureExtractor.cpp" />
+    <ClCompile Include="src\PhantomCore\AI\ModelCache.cpp" />
+    <ClCompile Include="src\PhantomCore\AI\ModelInference.cpp" />
+    <ClCompile Include="src\PhantomCore\AI\PhantomCortex.cpp" />
+    <ClCompile Include="src\PhantomCore\Detection\DetectionEngine.cpp" />
+    <ClCompile Include="src\PhantomCore\Detection\Correlation\Correlator.cpp" />
+    <ClCompile Include="src\PhantomCore\Detection\Correlation\EventBus.cpp" />
+    <ClCompile Include="src\PhantomCore\Detection\Correlation\ProcessGraph.cpp" />
+    <ClCompile Include="src\PhantomCore\Detection\Rules\PhantomRule.cpp" />
+    <ClCompile Include="src\PhantomCore\Detection\Rules\RuleEngine.cpp" />
+    <ClCompile Include="src\PhantomCore\Detection\Rules\RuleImporter.cpp" />
+    <ClCompile Include="src\PhantomCore\Detection\Rules\RuleParser.cpp" />
+    <ClCompile Include="src\PhantomCore\Detection\Rules\RuleStore.cpp" />
+    <ClCompile Include="src\PhantomCore\Detection\Static\StaticEngine.cpp" />
+    <ClCompile Include="src\PhantomCore\Detection\Telemetry\DeepInspection.cpp" />
+    <ClCompile Include="src\PhantomCore\Devices\WebcamProtection.cpp" />
+    <ClCompile Include="src\PhantomCore\AntiEvasion\DebuggerEvasionDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\AntiEvasion\EnvironmentEvasionDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\AntiEvasion\metamorphic_polymorphicdetector.cpp" />
+    <ClCompile Include="src\PhantomCore\AntiEvasion\NetworkBasedEvasionDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\AntiEvasion\PackerDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\AntiEvasion\ProcessEvasionDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\AntiEvasion\SandboxEvasionDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\AntiEvasion\TimeBasedEvasionDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\AntiEvasion\VMEvasionDetector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\AssetInventory\AssetDatabase.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\AssetInventory\AssetDiscovery.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\AssetInventory\SoftwareInventory.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Compliance\ComplianceEngine.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Compliance\CompliancePolicies.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Compliance\ComplianceReporter.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Compliance\HardeningAdvisor.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Config\EDRConfigRegistration.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\DeviceControl\DeviceAuditLog.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\DeviceControl\DeviceExceptions.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\DeviceControl\DevicePolicyEngine.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\EDRProductOrchestrator.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\IncidentResponse\AlertCorrelator.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\IncidentResponse\ContainmentEngine.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\IncidentResponse\IncidentManager.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\IncidentResponse\RemediationEngine.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\LiveResponse\FileInspector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\LiveResponse\ProcessInspector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\LiveResponse\RegistryInspector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Playbooks\PlaybookAction.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Playbooks\PlaybookEngine.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Playbooks\PlaybookLibrary.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Playbooks\PlaybookScheduler.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\PolicyEngine\PolicyAuditLog.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\PolicyEngine\PolicyEnforcer.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\PolicyEngine\PolicyManager.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Reporting\ExecutiveSummary.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Reporting\IncidentReport.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Reporting\ReportGenerator.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Sandboxing\LocalSandbox.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Sandboxing\SandboxAnalyzer.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Sandboxing\SandboxPolicy.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Telemetry\LocalTelemetryStore.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Telemetry\TelemetryCollector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Telemetry\TelemetryFilter.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Telemetry\TelemetrySerializer.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\ThreatHunting\HuntQueryEngine.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\ThreatHunting\HuntRuleManager.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\ThreatHunting\HuntScheduler.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\ThreatHunting\IOCScanner.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Vulnerability\PatchAssessment.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Vulnerability\RiskScorer.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Vulnerability\VulnDatabase.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Vulnerability\VulnScanner.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Config\HomeConfigRegistration.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\HomeProductOrchestrator.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\ModeThresholds.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\HomeProductEntry.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Backup\BackupWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\wiring\BankingTrojanDetectorWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\wiring\SecureBrowserWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\wiring\KeyloggerProtectionWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\wiring\ScreenshotBlockerWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\wiring\CertificatePinningWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\wiring\TransactionMonitorWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Config\ConfigWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\CryptoMinersProtection\CryptoMinersWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Email\EmailWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\GameMode\GameModeWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\IoT\IoTWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\IoT\IPLeakProtection.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\wiring\CookieManagerWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\wiring\LocationPrivacyWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\wiring\MicrophoneGuardWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\wiring\WebcamProtectorWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\wiring\DataLeakProtectionWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\wiring\DNSLeakProtectionWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\wiring\IPLeakProtectionWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\wiring\PrivacyCleanerWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\UI\SystemTray.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\USB_Protection\USBWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\WebProtection\WebProtectionWiring.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Backup\BackupManager.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Backup\BackupScheduler.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Backup\IncrementalBackup.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Backup\RestoreManager.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\BankingTrojanDetector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\CertificatePinning.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\KeyloggerProtection.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\ScreenshotBlocker.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\SecureBrowser.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Banking\TransactionMonitor.cpp" />
+    <ClCompile Include="src\PhantomCore\Communication\AlertSystem.cpp" />
+    <ClCompile Include="src\PhantomCore\Communication\FilterConnection.cpp" />
+    <ClCompile Include="src\PhantomCore\Communication\IPCManager.cpp" />
+    <ClCompile Include="src\PhantomCore\Communication\MessageDispatcher.cpp" />
+    <ClCompile Include="src\PhantomCore\Communication\NotificationManager.cpp" />
+    <ClCompile Include="src\PhantomCore\Communication\ReportGenerator.cpp" />
+    <ClCompile Include="src\PhantomCore\Communication\ServiceCommunication.cpp" />
+    <ClCompile Include="src\PhantomCore\Communication\TelemetryCollector.cpp" />
+    <ClCompile Include="src\PhantomCore\Communication\ThreatIntelPusher.cpp" />
+    <ClCompile Include="src\PhantomCore\API\Http\HttpTypes.cpp" />
+    <ClCompile Include="src\PhantomCore\API\Http\HttpServer.cpp" />
+    <ClCompile Include="src\PhantomCore\API\RESTServer.cpp" />
+    <ClCompile Include="src\PhantomCore\Config\ConfigManager.cpp" />
+    <ClCompile Include="src\PhantomCore\Config\PolicyManager.cpp" />
+    <ClCompile Include="src\PhantomCore\Config\ProductTier.cpp" />
+    <ClCompile Include="src\PhantomCore\Config\ProfileManager.cpp" />
+    <ClCompile Include="src\PhantomCore\Config\SettingsManager.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Engine\BehaviorAnalyzer.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Engine\EmulationEngine.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Engine\HeuristicAnalyzer.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Engine\MachineLearningDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Engine\PackerUnpacker.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Engine\PolymorphicDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Engine\QuarantineManager.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Engine\SandboxAnalyzer.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Engine\ScanEngine.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Engine\ThreatDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Engine\ZeroDayDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\FileSystem\ArchiveExtractor.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\FileSystem\DirectoryMonitor.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\FileSystem\DocumentScanner.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\FileSystem\ExecutableAnalyzer.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\FileSystem\FileHasher.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\FileSystem\FileLockManager.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\FileSystem\FileReputation.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\FileSystem\FileTypeAnalyzer.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\FileSystem\FileWatcher.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\FileSystem\MediaFileScanner.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\FileSystem\MountPointMonitor.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Network\BotnetDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Network\DDosProtection.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Network\DNSMonitor.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Network\EmailScanner.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Network\FirewallManager.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Network\NetworkMonitor.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Network\P2PMonitor.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Network\TorDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Network\TrafficAnalyzer.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Network\URLAnalyzer.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Network\VPNDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Network\WebProtection.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Process\AtomBombingDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Process\DLLInjectionDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Process\MemoryScanner.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Process\ProcessAnalyzer.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Process\ProcessHollowingDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Process\ProcessInjectionDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Process\ProcessKiller.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Process\ProcessMonitor.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Process\ReflectiveDLLDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Process\ThreadHijackDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Registry\PersistenceDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Registry\RegistryAnalyzer.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Registry\RegistryMonitor.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Registry\StartupAnalyzer.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\Registry\SystemSettingsMonitor.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\System\BootTimeAnalyzer.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\System\CrashHandler.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\System\DriverAnalyzer.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\System\EventLogger.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\System\HardwareMonitor.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\System\PerformanceMonitor.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\System\ServiceManager.cpp" />
+    <ClCompile Include="src\PhantomCore\Core\System\SystemInfo.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\CryptoMinersProtection\BrowserMinerDetector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\CryptoMinersProtection\CPUUsageAnalyzer.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\CryptoMinersProtection\CryptoMinerDetector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\CryptoMinersProtection\GPUMiningDetector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\CryptoMinersProtection\PoolConnectionDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\Database\ConfigurationDB.cpp" />
+    <ClCompile Include="src\PhantomCore\Database\DatabaseManager.cpp" />
+    <ClCompile Include="src\PhantomCore\Database\LogDB.cpp" />
+    <ClCompile Include="src\PhantomCore\Database\QuarantineDB.cpp" />
+    <ClCompile Include="src\Drivers\FileFilterCallbacks.cpp" />
+    <ClCompile Include="src\Drivers\FilterCommunication.cpp" />
+    <ClCompile Include="src\Drivers\ProcessFilterCallbacks.cpp" />
+    <ClCompile Include="src\Drivers\RegistryFilterCallbacks.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Email\AttachmentScanner.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Email\EmailProtection.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Email\OutlookScanner.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Email\PhishingEmailDetector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Email\SpamDetector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Email\ThunderbirdScanner.cpp" />
+    <ClCompile Include="src\PhantomCore\Exploits\BufferOverflowProtection.cpp" />
+    <ClCompile Include="src\PhantomCore\Exploits\HeapSprayDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\Exploits\JITSprayDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\Exploits\KernelExploitDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\Exploits\PrivilegeEscalationDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\Exploits\ROPProtection.cpp" />
+    <ClCompile Include="src\PhantomCore\Exploits\StackPivotDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\External\pugixml\pugixml.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\PhantomCore\External\sqlitecpp\Backup.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\PhantomCore\External\sqlitecpp\Column.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\PhantomCore\External\sqlitecpp\Database.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\PhantomCore\External\sqlitecpp\Exception.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\PhantomCore\External\sqlitecpp\Savepoint.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\PhantomCore\External\sqlitecpp\sqlite3.c">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\PhantomCore\External\sqlitecpp\Statement.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\PhantomCore\External\sqlitecpp\Transaction.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\PhantomCore\FuzzyHasher\FuzzyHasher.cpp" />
+    <ClCompile Include="src\PhantomCore\FuzzyHasher\DigestGenerator.cpp" />
+    <ClCompile Include="src\PhantomCore\FuzzyHasher\DigestComparer.cpp" />
+    <ClCompile Include="src\PhantomCore\External\tlsh\input_desc.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\PhantomCore\External\tlsh\shared_file_functions.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\PhantomCore\External\tlsh\tlsh.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\PhantomCore\External\tlsh\tlsh_impl.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\PhantomCore\External\tlsh\tlsh_util.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">NotUsing</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">NotUsing</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\Forensics\ArtifactExtractor.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Forensics\EvidenceCollector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Forensics\IncidentRecorder.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Forensics\MemoryDumper.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Forensics\NetworkCapture.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomEDR\Forensics\TimelineAnalyzer.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\GameMode\GameModeManager.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\GameMode\GameProcessDetector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\GameMode\OverlayProtection.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\GameMode\PerformanceOptimizer.cpp" />
+    <ClCompile Include="src\PhantomCore\HashStore\BloomFilter_impl.cpp" />
+    <ClCompile Include="src\PhantomCore\HashStore\HashBucket_impl.cpp" />
+    <ClCompile Include="src\PhantomCore\HashStore\HashStore.cpp" />
+    <ClCompile Include="src\PhantomCore\HashStore\HashStore_import_export.cpp" />
+    <ClCompile Include="src\PhantomCore\HashStore\HashStore_mgnmnt.cpp" />
+    <ClCompile Include="src\PhantomCore\HashStore\HashStore_query_operations.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\IoT\IoTDeviceScanner.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\IoT\RouterSecurityChecker.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\IoT\SmartHomeProtection.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\IoT\WiFiSecurityAnalyzer.cpp" />
+    <ClCompile Include="src\Main.cpp" />
+    <ClCompile Include="src\PhantomCore\PatternStore\aho_crsck_impl.cpp" />
+    <ClCompile Include="src\PhantomCore\PatternStore\boyer_moore_impl.cpp" />
+    <ClCompile Include="src\PhantomCore\PatternStore\PatternIndex.cpp" />
+    <ClCompile Include="src\PhantomCore\PatternStore\PatternStore.cpp" />
+    <ClCompile Include="src\PhantomCore\PatternStore\SIMD_Matcher_Impl.cpp" />
+    <ClCompile Include="src\pch.cpp">
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
+      <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Create</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\PhantomCore\PEParser\PEParser.cpp" />
+    <ClCompile Include="src\PhantomCore\PEParser\PEValidation.cpp" />
+    <ClCompile Include="src\PhantomCore\Performance\CPUMonitor.cpp" />
+    <ClCompile Include="src\PhantomCore\Performance\dev\MemoryProfiler.cpp" />
+    <ClCompile Include="src\PhantomCore\Performance\dev\PerformanceProfiler.cpp" />
+    <ClCompile Include="src\PhantomCore\Performance\DiskMonitor.cpp" />
+    <!-- MemoryProfiler moved to dev\ subfolder -->
+    <ClCompile Include="src\PhantomCore\Performance\NetworkPerformanceMonitor.cpp" />
+    <!-- PerformanceProfiler moved to dev\ subfolder -->
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\CookieManager.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\DataLeakProtection.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\DNSLeakProtection.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\IPLeakProtection.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\LocationPrivacy.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\MicrophoneGuard.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\PrivacyCleaner.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\Privacy\WebcamProtector.cpp" />
+    <ClCompile Include="src\PhantomCore\RansomwareProtection\BackupProtector.cpp" />
+    <ClCompile Include="src\PhantomCore\RansomwareProtection\FileBackupManager.cpp" />
+    <ClCompile Include="src\PhantomCore\RansomwareProtection\HoneypotManager.cpp" />
+    <ClCompile Include="src\PhantomCore\RansomwareProtection\LockyDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\RansomwareProtection\RansomwareDecryptor.cpp" />
+    <ClCompile Include="src\PhantomCore\RansomwareProtection\RansomwareDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\RansomwareProtection\ShadowCopyProtector.cpp" />
+    <ClCompile Include="src\PhantomCore\RansomwareProtection\VolumeSnapshotService.cpp" />
+    <ClCompile Include="src\PhantomCore\RansomwareProtection\WannaCryDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\RealTime\AccessControlManager.cpp" />
+    <ClCompile Include="src\PhantomCore\RealTime\BehaviorBlocker.cpp" />
+    <ClCompile Include="src\PhantomCore\RealTime\ExploitPrevention.cpp" />
+    <ClCompile Include="src\PhantomCore\RealTime\FileIntegrityMonitor.cpp" />
+    <ClCompile Include="src\PhantomCore\RealTime\FileSystemFilter.cpp" />
+    <ClCompile Include="src\PhantomCore\RealTime\MemoryProtection.cpp" />
+    <ClCompile Include="src\PhantomCore\RealTime\NetworkTrafficFilter.cpp" />
+    <ClCompile Include="src\PhantomCore\RealTime\ProcessCreationMonitor.cpp" />
+    <ClCompile Include="src\PhantomCore\RealTime\RealTimeProtection.cpp" />
+    <ClCompile Include="src\PhantomCore\RealTime\RealtTimeProtection.cpp" />
+    <ClCompile Include="src\PhantomCore\RealTime\ZeroHourProtection.cpp" />
+    <ClCompile Include="src\PhantomCore\Scripts\AMSIIntegration.cpp" />
+    <ClCompile Include="src\PhantomCore\Scripts\JavaScriptScanner.cpp" />
+    <ClCompile Include="src\PhantomCore\Scripts\MacroDetector.cpp" />
+    <ClCompile Include="src\PhantomCore\Scripts\PowerShellScanner.cpp" />
+    <ClCompile Include="src\PhantomCore\Scripts\PythonScriptScanner.cpp" />
+    <ClCompile Include="src\PhantomCore\Scripts\VBScriptScanner.cpp" />
+    <ClCompile Include="src\PhantomCore\SelfProtection\AntiDebug.cpp" />
+    <ClCompile Include="src\PhantomCore\SelfProtection\CertificateValidator.cpp" />
+    <ClCompile Include="src\PhantomCore\SelfProtection\CryptoManager.cpp" />
+    <ClCompile Include="src\PhantomCore\SelfProtection\DigitalSignatureValidator.cpp" />
+    <ClCompile Include="src\PhantomCore\SelfProtection\FileProtection.cpp" />
+    <ClCompile Include="src\PhantomCore\SelfProtection\MemoryProtection.cpp" />
+    <ClCompile Include="src\PhantomCore\SelfProtection\ProcessProtection.cpp" />
+    <ClCompile Include="src\PhantomCore\SelfProtection\RegistryProtection.cpp" />
+    <ClCompile Include="src\PhantomCore\SelfProtection\SelfDefense.cpp" />
+    <ClCompile Include="src\PhantomCore\SelfProtection\TamperProtection.cpp" />
+    <ClCompile Include="src\PhantomCore\Service\AntivirusService.cpp" />
+    <ClCompile Include="src\PhantomCore\Service\ProductExtensions.cpp" />
+    <!-- Service\PerformanceProfiler.cpp does not exist -->
+    <ClCompile Include="src\PhantomCore\Service\ServiceCommunicator.cpp" />
+    <ClCompile Include="src\PhantomCore\Service\ServiceController.cpp" />
+    <ClCompile Include="src\PhantomCore\Service\ServiceInstaller.cpp" />
+    <ClCompile Include="src\PhantomCore\Service\ServiceMonitor.cpp" />
+    <ClCompile Include="src\PhantomCore\SignatureStore\batch_sig_builder.cpp" />
+    <ClCompile Include="src\PhantomCore\SignatureStore\SignatureBuilder.cpp" />
+    <ClCompile Include="src\PhantomCore\SignatureStore\SignatureFormat.cpp" />
+    <ClCompile Include="src\PhantomCore\SignatureStore\SignatureIndex.cpp" />
+    <ClCompile Include="src\PhantomCore\SignatureStore\SignatureIndex_Cache_mngmnt.cpp" />
+    <ClCompile Include="src\PhantomCore\SignatureStore\SignatureIndex_COW.cpp" />
+    <ClCompile Include="src\PhantomCore\SignatureStore\SignatureIndex_Modification.cpp" />
+    <ClCompile Include="src\PhantomCore\SignatureStore\SignatureIndex_Query.cpp" />
+    <ClCompile Include="src\PhantomCore\SignatureStore\SignatureIndex_stat_maintenance.cpp" />
+    <ClCompile Include="src\PhantomCore\SignatureStore\SignatureStore.cpp" />
+    <ClCompile Include="src\PhantomCore\SignatureStore\SignatureStore_mngmnt.cpp" />
+    <ClCompile Include="src\PhantomCore\SignatureStore\SignatureStore_Query.cpp" />
+    <ClCompile Include="src\PhantomCore\SignatureStore\SignatureStore_scan.cpp" />
+    <ClCompile Include="src\PhantomCore\SignatureStore\sig_builder_import_methods.cpp" />
+    <ClCompile Include="src\PhantomCore\SignatureStore\sig_builder_input_methods.cpp" />
+    <ClCompile Include="src\PhantomCore\SignatureStore\sig_builder_serialization.cpp" />
+    <ClCompile Include="src\PhantomCore\SignatureStore\sig_builder_utils.cpp" />
+    <ClCompile Include="src\PhantomCore\SignatureStore\sig_indx_internal_node_mng.cpp" />
+    <ClCompile Include="src\PhantomCore\SignatureStore\YaraRuleStore.cpp" />
+    <ClCompile Include="src\PhantomCore\ThreatIntel\ReputationCache.cpp" />
+    <ClCompile Include="src\PhantomCore\ThreatIntel\ThreatIntelDatabase.cpp" />
+    <ClCompile Include="src\PhantomCore\ThreatIntel\ThreatIntelExporter.cpp" />
+    <ClCompile Include="src\PhantomCore\ThreatIntel\ThreatIntelFeedManager.cpp" />
+    <ClCompile Include="src\PhantomCore\ThreatIntel\ThreatIntelFeedManager_parsers.cpp" />
+    <ClCompile Include="src\PhantomCore\ThreatIntel\ThreatIntelFormat.cpp" />
+    <ClCompile Include="src\PhantomCore\ThreatIntel\ThreatIntelImporter.cpp" />
+    <ClCompile Include="src\PhantomCore\ThreatIntel\ThreatIntelIndex_Core.cpp" />
+    <ClCompile Include="src\PhantomCore\ThreatIntel\ThreatIntelIndex_DataStructures.cpp" />
+    <ClCompile Include="src\PhantomCore\ThreatIntel\ThreatIntelIndex_Lookups.cpp" />
+    <ClCompile Include="src\PhantomCore\ThreatIntel\ThreatIntelIndex_Modifications.cpp" />
+    <ClCompile Include="src\PhantomCore\ThreatIntel\ThreatIntelIndex_Trees.cpp" />
+    <ClCompile Include="src\PhantomCore\ThreatIntel\ThreatIntelIndex_URLMatcher.cpp" />
+    <ClCompile Include="src\PhantomCore\ThreatIntel\ThreatIntelIOCManager.cpp" />
+    <ClCompile Include="src\PhantomCore\ThreatIntel\ThreatIntelLookup.cpp" />
+    <ClCompile Include="src\PhantomCore\ThreatIntel\ThreatIntelStore.cpp" />
+    <ClCompile Include="src\PhantomCore\ThreatIntel\ThreatIntelBloomFilter.cpp" />
+    <ClCompile Include="src\PhantomCore\Update\DeltaUpdater.cpp" />
+    <ClCompile Include="src\PhantomCore\Update\LocalFolderTransport.cpp" />
+    <ClCompile Include="src\PhantomCore\Update\ProgramUpdater.cpp" />
+    <ClCompile Include="src\PhantomCore\Update\RollbackManager.cpp" />
+    <ClCompile Include="src\PhantomCore\Update\SignatureUpdater.cpp" />
+    <ClCompile Include="src\PhantomCore\Update\UpdateManager.cpp" />
+    <ClCompile Include="src\PhantomCore\Update\UpdateScheduler.cpp" />
+    <ClCompile Include="src\PhantomCore\Update\UpdateVerifier.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\USB_Protection\BadUSBDetector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\USB_Protection\DeviceControlManager.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\USB_Protection\USBAutorunBlocker.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\USB_Protection\USBDeviceMonitor.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\USB_Protection\USBScanner.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\NetworkUtilsIpAddress.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\Base64Utils.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\CacheManager.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\CertUtils.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\CompressionUtils.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\CryptoUtils.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\CryptoUtilsCommon.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\CryptoUtils_AsymmetricCipher.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\CryptoUtils_private_key.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\CryptoUtils_SecureBuffer.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\CryptoUtils_Secure_Random.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\CryptoUtils_SymmetricCipher.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\FileUtils.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\HashUtils.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\JSONUtils.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\Logger.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\MemoryUtils.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\NetworkSecurity_SSL_TLS.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\NetworkUtils.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\NetworkUtilsMacAdress.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\NetworkUtils_Adapter.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\NetworkUtils_DNS.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\NetworkUtils_http_https.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\NetworkUtils_proxy.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\NetworkUtils_URL.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\PE_sig_verf.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\ProcessUtils.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\RegistryUtils.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\StringUtils.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\SystemUtils.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\ThreadPool.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\Timer.cpp" />
+    <ClCompile Include="src\PhantomCore\Utils\XMLUtils.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\WebProtection\AdBlocker.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\WebProtection\BrowserProtection.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\WebProtection\ChromeExtensionScanner.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\WebProtection\FirefoxAddonScanner.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\WebProtection\MaliciousDownloadBlocker.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\WebProtection\PhishingDetector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\WebProtection\SafeBrowsingAPI.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomHome\WebProtection\TrackerBlocker.cpp" />
+    <ClCompile Include="src\PhantomCore\Whitelist\WhiteListBloomFilter.cpp" />
+    <ClCompile Include="src\PhantomCore\Whitelist\WhiteListFormat.cpp" />
+    <ClCompile Include="src\PhantomCore\Whitelist\WhiteListHashIndex.cpp" />
+    <ClCompile Include="src\PhantomCore\Whitelist\WhiteListPatternIndex.cpp" />
+    <ClCompile Include="src\PhantomCore\Whitelist\WhiteListStore.cpp" />
+    <ClCompile Include="src\PhantomCore\Whitelist\WhiteListStringPool.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="include\gmock\gmock-actions.h" />
+    <ClInclude Include="include\gmock\gmock-cardinalities.h" />
+    <ClInclude Include="include\gmock\gmock-function-mocker.h" />
+    <ClInclude Include="include\gmock\gmock-matchers.h" />
+    <ClInclude Include="include\gmock\gmock-more-actions.h" />
+    <ClInclude Include="include\gmock\gmock-more-matchers.h" />
+    <ClInclude Include="include\gmock\gmock-nice-strict.h" />
+    <ClInclude Include="include\gmock\gmock-spec-builders.h" />
+    <ClInclude Include="include\gmock\gmock.h" />
+    <ClInclude Include="include\gmock\internal\custom\gmock-generated-actions.h" />
+    <ClInclude Include="include\gmock\internal\custom\gmock-matchers.h" />
+    <ClInclude Include="include\gmock\internal\custom\gmock-port.h" />
+    <ClInclude Include="include\gmock\internal\gmock-internal-utils.h" />
+    <ClInclude Include="include\gmock\internal\gmock-port.h" />
+    <ClInclude Include="include\gmock\internal\gmock-pp.h" />
+    <ClInclude Include="include\gtest\gtest-assertion-result.h" />
+    <ClInclude Include="include\gtest\gtest-death-test.h" />
+    <ClInclude Include="include\gtest\gtest-matchers.h" />
+    <ClInclude Include="include\gtest\gtest-message.h" />
+    <ClInclude Include="include\gtest\gtest-param-test.h" />
+    <ClInclude Include="include\gtest\gtest-printers.h" />
+    <ClInclude Include="include\gtest\gtest-spi.h" />
+    <ClInclude Include="include\gtest\gtest-test-part.h" />
+    <ClInclude Include="include\gtest\gtest-typed-test.h" />
+    <ClInclude Include="include\gtest\gtest.h" />
+    <ClInclude Include="include\gtest\gtest_pred_impl.h" />
+    <ClInclude Include="include\gtest\gtest_prod.h" />
+    <ClInclude Include="include\gtest\internal\custom\gtest-port.h" />
+    <ClInclude Include="include\gtest\internal\custom\gtest-printers.h" />
+    <ClInclude Include="include\gtest\internal\custom\gtest.h" />
+    <ClInclude Include="include\gtest\internal\gtest-death-test-internal.h" />
+    <ClInclude Include="include\gtest\internal\gtest-filepath.h" />
+    <ClInclude Include="include\gtest\internal\gtest-internal.h" />
+    <ClInclude Include="include\gtest\internal\gtest-param-util.h" />
+    <ClInclude Include="include\gtest\internal\gtest-port-arch.h" />
+    <ClInclude Include="include\gtest\internal\gtest-port.h" />
+    <ClInclude Include="include\gtest\internal\gtest-string.h" />
+    <ClInclude Include="include\gtest\internal\gtest-type-util.h" />
+    <ClInclude Include="include\nlohmann\json.hpp" />
+    <ClInclude Include="include\pugixml\pugiconfig.hpp" />
+    <ClInclude Include="include\pugixml\pugixml.hpp" />
+    <ClInclude Include="include\sqlitecpp\Assertion.h" />
+    <ClInclude Include="include\sqlitecpp\Backup.h" />
+    <ClInclude Include="include\sqlitecpp\Column.h" />
+    <ClInclude Include="include\sqlitecpp\Database.h" />
+    <ClInclude Include="include\sqlitecpp\Exception.h" />
+    <ClInclude Include="include\sqlitecpp\ExecuteMany.h" />
+    <ClInclude Include="include\sqlitecpp\Savepoint.h" />
+    <ClInclude Include="include\sqlitecpp\sqlite3.h" />
+    <ClInclude Include="include\sqlitecpp\SQLiteCpp.h" />
+    <ClInclude Include="include\sqlitecpp\SQLiteCppExport.h" />
+    <ClInclude Include="include\sqlitecpp\Statement.h" />
+    <ClInclude Include="include\sqlitecpp\Transaction.h" />
+    <ClInclude Include="include\sqlitecpp\Utils.h" />
+    <ClInclude Include="include\sqlitecpp\VariadicBind.h" />
+    <ClInclude Include="PhantomDisassembler\Decoder.hpp" />
+    <ClInclude Include="PhantomDisassembler\Formatter.hpp" />
+    <ClInclude Include="PhantomDisassembler\Instruction.hpp" />
+    <ClInclude Include="PhantomDisassembler\PhantomDisasm.hpp" />
+    <ClInclude Include="PhantomDisassembler\Types.hpp" />
+    <ClInclude Include="PhantomEmulator\Analysis\AnalysisTypes.hpp" />
+    <ClInclude Include="PhantomEmulator\Analysis\APISequenceAnalyzer.hpp" />
+    <ClInclude Include="PhantomEmulator\Analysis\BehaviorMonitor.hpp" />
+    <ClInclude Include="PhantomEmulator\Analysis\CryptoDetector.hpp" />
+    <ClInclude Include="PhantomEmulator\Analysis\DKOMDetector.hpp" />
+    <ClInclude Include="PhantomEmulator\Analysis\DotNetAnalyzer.hpp" />
+    <ClInclude Include="PhantomEmulator\Analysis\EvasionDetector.hpp" />
+    <ClInclude Include="PhantomEmulator\Analysis\IOCExtractor.hpp" />
+    <ClInclude Include="PhantomEmulator\Analysis\MemoryForensics.hpp" />
+    <ClInclude Include="PhantomEmulator\Analysis\MITREMapper.hpp" />
+    <ClInclude Include="PhantomEmulator\Analysis\MLClassifier.hpp" />
+    <ClInclude Include="PhantomEmulator\Analysis\NetworkBehaviorAnalyzer.hpp" />
+    <ClInclude Include="PhantomEmulator\Analysis\PerformanceProfiler.hpp" />
+    <ClInclude Include="PhantomEmulator\Analysis\StringExtractor.hpp" />
+    <ClInclude Include="PhantomEmulator\Analysis\ThreatScorer.hpp" />
+    <ClInclude Include="PhantomEmulator\Analysis\UnpackingEngine.hpp" />
+    <ClInclude Include="PhantomEmulator\Common\Config.hpp" />
+    <ClInclude Include="PhantomEmulator\Common\Constants.hpp" />
+    <ClInclude Include="PhantomEmulator\Common\Errors.hpp" />
+    <ClInclude Include="PhantomEmulator\Common\Platform.hpp" />
+    <ClInclude Include="PhantomEmulator\Common\Types.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Accel\CryptoAccelerator.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Accel\MemoryScanAccel.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Accel\SIMDEngine.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\CLR\CLRTypes.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\CLR\MetadataParser.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\CLR\MSILDisassembler.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\CLR\MSILInterpreter.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\CPU\CPU.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\CPU\ExceptionDispatcher.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\CPU\Executor\AVX2Ops.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\CPU\Executor\Decoder\Instruction.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\CPU\Executor\Decoder\InstructionDecoder.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\CPU\HardwareBreakpoints.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\CPU\State\CPUState.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\CPU\State\EFLAGS.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\JIT\JITCompiler.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\JIT\JITOptimizer.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Kernel\DriverLoader.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Kernel\KernelAddressSpace.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Kernel\KernelStructures.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Kernel\MSREmulation.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Kernel\RingTransition.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Loader\ExportResolver.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Loader\HashResolver.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Loader\ImportResolver.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Loader\PELoader.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Loader\PEParser.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Loader\PEStructures.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Loader\RelocApplier.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Loader\ResourceParser.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Loader\ShellcodeLoader.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Loader\TLSHandler.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Memory\MemoryTracker.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Memory\TaintTracker.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Memory\VirtualMemory.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Threading\SyncPrimitives.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Threading\ThreadContext.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\Threading\ThreadScheduler.hpp" />
+    <ClInclude Include="PhantomEmulator\Core\WoW64\WoW64Layer.hpp" />
+    <ClInclude Include="PhantomEmulator\Integration\EmulationResult.hpp" />
+    <ClInclude Include="PhantomEmulator\Integration\EmulationSession.hpp" />
+    <ClInclude Include="PhantomEmulator\Integration\KernelIPCBridge.hpp" />
+    <ClInclude Include="PhantomEmulator\Integration\ProcessManager.hpp" />
+    <ClInclude Include="PhantomEmulator\Integration\ResultConverter.hpp" />
+    <ClInclude Include="PhantomEmulator\Integration\YaraScanner.hpp" />
+    <ClInclude Include="PhantomEmulator\VirtualOS\AntiEvasion\DebuggerAntiEvasion.hpp" />
+    <ClInclude Include="PhantomEmulator\VirtualOS\AntiEvasion\EnvironmentAntiEvasion.hpp" />
+    <ClInclude Include="PhantomEmulator\VirtualOS\AntiEvasion\TimingAntiEvasion.hpp" />
+    <ClInclude Include="PhantomEmulator\VirtualOS\AntiEvasion\VMAntiEvasion.hpp" />
+    <ClInclude Include="PhantomEmulator\VirtualOS\EnvironmentBuilder.hpp" />
+    <ClInclude Include="PhantomEmulator\VirtualOS\SystemDLLContent.hpp" />
+    <ClInclude Include="PhantomEmulator\VirtualOS\VirtualFileSystem.hpp" />
+    <ClInclude Include="PhantomEmulator\VirtualOS\VirtualNetwork.hpp" />
+    <ClInclude Include="PhantomEmulator\VirtualOS\VirtualProcess.hpp" />
+    <ClInclude Include="PhantomEmulator\VirtualOS\VirtualRegistry.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Advapi32\CredentialAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Advapi32\CryptAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Advapi32\RegistryAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Advapi32\RegistryExtAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Advapi32\SecurityAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Advapi32\ServiceAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Advapi32\ServiceExtAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Amsi\AmsiAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\APIDatabase.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\APIDispatcher.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\APITypes.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Bcrypt\BcryptAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\HandleTable.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Kernel32\APCInjectionAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Kernel32\ConsoleAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Kernel32\EnvAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Kernel32\ErrorAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Kernel32\FileAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Kernel32\FileExtAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Kernel32\FileMappingAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Kernel32\LibraryAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Kernel32\MemoryAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Kernel32\ProcessAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Kernel32\StringAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Kernel32\SyncAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Kernel32\ThreadAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Kernel32\TimeAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Kernel\KernelAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Ntdll\EtwAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Ntdll\Ldr.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Ntdll\NtFile.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Ntdll\NtMemory.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Ntdll\NtProcess.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Ntdll\NtRegistry.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Ntdll\NtSync.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Ntdll\NtSystem.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Ntdll\NtThread.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Ntdll\NtToken.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Ntdll\Rtl.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Ntdll\Syscall.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Ole32\COMAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Ole32\WmiEmulation.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Shell32\ShellAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Urlmon\UrlmonAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\User32\InputCaptureAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\User32\WindowAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Vss\VssAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Winhttp\WinHttpAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Wininet\HttpStreamAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Wininet\InternetAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Ws2_32\DnsAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Ws2_32\SocketAPI.hpp" />
+    <ClInclude Include="PhantomEmulator\WinAPI\Ws2_32\WSAAsyncAPI.hpp" />
+    <ClInclude Include="src\PhantomCore\AI\CortexConfig.hpp" />
+    <ClInclude Include="src\PhantomCore\AI\CortexTypes.hpp" />
+    <ClInclude Include="src\PhantomCore\AI\FeatureExtractor.hpp" />
+    <ClInclude Include="src\PhantomCore\AI\ModelCache.hpp" />
+    <ClInclude Include="src\PhantomCore\AI\ModelInference.hpp" />
+    <ClInclude Include="src\PhantomCore\AI\PhantomCortex.hpp" />
+    <ClInclude Include="src\PhantomCore\Communication\AlertSystem.hpp" />
+    <ClInclude Include="src\PhantomCore\Communication\Communication.hpp" />
+    <ClInclude Include="src\PhantomCore\Communication\FilterConnection.hpp" />
+    <ClInclude Include="src\PhantomCore\Communication\IPCManager.hpp" />
+    <ClInclude Include="src\PhantomCore\Communication\MessageDispatcher.hpp" />
+    <ClInclude Include="src\PhantomCore\Communication\NotificationManager.hpp" />
+    <ClInclude Include="src\PhantomCore\Communication\ReportGenerator.hpp" />
+    <ClInclude Include="src\PhantomCore\Communication\ServiceCommunication.hpp" />
+    <ClInclude Include="src\PhantomCore\Communication\TelemetryCollector.hpp" />
+    <ClInclude Include="src\PhantomCore\Communication\ThreatIntelPusher.hpp" />
+    <ClInclude Include="src\PhantomCore\API\Http\HttpTypes.hpp" />
+    <ClInclude Include="src\PhantomCore\API\Http\HttpServer.hpp" />
+    <ClInclude Include="src\PhantomCore\API\RESTServer.hpp" />
+    <ClInclude Include="src\PhantomCore\Config\ConfigManager.hpp" />
+    <ClInclude Include="src\PhantomCore\Config\PolicyManager.hpp" />
+    <ClInclude Include="src\PhantomCore\Config\ProductTier.hpp" />
+    <ClInclude Include="src\PhantomCore\Config\ProfileManager.hpp" />
+    <ClInclude Include="src\PhantomCore\Config\SettingsManager.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Engine\BehaviorAnalyzer.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Engine\EmulationEngine.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Engine\HeuristicAnalyzer.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Engine\MachineLearningDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Engine\PackerUnpacker.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Engine\PolymorphicDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Engine\QuarantineManager.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Engine\SandboxAnalyzer.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Engine\ScanEngine.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Engine\ThreatDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Engine\ZeroDayDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\FileSystem\ArchiveExtractor.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\FileSystem\DirectoryMonitor.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\FileSystem\DocumentScanner.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\FileSystem\ExecutableAnalyzer.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\FileSystem\FileHasher.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\FileSystem\FileLockManager.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\FileSystem\FileReputation.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\FileSystem\FileTypeAnalyzer.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\FileSystem\FileWatcher.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\FileSystem\MediaFileScanner.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\FileSystem\MountPointMonitor.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Network\BotnetDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Network\DDosProtection.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Network\DNSMonitor.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Network\EmailScanner.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Network\FirewallManager.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Network\NetworkMonitor.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Network\P2PMonitor.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Network\TorDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Network\TrafficAnalyzer.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Network\URLAnalyzer.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Network\VPNDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Network\WebProtection.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Process\AtomBombingDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Process\DLLInjectionDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Process\MemoryScanner.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Process\ProcessAnalyzer.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Process\ProcessHollowingDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Process\ProcessInjectionDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Process\ProcessKiller.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Process\ProcessMonitor.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Process\ReflectiveDLLDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Process\ThreadHijackDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Registry\PersistenceDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Registry\RegistryAnalyzer.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Registry\RegistryMonitor.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Registry\StartupAnalyzer.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\Registry\SystemSettingsMonitor.hpp" />
+    <ClInclude Include="src\PhantomCore\Exploits\BufferOverflowProtection.hpp" />
+    <ClInclude Include="src\PhantomCore\Exploits\HeapSprayDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\Exploits\JITSprayDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\Exploits\KernelExploitDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\Exploits\PrivilegeEscalationDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\Exploits\ROPProtection.hpp" />
+    <ClInclude Include="src\PhantomCore\Exploits\StackPivotDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\FuzzyHasher\FuzzyHasher.hpp" />
+    <ClInclude Include="src\PhantomCore\FuzzyHasher\DigestGenerator.hpp" />
+    <ClInclude Include="src\PhantomCore\FuzzyHasher\DigestComparer.hpp" />
+    <ClInclude Include="src\PhantomCore\FuzzyHasher\RollingHash.hpp" />
+    <ClInclude Include="src\PhantomCore\FuzzyHasher\ChunkHash.hpp" />
+    <ClInclude Include="src\PhantomCore\FuzzyHasher\EditDistance.hpp" />
+    <ClInclude Include="include\tlsh\input_desc.h" />
+    <ClInclude Include="include\tlsh\shared_file_functions.h" />
+    <ClInclude Include="include\tlsh\tlsh.h" />
+    <ClInclude Include="include\tlsh\tlsh_compat.h" />
+    <ClInclude Include="include\tlsh\tlsh_impl.h" />
+    <ClInclude Include="include\tlsh\tlsh_util.h" />
+    <ClInclude Include="include\tlsh\tlsh_win_version.h" />
+    <ClInclude Include="include\yara\authenticode-parser\authenticode.h" />
+    <ClInclude Include="include\yara\tlshc\tlsh.h" />
+    <ClInclude Include="include\yara\yara.h" />
+    <ClInclude Include="include\yara\yara\ahocorasick.h" />
+    <ClInclude Include="include\yara\yara\arena.h" />
+    <ClInclude Include="include\yara\yara\atoms.h" />
+    <ClInclude Include="include\yara\yara\base64.h" />
+    <ClInclude Include="include\yara\yara\bitmask.h" />
+    <ClInclude Include="include\yara\yara\compiler.h" />
+    <ClInclude Include="include\yara\yara\dex.h" />
+    <ClInclude Include="include\yara\yara\dotnet.h" />
+    <ClInclude Include="include\yara\yara\elf.h" />
+    <ClInclude Include="include\yara\yara\elf_utils.h" />
+    <ClInclude Include="include\yara\yara\endian.h" />
+    <ClInclude Include="include\yara\yara\error.h" />
+    <ClInclude Include="include\yara\yara\exec.h" />
+    <ClInclude Include="include\yara\yara\exefiles.h" />
+    <ClInclude Include="include\yara\yara\filemap.h" />
+    <ClInclude Include="include\yara\yara\globals.h" />
+    <ClInclude Include="include\yara\yara\hash.h" />
+    <ClInclude Include="include\yara\yara\hex_lexer.h" />
+    <ClInclude Include="include\yara\yara\integers.h" />
+    <ClInclude Include="include\yara\yara\lexer.h" />
+    <ClInclude Include="include\yara\yara\libyara.h" />
+    <ClInclude Include="include\yara\yara\limits.h" />
+    <ClInclude Include="include\yara\yara\macho.h" />
+    <ClInclude Include="include\yara\yara\mem.h" />
+    <ClInclude Include="include\yara\yara\modules.h" />
+    <ClInclude Include="include\yara\yara\notebook.h" />
+    <ClInclude Include="include\yara\yara\object.h" />
+    <ClInclude Include="include\yara\yara\parser.h" />
+    <ClInclude Include="include\yara\yara\pe.h" />
+    <ClInclude Include="include\yara\yara\pe_utils.h" />
+    <ClInclude Include="include\yara\yara\proc.h" />
+    <ClInclude Include="include\yara\yara\re.h" />
+    <ClInclude Include="include\yara\yara\re_lexer.h" />
+    <ClInclude Include="include\yara\yara\rules.h" />
+    <ClInclude Include="include\yara\yara\scan.h" />
+    <ClInclude Include="include\yara\yara\scanner.h" />
+    <ClInclude Include="include\yara\yara\simple_str.h" />
+    <ClInclude Include="include\yara\yara\sizedstr.h" />
+    <ClInclude Include="include\yara\yara\stack.h" />
+    <ClInclude Include="include\yara\yara\stopwatch.h" />
+    <ClInclude Include="include\yara\yara\stream.h" />
+    <ClInclude Include="include\yara\yara\strutils.h" />
+    <ClInclude Include="include\yara\yara\threading.h" />
+    <ClInclude Include="include\yara\yara\types.h" />
+    <ClInclude Include="include\yara\yara\unaligned.h" />
+    <ClInclude Include="include\yara\yara\utils.h" />
+    <ClInclude Include="src\PhantomCore\Detection\DetectionEngine.hpp" />
+    <ClInclude Include="src\PhantomCore\Detection\Correlation\Correlator.hpp" />
+    <ClInclude Include="src\PhantomCore\Detection\Correlation\EventBus.hpp" />
+    <ClInclude Include="src\PhantomCore\Detection\Correlation\ProcessGraph.hpp" />
+    <ClInclude Include="src\PhantomCore\Detection\Rules\PhantomRule.hpp" />
+    <ClInclude Include="src\PhantomCore\Detection\Rules\RuleEngine.hpp" />
+    <ClInclude Include="src\PhantomCore\Detection\Rules\RuleImporter.hpp" />
+    <ClInclude Include="src\PhantomCore\Detection\Rules\RuleParser.hpp" />
+    <ClInclude Include="src\PhantomCore\Detection\Rules\RuleStore.hpp" />
+    <ClInclude Include="src\PhantomCore\Detection\Static\StaticEngine.hpp" />
+    <ClInclude Include="src\PhantomCore\Detection\Telemetry\DeepInspection.hpp" />
+    <ClInclude Include="src\PhantomCore\Devices\WebcamProtection.hpp" />
+    <ClInclude Include="src\PhantomCore\AntiEvasion\DebuggerEvasionDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\AntiEvasion\EnvironmentEvasionDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\AntiEvasion\metamorphic_polymorphicdetector.hpp" />
+    <ClInclude Include="src\PhantomCore\AntiEvasion\NetworkBasedEvasionDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\AntiEvasion\nt_undocumented.h" />
+    <ClInclude Include="src\PhantomCore\AntiEvasion\PackerDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\AntiEvasion\ProcessEvasionDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\AntiEvasion\SandboxEvasionDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\AntiEvasion\TimeBasedEvasionDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\AntiEvasion\VMEvasionDetector.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\AssetInventory\AssetDatabase.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\AssetInventory\AssetDiscovery.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\AssetInventory\AssetTypes.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\AssetInventory\SoftwareInventory.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Compliance\ComplianceEngine.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Compliance\CompliancePolicies.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Compliance\ComplianceReporter.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Compliance\ComplianceTypes.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Compliance\HardeningAdvisor.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Config\EDRConfigRegistration.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\DeviceControl\DeviceAuditLog.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\DeviceControl\DeviceControlTypes.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\DeviceControl\DeviceExceptions.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\DeviceControl\DevicePolicyEngine.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\EDRProductOrchestrator.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Forensics\ArtifactExtractor.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Forensics\EvidenceCollector.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Forensics\ForensicsCommon.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Forensics\IncidentRecorder.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Forensics\MemoryDumper.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Forensics\NetworkCapture.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Forensics\TimelineAnalyzer.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\IncidentResponse\AlertCorrelator.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\IncidentResponse\ContainmentEngine.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\IncidentResponse\IncidentManager.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\IncidentResponse\IncidentTypes.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\IncidentResponse\RemediationEngine.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\LiveResponse\FileInspector.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\LiveResponse\LiveResponseTypes.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\LiveResponse\ProcessInspector.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\LiveResponse\RegistryInspector.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Playbooks\PlaybookAction.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Playbooks\PlaybookEngine.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Playbooks\PlaybookLibrary.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Playbooks\PlaybookScheduler.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Playbooks\PlaybookTypes.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\PolicyEngine\IPolicyDistributor.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\PolicyEngine\PolicyAuditLog.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\PolicyEngine\PolicyEnforcer.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\PolicyEngine\PolicyManager.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\PolicyEngine\PolicyTypes.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Reporting\ExecutiveSummary.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Reporting\IncidentReport.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Reporting\ReportGenerator.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Reporting\ReportTypes.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Sandboxing\ISandboxBackend.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Sandboxing\LocalSandbox.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Sandboxing\SandboxAnalyzer.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Sandboxing\SandboxPolicy.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Sandboxing\SandboxTypes.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Telemetry\ITelemetryStore.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Telemetry\LocalTelemetryStore.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Telemetry\TelemetryCollector.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Telemetry\TelemetryFilter.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Telemetry\TelemetrySerializer.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Telemetry\TelemetryTypes.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\ThreatHunting\HuntQueryEngine.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\ThreatHunting\HuntRuleManager.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\ThreatHunting\HuntScheduler.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\ThreatHunting\IOCScanner.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\ThreatHunting\ThreatHuntingTypes.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Vulnerability\PatchAssessment.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Vulnerability\RiskScorer.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Vulnerability\VulnDatabase.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Vulnerability\VulnScanner.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomEDR\Vulnerability\VulnTypes.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Banking\BankingTrojanDetector.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Banking\CertificatePinning.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Banking\KeyloggerProtection.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Banking\ScreenshotBlocker.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Banking\SecureBrowser.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Banking\TransactionMonitor.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Config\HomeConfigRegistration.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\CryptoMinersProtection\BrowserMinerDetector.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\CryptoMinersProtection\CPUUsageAnalyzer.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\CryptoMinersProtection\CryptoMinerDetector.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\CryptoMinersProtection\CryptoMinersTypes.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\CryptoMinersProtection\GPUMiningDetector.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\CryptoMinersProtection\PoolConnectionDetector.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Email\AttachmentScanner.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Email\EmailCommon.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Email\EmailProtection.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Email\OutlookScanner.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Email\PhishingEmailDetector.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Email\SpamDetector.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Email\ThunderbirdScanner.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\GameMode\GameModeManager.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\GameMode\GameProcessDetector.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\GameMode\OverlayProtection.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\GameMode\PerformanceOptimizer.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\HashStore\HashStore.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\HomeProductOrchestrator.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Backup\BackupManager.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Backup\BackupScheduler.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Backup\IncrementalBackup.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Backup\RestoreManager.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\System\BootTimeAnalyzer.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\System\CrashHandler.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\System\DriverAnalyzer.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\System\EventLogger.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\System\HardwareMonitor.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\System\PerformanceMonitor.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\System\ServiceManager.hpp" />
+    <ClInclude Include="src\PhantomCore\Core\System\SystemInfo.hpp" />
+    <ClInclude Include="src\PhantomCore\Database\ConfigurationDB.hpp" />
+    <ClInclude Include="src\PhantomCore\Database\DatabaseManager.hpp" />
+    <ClInclude Include="src\PhantomCore\Database\LogDB.hpp" />
+    <ClInclude Include="src\PhantomCore\Database\QuarantineDB.hpp" />
+    <ClInclude Include="src\Drivers\FileFilterCallbacks.hpp" />
+    <ClInclude Include="src\Drivers\FilterCommunication.hpp" />
+    <ClInclude Include="src\Drivers\FilterDriver.hpp" />
+    <ClInclude Include="src\Drivers\ProcessFilterCallbacks.hpp" />
+    <ClInclude Include="src\Drivers\RegistryFilterCallbacks.hpp" />
+    <ClInclude Include="src\PhantomCore\HashStore\HashStore.hpp" />
+    <ClInclude Include="src\PhantomCore\PatternStore\PatternStore.hpp" />
+    <ClInclude Include="src\pch.h" />
+    <ClInclude Include="src\PhantomCore\PEParser\PEConstants.hpp" />
+    <ClInclude Include="src\PhantomCore\PEParser\PEParser.hpp" />
+    <ClInclude Include="src\PhantomCore\PEParser\PETypes.hpp" />
+    <ClInclude Include="src\PhantomCore\PEParser\PEValidation.hpp" />
+    <ClInclude Include="src\PhantomCore\PEParser\SafeReader.hpp" />
+    <ClInclude Include="src\PhantomCore\Performance\CPUMonitor.hpp" />
+    <ClInclude Include="src\PhantomCore\Performance\dev\MemoryProfiler.hpp" />
+    <ClInclude Include="src\PhantomCore\Performance\dev\PerformanceProfiler.hpp" />
+    <ClInclude Include="src\PhantomCore\Performance\DiskMonitor.hpp" />
+    <ClInclude Include="src\PhantomCore\Performance\MemoryProfiler.hpp" />
+    <ClInclude Include="src\PhantomCore\Performance\NetworkPerformanceMonitor.hpp" />
+    <ClInclude Include="src\PhantomCore\Performance\PerformanceProfiler.hpp" />
+    <ClInclude Include="src\PhantomCore\RansomwareProtection\BackupProtector.hpp" />
+    <ClInclude Include="src\PhantomCore\RansomwareProtection\FileBackupManager.hpp" />
+    <ClInclude Include="src\PhantomCore\RansomwareProtection\HoneypotManager.hpp" />
+    <ClInclude Include="src\PhantomCore\RansomwareProtection\LockyDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\RansomwareProtection\RansomwareDecryptor.hpp" />
+    <ClInclude Include="src\PhantomCore\RansomwareProtection\RansomwareDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\RansomwareProtection\ShadowCopyProtector.hpp" />
+    <ClInclude Include="src\PhantomCore\RansomwareProtection\VolumeSnapshotService.hpp" />
+    <ClInclude Include="src\PhantomCore\RansomwareProtection\WannaCryDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\RealTime\AccessControlManager.hpp" />
+    <ClInclude Include="src\PhantomCore\RealTime\BehaviorBlocker.hpp" />
+    <ClInclude Include="src\PhantomCore\RealTime\ExploitPrevention.hpp" />
+    <ClInclude Include="src\PhantomCore\RealTime\FileIntegrityMonitor.hpp" />
+    <ClInclude Include="src\PhantomCore\RealTime\FileSystemFilter.hpp" />
+    <ClInclude Include="src\PhantomCore\RealTime\MemoryProtection.hpp" />
+    <ClInclude Include="src\PhantomCore\RealTime\NetworkTrafficFilter.hpp" />
+    <ClInclude Include="src\PhantomCore\RealTime\ProcessCreationMonitor.hpp" />
+    <ClInclude Include="src\PhantomCore\RealTime\RealTimeProtection.hpp" />
+    <ClInclude Include="src\PhantomCore\RealTime\ZeroHourProtection.hpp" />
+    <ClInclude Include="src\PhantomCore\Scripts\AMSIIntegration.hpp" />
+    <ClInclude Include="src\PhantomCore\Scripts\JavaScriptScanner.hpp" />
+    <ClInclude Include="src\PhantomCore\Scripts\MacroDetector.hpp" />
+    <ClInclude Include="src\PhantomCore\Scripts\PowerShellScanner.hpp" />
+    <ClInclude Include="src\PhantomCore\Scripts\PythonScriptScanner.hpp" />
+    <ClInclude Include="src\PhantomCore\Scripts\VBScriptScanner.hpp" />
+    <ClInclude Include="src\PhantomCore\SelfProtection\AntiDebug.hpp" />
+    <ClInclude Include="src\PhantomCore\SelfProtection\CertificateValidator.hpp" />
+    <ClInclude Include="src\PhantomCore\SelfProtection\CryptoManager.hpp" />
+    <ClInclude Include="src\PhantomCore\SelfProtection\DigitalSignatureValidator.hpp" />
+    <ClInclude Include="src\PhantomCore\SelfProtection\FileProtection.hpp" />
+    <ClInclude Include="src\PhantomCore\SelfProtection\MemoryProtection.hpp" />
+    <ClInclude Include="src\PhantomCore\SelfProtection\ProcessProtection.hpp" />
+    <ClInclude Include="src\PhantomCore\SelfProtection\RegistryProtection.hpp" />
+    <ClInclude Include="src\PhantomCore\SelfProtection\SecurityEnums.hpp" />
+    <ClInclude Include="src\PhantomCore\SelfProtection\SelfDefense.hpp" />
+    <ClInclude Include="src\PhantomCore\SelfProtection\TamperProtection.hpp" />
+    <ClInclude Include="src\PhantomCore\Service\AntivirusService.hpp" />
+    <ClInclude Include="src\PhantomCore\Service\ProductExtensions.hpp" />
+    <ClInclude Include="src\PhantomCore\Service\ServiceCommunicator.hpp" />
+    <ClInclude Include="src\PhantomCore\Service\ServiceController.hpp" />
+    <ClInclude Include="src\PhantomCore\Service\ServiceInstaller.hpp" />
+    <ClInclude Include="src\PhantomCore\Service\ServiceMonitor.hpp" />
+    <ClInclude Include="src\PhantomCore\SignatureStore\pragma_pack.h" />
+    <ClInclude Include="src\PhantomCore\SignatureStore\SignatureBuilder.hpp" />
+    <ClInclude Include="src\PhantomCore\SignatureStore\SignatureFormat.hpp" />
+    <ClInclude Include="src\PhantomCore\SignatureStore\SignatureIndex.hpp" />
+    <ClInclude Include="src\PhantomCore\SignatureStore\SignatureStore.hpp" />
+    <ClInclude Include="src\PhantomCore\SignatureStore\YaraRuleStore.hpp" />
+    <ClInclude Include="src\PhantomCore\ThreatIntel\ReputationCache.hpp" />
+    <ClInclude Include="src\PhantomCore\ThreatIntel\ThreatIntelDatabase.hpp" />
+    <ClInclude Include="src\PhantomCore\ThreatIntel\ThreatIntelExporter.hpp" />
+    <ClInclude Include="src\PhantomCore\ThreatIntel\ThreatIntelFeedManager.hpp" />
+    <ClInclude Include="src\PhantomCore\ThreatIntel\ThreatIntelFeedManager_Util.hpp" />
+    <ClInclude Include="src\PhantomCore\ThreatIntel\ThreatIntelFormat.hpp" />
+    <ClInclude Include="src\PhantomCore\ThreatIntel\ThreatIntelImporter.hpp" />
+    <ClInclude Include="src\PhantomCore\ThreatIntel\ThreatIntelIndex.hpp" />
+    <ClInclude Include="src\PhantomCore\ThreatIntel\ThreatIntelIndex_DataStructures.hpp" />
+    <ClInclude Include="src\PhantomCore\ThreatIntel\ThreatIntelIndex_Internal.hpp" />
+    <ClInclude Include="src\PhantomCore\ThreatIntel\ThreatIntelIndex_LRU.hpp" />
+    <ClInclude Include="src\PhantomCore\ThreatIntel\ThreatIntelIndex_Trees.hpp" />
+    <ClInclude Include="src\PhantomCore\ThreatIntel\ThreatIntelIndex_URLMatcher.hpp" />
+    <ClInclude Include="src\PhantomCore\ThreatIntel\ThreatIntelIOCManager.hpp" />
+    <ClInclude Include="src\PhantomCore\ThreatIntel\ThreatIntelLookup.hpp" />
+    <ClInclude Include="src\PhantomCore\ThreatIntel\ThreatIntelStore.hpp" />
+    <ClInclude Include="src\PhantomCore\Update\DeltaUpdater.hpp" />
+    <ClInclude Include="src\PhantomCore\Update\IUpdateTransport.hpp" />
+    <ClInclude Include="src\PhantomCore\Update\ProgramUpdater.hpp" />
+    <ClInclude Include="src\PhantomCore\Update\RollbackManager.hpp" />
+    <ClInclude Include="src\PhantomCore\Update\SignatureUpdater.hpp" />
+    <ClInclude Include="src\PhantomCore\Update\UpdateManager.hpp" />
+    <ClInclude Include="src\PhantomCore\Update\UpdateScheduler.hpp" />
+    <ClInclude Include="src\PhantomCore\Update\UpdateVerifier.hpp" />
+    <ClInclude Include="src\PhantomCore\Utils\Base64Utils.hpp" />
+    <ClInclude Include="src\PhantomCore\Utils\CacheManager.hpp" />
+    <ClInclude Include="src\PhantomCore\Utils\CertUtils.hpp" />
+    <ClInclude Include="src\PhantomCore\Utils\CompressionUtils.hpp" />
+    <ClInclude Include="src\PhantomCore\Utils\CryptoUtils.hpp" />
+    <ClInclude Include="src\PhantomCore\Utils\CryptoUtilsCommon.hpp" />
+    <ClInclude Include="src\PhantomCore\Utils\FileUtils.hpp" />
+    <ClInclude Include="src\PhantomCore\Utils\HashUtils.hpp" />
+    <ClInclude Include="src\PhantomCore\Utils\JSONUtils.hpp" />
+    <ClInclude Include="src\PhantomCore\Utils\Logger.hpp" />
+    <ClInclude Include="src\PhantomCore\Utils\MemoryUtils.hpp" />
+    <ClInclude Include="src\PhantomCore\Utils\NetworkUtils.hpp" />
+    <ClInclude Include="src\PhantomCore\Utils\PE_sig_verf.hpp" />
+    <ClInclude Include="src\PhantomCore\Utils\ProcessUtils.hpp" />
+    <ClInclude Include="src\PhantomCore\Utils\RegistryUtils.hpp" />
+    <ClInclude Include="src\PhantomCore\Utils\StringUtils.hpp" />
+    <ClInclude Include="src\PhantomCore\Utils\SystemUtils.hpp" />
+    <ClInclude Include="src\PhantomCore\Utils\ThreadPool.hpp" />
+    <ClInclude Include="src\PhantomCore\Utils\ThreadPoolEvents.h" />
+    <ClInclude Include="src\PhantomCore\Utils\Timer.hpp" />
+    <ClInclude Include="src\PhantomCore\Utils\XMLUtils.hpp" />
+    <ClInclude Include="src\PhantomCore\Whitelist\WhiteListFormat.hpp" />
+    <ClInclude Include="src\PhantomCore\Whitelist\WhiteListStore.hpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <MASM Include="src\PhantomCore\AntiEvasion\EnvironmentEvasionDetector_x64.asm">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+    </MASM>
+    <MASM Include="src\PhantomCore\AntiEvasion\PackerDetector_x64.asm">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+    </MASM>
+    <MASM Include="src\PhantomCore\AntiEvasion\SandboxEvasionDetector_x64.asm">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+    </MASM>
+    <MASM Include="src\PhantomCore\AntiEvasion\TimeBasedEvasionDetector_x64.asm">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+    </MASM>
+    <MASM Include="src\PhantomCore\AntiEvasion\VMEvasionDetector_x64.asm">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+    </MASM>
+    <MASM Include="src\PhantomCore\AntiEvasion\DebuggerEvasionDetector_x64.asm">
+      <ExcludedFromBuild>true</ExcludedFromBuild>
+    </MASM>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\Products\Community\PhantomXDR\AIAssistant\IncidentSummarizer.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomXDR\AIAssistant\QueryTranslator.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomXDR\AIAssistant\SOCAssistant.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomXDR\Config\XDRConfigRegistration.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomXDR\EmailThreat\EmailAnalyzer.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomXDR\EmailThreat\PhishingCorrelator.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomXDR\IdentityProtection\ADMonitor.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomXDR\IdentityProtection\CredentialProtection.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomXDR\IdentityProtection\IdentityAnalytics.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomXDR\NetworkDetection\BeaconDetector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomXDR\NetworkDetection\DNSAnalyzer.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomXDR\NetworkDetection\LateralMovementDetector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomXDR\NetworkDetection\NetworkSensor.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomXDR\NetworkDetection\TLSInspector.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomXDR\SOARLocal\SOAREngine.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomXDR\SOARLocal\SOARPlaybooks.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomXDR\XDRCorrelation\CorrelationEngine.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomXDR\XDRCorrelation\CorrelationRules.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomXDR\XDRCorrelation\IncidentScorer.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomXDR\XDRCorrelation\StorylineBuilder.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomXDR\XDRProductEntry.cpp" />
+    <ClCompile Include="src\Products\Community\PhantomXDR\XDRProductOrchestrator.cpp" />
+    <ClCompile Include="tests\integration\ai_pipeline\AIPipeline_Integration_Tests.cpp" />
+    <ClCompile Include="tests\integration\anti_evasion\AntiEvasion_Integration_Tests.cpp" />
+    <ClCompile Include="tests\integration\communication_pipeline\CommunicationPipeline_Integration_Tests.cpp" />
+    <ClCompile Include="tests\integration\config_propagation\ConfigPropagation_Integration_Tests.cpp" />
+    <ClCompile Include="tests\integration\exploit_protection\Exploits_Integration_Tests.cpp" />
+    <ClCompile Include="tests\integration\ransomware_protection\RansomwareDetector_Integration_Tests.cpp" />
+    <ClCompile Include="tests\integration\scan_pipeline\ScanPipeline_Integration_Tests.cpp" />
+    <ClCompile Include="tests\integration\self_protection\SelfProtectionStack_Integration_Tests.cpp" />
+    <ClCompile Include="tests\integration\update_lifecycle\UpdateLifecycle_Integration_Tests.cpp" />
+    <ClCompile Include="tests\integration\product_orchestrator\HomeProductOrchestrator_Integration_Tests.cpp" />
+    <ClCompile Include="tests\unit\ai_unit\CortexConfig_Tests.cpp" />
+    <ClCompile Include="tests\unit\ai_unit\FeatureExtractor_Tests.cpp" />
+    <ClCompile Include="tests\unit\ai_unit\ModelCache_Tests.cpp" />
+    <ClCompile Include="tests\unit\ai_unit\ModelInference_Tests.cpp" />
+    <ClCompile Include="tests\unit\ai_unit\PhantomCortex_Tests.cpp" />
+    <ClCompile Include="tests\unit\config_unit\ConfigManager_Tests.cpp" />
+    <ClCompile Include="tests\unit\config_unit\PolicyManager_Tests.cpp" />
+    <ClCompile Include="tests\unit\config_unit\ProfileManager_Tests.cpp" />
+    <ClCompile Include="tests\unit\config_unit\SettingsManager_Tests.cpp" />
+    <ClCompile Include="tests\integration\core_process\ProcessChain_Integration_Tests.cpp" />
+    <ClCompile Include="tests\integration\core_registry\RegistryChain_Integration_Tests.cpp" />
+    <ClCompile Include="tests\integration\core_registry\StartupAnalyzer_Integration_Tests.cpp" />
+    <ClCompile Include="tests\integration\core_registry\SystemSettingsMonitor_Integration_Tests.cpp" />
+    <ClCompile Include="tests\integration\core_filesystem\FileSystemChain_Integration_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_process_unit\AtomBombingDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_process_unit\DLLInjectionDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_process_unit\MemoryScanner_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_process_unit\ProcessAnalyzer_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_process_unit\ProcessHollowingDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_process_unit\ProcessInjectionDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_process_unit\ProcessKiller_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_process_unit\ProcessMonitor_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_process_unit\ReflectiveDLLDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_process_unit\ThreadHijackDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_network_unit\DNSMonitor_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_network_unit\FirewallManager_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_network_unit\NetworkMonitor_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_network_unit\TrafficAnalyzer_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_network_unit\URLAnalyzer_Tests.cpp" />
+    <ClCompile Include="tests\integration\core_network\NetworkChain_Integration_Tests.cpp" />
+    <ClCompile Include="tests\integration\realtime_protection_pipeline\RTPPipeline_Integration_Tests.cpp" />
+    <ClCompile Include="tests\unit\exploits_unit\BufferOverflowProtection_Tests.cpp" />
+    <ClCompile Include="tests\unit\exploits_unit\HeapSprayDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\exploits_unit\JITSprayDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\exploits_unit\KernelExploitDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\exploits_unit\PrivilegeEscalationDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\exploits_unit\ROPProtection_Tests.cpp" />
+    <ClCompile Include="tests\unit\exploits_unit\StackPivotDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\peparser_unit\PEParser_Tests.cpp" />
+    <ClCompile Include="tests\unit\peparser_unit\PEValidation_Tests.cpp" />
+    <ClCompile Include="tests\unit\peparser_unit\SafeReader_Tests.cpp" />
+    <ClCompile Include="tests\unit\scripts_unit\AMSIIntegration_Tests.cpp" />
+    <ClCompile Include="tests\unit\scripts_unit\JavaScriptScanner_Tests.cpp" />
+    <ClCompile Include="tests\unit\scripts_unit\MacroDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\scripts_unit\PowerShellScanner_Tests.cpp" />
+    <ClCompile Include="tests\unit\scripts_unit\PythonScriptScanner_Tests.cpp" />
+    <ClCompile Include="tests\unit\scripts_unit\VBScriptScanner_Tests.cpp" />
+    <ClCompile Include="tests\unit\selfprotection_unit\AntiDebug_Tests.cpp" />
+    <ClCompile Include="tests\unit\selfprotection_unit\CertificateValidator_Tests.cpp" />
+    <ClCompile Include="tests\unit\selfprotection_unit\CryptoManager_Tests.cpp" />
+    <ClCompile Include="tests\unit\selfprotection_unit\DigitalSignatureValidator_Tests.cpp" />
+    <ClCompile Include="tests\unit\selfprotection_unit\FileProtection_Tests.cpp" />
+    <ClCompile Include="tests\unit\selfprotection_unit\MemoryProtection_Tests.cpp" />
+    <ClCompile Include="tests\unit\selfprotection_unit\ProcessProtection_Tests.cpp" />
+    <ClCompile Include="tests\unit\selfprotection_unit\RegistryProtection_Tests.cpp" />
+    <ClCompile Include="tests\unit\selfprotection_unit\SelfDefense_Tests.cpp" />
+    <ClCompile Include="tests\unit\selfprotection_unit\TamperProtection_Tests.cpp" />
+    <ClCompile Include="tests\unit\update_unit\DeltaUpdater_Tests.cpp" />
+    <ClCompile Include="tests\unit\update_unit\LocalFolderTransport_Tests.cpp" />
+    <ClCompile Include="tests\unit\update_unit\ProgramUpdater_Tests.cpp" />
+    <ClCompile Include="tests\unit\update_unit\RollbackManager_Tests.cpp" />
+    <ClCompile Include="tests\unit\update_unit\SignatureUpdater_Tests.cpp" />
+    <ClCompile Include="tests\unit\update_unit\UpdateManager_Tests.cpp" />
+    <ClCompile Include="tests\unit\update_unit\UpdateScheduler_Tests.cpp" />
+    <ClCompile Include="tests\unit\update_unit\UpdateVerifier_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_registry_unit\PersistenceDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_registry_unit\RegistryAnalyzer_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_registry_unit\RegistryMonitor_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_registry_unit\StartupAnalyzer_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_registry_unit\SystemSettingsMonitor_Tests.cpp" />
+    <ClCompile Include="tests\unit\communication_unit\AlertSystem_Tests.cpp" />
+    <ClCompile Include="tests\unit\communication_unit\CommunicationProtocol_Tests.cpp" />
+    <ClCompile Include="tests\unit\communication_unit\IPCManager_Tests.cpp" />
+    <ClCompile Include="tests\unit\communication_unit\NotificationManager_Tests.cpp" />
+    <ClCompile Include="tests\unit\communication_unit\ReportGenerator_Tests.cpp" />
+    <ClCompile Include="tests\unit\communication_unit\ServiceCommunication_Tests.cpp" />
+    <ClCompile Include="tests\unit\communication_unit\TelemetryCollector_Tests.cpp" />
+    <ClCompile Include="tests\unit\communication_unit\ThreatIntelPusher_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_engine_unit\BehaviorAnalyzer_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_engine_unit\EmulationEngine_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_engine_unit\MachineLearningDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_engine_unit\PackerUnpacker_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_engine_unit\PolymorphicDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_engine_unit\SandboxAnalyzer_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_engine_unit\ThreatDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_engine_unit\ZeroDayDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\FuzzyHasher_Unit\DigestComparer_Tests.cpp" />
+    <ClCompile Include="tests\unit\FuzzyHasher_Unit\DigestGenerator_Tests.cpp" />
+    <ClCompile Include="tests\unit\FuzzyHasher_Unit\FuzzyHasher_Tests.cpp" />
+    <ClCompile Include="tests\unit\perf_dev_unit\MemoryProfiler_Tests.cpp" />
+    <ClCompile Include="tests\unit\perf_dev_unit\PerformanceProfiler_Tests.cpp" />
+    <ClCompile Include="tests\unit\perf_unit\CPUMonitor_Tests.cpp" />
+    <ClCompile Include="tests\unit\perf_unit\DiskMonitor_Tests.cpp" />
+    <ClCompile Include="tests\unit\perf_unit\NetworkPerformanceMonitor_Tests.cpp" />
+    <ClCompile Include="tests\unit\service_unit\AntivirusService_Tests.cpp" />
+    <ClCompile Include="tests\unit\service_unit\ServiceCommunicator_Tests.cpp" />
+    <ClCompile Include="tests\unit\service_unit\ServiceController_Tests.cpp" />
+    <ClCompile Include="tests\unit\service_unit\ServiceInstaller_Tests.cpp" />
+    <ClCompile Include="tests\unit\service_unit\ServiceMonitor_Tests.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\Products\Community\PhantomHome\IoT\IoTDeviceScanner.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\IoT\IPLeakProtection.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\IoT\RouterSecurityChecker.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\IoT\SmartHomeProtection.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\IoT\WiFiSecurityAnalyzer.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\PatternStore\PatternStore.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Privacy\Common.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Privacy\CookieManager.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Privacy\DataLeakProtection.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Privacy\DNSLeakProtection.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Privacy\IPLeakProtection.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Privacy\LocationPrivacy.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Privacy\MicrophoneGuard.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Privacy\PrivacyCleaner.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Privacy\WebcamProtector.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\ThreatIntel\ThreatIntelManager.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\UI\SystemTray.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\USB_Protection\BadUSBDetector.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\USB_Protection\DeviceControlManager.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\USB_Protection\USBAutorunBlocker.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\USB_Protection\USBCommonTypes.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\USB_Protection\USBDeviceMonitor.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\USB_Protection\USBScanner.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Utils\Base64Utils.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Utils\CompressionUtils.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Utils\CryptoUtils.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Utils\FileUtils.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Utils\HashUtils.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Utils\JsonUtils.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Utils\Logger.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Utils\MemoryUtils.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Utils\NetworkUtils.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Utils\ProcessUtils.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Utils\RegistryUtils.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Utils\StringUtils.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Utils\SystemUtils.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Utils\ThreadPool.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Utils\Timer.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\WebProtection\AdBlocker.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\WebProtection\BrowserProtection.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\WebProtection\ChromeExtensionScanner.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\WebProtection\FirefoxAddonScanner.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\WebProtection\MaliciousDownloadBlocker.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\WebProtection\PhishingDetector.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\WebProtection\SafeBrowsingAPI.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\WebProtection\TrackerBlocker.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\WebProtection\WebProtectionCommon.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomHome\Whitelist\WhiteListStore.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\AIAssistant\AssistantTypes.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\AIAssistant\IncidentSummarizer.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\AIAssistant\QueryTranslator.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\AIAssistant\SOCAssistant.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\Config\XDRConfigRegistration.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\EmailThreat\EmailAnalyzer.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\EmailThreat\EmailTypes.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\EmailThreat\PhishingCorrelator.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\IdentityProtection\ADMonitor.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\IdentityProtection\CredentialProtection.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\IdentityProtection\IdentityAnalytics.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\IdentityProtection\IdentityTypes.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\NetworkDetection\BeaconDetector.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\NetworkDetection\DNSAnalyzer.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\NetworkDetection\LateralMovementDetector.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\NetworkDetection\NetworkSensor.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\NetworkDetection\NetworkTypes.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\NetworkDetection\TLSInspector.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\SOARLocal\SOAREngine.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\SOARLocal\SOARPlaybooks.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\SOARLocal\SOARTypes.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\XDRCorrelation\CorrelationEngine.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\XDRCorrelation\CorrelationRules.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\XDRCorrelation\IncidentScorer.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\XDRCorrelation\StorylineBuilder.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\XDRCorrelation\XDRTypes.hpp" />
+    <ClInclude Include="src\Products\Community\PhantomXDR\XDRProductOrchestrator.hpp" />
+    <ClInclude Include="tests\unit\ai_unit\AI_TestUtils.hpp" />
+    <ClInclude Include="tests\unit\config_unit\Config_TestUtils.hpp" />
+    <ClInclude Include="tests\unit\core_network_unit\CoreNetwork_TestUtils.hpp" />
+    <ClInclude Include="tests\unit\peparser_unit\PEParser_TestUtils.hpp" />
+    <ClInclude Include="tests\unit\core_registry_unit\CoreRegistry_TestUtils.hpp" />
+    <ClInclude Include="tests\unit\update_unit\Update_TestUtils.hpp" />
+    <ClInclude Include="tests\unit\realtime_unit\RealTime_TestUtils.hpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="tests\unit\antievasion_unit\DebuggerEvasionDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\antievasion_unit\EnvironmentEvasionDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\antievasion_unit\MetamorphicDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\antievasion_unit\NetworkBasedEvasionDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\antievasion_unit\PackerDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\antievasion_unit\ProcessEvasionDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\antievasion_unit\SandboxEvasionDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\antievasion_unit\TimeBasedEvasionDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\antievasion_unit\VMEvasionDetector_Tests.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="tests\unit\antievasion_unit\AntiEvasion_TestUtils.hpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="tests\unit\realtime_unit\AccessControlManager_Tests.cpp" />
+    <ClCompile Include="tests\unit\realtime_unit\BehaviorBlocker_Tests.cpp" />
+    <ClCompile Include="tests\unit\realtime_unit\ExploitPrevention_Tests.cpp" />
+    <ClCompile Include="tests\unit\realtime_unit\FileIntegrityMonitor_Tests.cpp" />
+    <ClCompile Include="tests\unit\realtime_unit\FileSystemFilter_Tests.cpp" />
+    <ClCompile Include="tests\unit\realtime_unit\MemoryProtection_Tests.cpp" />
+    <ClCompile Include="tests\unit\realtime_unit\NetworkTrafficFilter_Tests.cpp" />
+    <ClCompile Include="tests\unit\realtime_unit\ProcessCreationMonitor_Tests.cpp" />
+    <ClCompile Include="tests\unit\realtime_unit\RealTimeProtection_Tests.cpp" />
+    <ClCompile Include="tests\unit\realtime_unit\ZeroHourProtection_Tests.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="tests\unit\core_filesys_unit\DirectoryMonitor_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_filesys_unit\FileHasher_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_filesys_unit\FileReputation_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_filesys_unit\FileTypeAnalyzer_Tests.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="tests\unit\core_filesys_unit\CoreFileSystem_TestUtils.hpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="tests\unit\core_sys_unit\BootTimeAnalyzer_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_sys_unit\CoreSystem_ValueContracts_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_sys_unit\EventLogger_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_sys_unit\HardwareMonitor_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_sys_unit\PerformanceMonitor_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_sys_unit\ServiceManager_Tests.cpp" />
+    <ClCompile Include="tests\unit\core_sys_unit\SystemInfo_Tests.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="tests\unit\core_sys_unit\CoreSystem_TestUtils.hpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="tests\unit\ransomware_protection_unit\BackupProtector_Tests.cpp" />
+    <ClCompile Include="tests\unit\ransomware_protection_unit\FileBackupManager_Tests.cpp" />
+    <ClCompile Include="tests\unit\ransomware_protection_unit\HoneypotManager_Tests.cpp" />
+    <ClCompile Include="tests\unit\ransomware_protection_unit\LockyDetector_ValueContracts_Tests.cpp" />
+    <ClCompile Include="tests\unit\ransomware_protection_unit\RansomwareDecryptor_ValueContracts_Tests.cpp" />
+    <ClCompile Include="tests\unit\ransomware_protection_unit\RansomwareDetector_Tests.cpp" />
+    <ClCompile Include="tests\unit\ransomware_protection_unit\ShadowCopyProtector_ValueContracts_Tests.cpp" />
+    <ClCompile Include="tests\unit\ransomware_protection_unit\VolumeSnapshotService_ValueContracts_Tests.cpp" />
+    <ClCompile Include="tests\unit\ransomware_protection_unit\WannaCryDetector_ValueContracts_Tests.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="tests\unit\ransomware_protection_unit\RansomwareProtection_TestUtils.hpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="src\PhantomCore\Core\Engine\HeuristicAnalyzer.cpp.bak" />
+  </ItemGroup>
+</Project>

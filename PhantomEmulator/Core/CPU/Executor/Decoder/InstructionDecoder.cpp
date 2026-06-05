@@ -1,0 +1,1618 @@
+/*
+ * ShadowStrike - Enterprise NGAV/EDR Platform
+ * PhantomEmulator - Custom x86/x64 Emulation Engine
+ * Copyright (C) 2025-2026 ShadowStrike Labs
+ *
+ * AGPL-3.0 License
+ */
+
+#include "InstructionDecoder.hpp"
+#include "../../../../Common/Constants.hpp"
+#include <cstring>
+
+namespace Phantom {
+
+namespace {
+
+[[nodiscard]] bool CanReadInstructionBytes(
+    std::span<const uint8_t> bytes,
+    uint32_t offset,
+    uint32_t width) noexcept
+{
+    if (width == 0) return true;
+    if (offset > Encoding::kMaxInstructionLength) return false;
+    if (width > Encoding::kMaxInstructionLength - offset) return false;
+    const auto available = bytes.size();
+    return static_cast<size_t>(offset) <= available &&
+           static_cast<size_t>(width) <= available - static_cast<size_t>(offset);
+}
+
+} // namespace
+
+// ============================================================================
+// Main Decode Entry Point
+// ============================================================================
+
+ErrorCode InstructionDecoder::Decode(
+    std::span<const uint8_t> bytes,
+    GuestAddress rip,
+    CPUMode mode,
+    DecodedInstruction& out) noexcept
+{
+    out.Clear();
+    out.address = rip;
+
+    if (bytes.empty()) {
+        return ErrorCode::TruncatedInstruction;
+    }
+
+    uint32_t offset = 0;
+
+    // Phase 1: Prefixes
+    auto err = DecodePrefixes(bytes, mode, out.prefixes, offset);
+    if (err != ErrorCode::Success) return err;
+    if (offset == Encoding::kMaxInstructionLength && bytes.size() > offset) {
+        return ErrorCode::InstructionTooLong;
+    }
+
+    // Phase 1b: VEX prefix (C4/C5)
+    // In 64-bit mode: C4/C5 are always VEX prefixes.
+    // In 32-bit mode: C4/C5 are VEX only if the next byte has bits [7:6] = 11b.
+    // Must check after legacy prefixes but before opcode decoding.
+    if (CanReadInstructionBytes(bytes, offset, 1)) {
+        uint8_t b = bytes[offset];
+        if (b == Encoding::kVEX2Byte || b == Encoding::kVEX3Byte) {
+            err = DecodeVEX(bytes, mode, out.prefixes, offset);
+            if (err != ErrorCode::Success) return err;
+
+            if (out.prefixes.hasVEX) {
+                // VEX encodes the opcode map implicitly — read the opcode byte directly
+                if (!CanReadInstructionBytes(bytes, offset, 1)) return ErrorCode::TruncatedInstruction;
+                out.opcode = bytes[offset++];
+
+                switch (out.prefixes.vexMMMMM) {
+                    case 1: out.opcodeMap = OpcodeMap::TwoByte;      break;
+                    case 2: out.opcodeMap = OpcodeMap::ThreeByte38;  break;
+                    case 3: out.opcodeMap = OpcodeMap::ThreeByte3A;  break;
+                    default:
+                        return ErrorCode::InvalidPrefix;
+                }
+
+                // Skip normal opcode decoding — jump to operand/address size resolution
+                goto vex_opcode_done;
+            }
+        }
+    }
+
+    // Phase 1c: EVEX prefix (0x62)
+    if (CanReadInstructionBytes(bytes, offset, 1) && bytes[offset] == 0x62) {
+        err = DecodeEVEX(bytes, mode, out.prefixes, offset);
+        if (err != ErrorCode::Success) return err;
+
+        if (out.prefixes.hasEVEX) {
+            if (!CanReadInstructionBytes(bytes, offset, 1)) return ErrorCode::TruncatedInstruction;
+            out.opcode = bytes[offset++];
+
+            switch (out.prefixes.vexMMMMM) {
+                case 1: out.opcodeMap = OpcodeMap::TwoByte;     break;
+                case 2: out.opcodeMap = OpcodeMap::ThreeByte38; break;
+                case 3: out.opcodeMap = OpcodeMap::ThreeByte3A; break;
+                default: return ErrorCode::InvalidPrefix;
+            }
+            goto vex_opcode_done;
+        }
+    }
+
+    // Phase 2: Opcode
+    err = DecodeOpcode(bytes, offset, out.opcodeMap, out.opcode);
+    if (err != ErrorCode::Success) return err;
+
+vex_opcode_done:
+
+    // Resolve effective operand and address sizes
+    out.operandSize = out.prefixes.EffectiveOperandSize(mode);
+    out.addressSize = out.prefixes.EffectiveAddressSize(mode);
+
+    // Phase 3: ModR/M (if required)
+    if (OpcodeRequiresModRM(out.opcodeMap, out.opcode)) {
+        err = DecodeModRM(bytes, offset, mode, out.prefixes, out);
+        if (err != ErrorCode::Success) return err;
+
+        // Phase 4: SIB (if ModRM indicates it)
+        if (out.hasModRM) {
+            uint8_t mod = Encoding::ModRM_Mod(out.modrm);
+            uint8_t rm  = Encoding::ModRM_RM(out.modrm);
+
+            // SIB byte present when mod != 3 and rm == 4
+            bool needSIB = (mod != Encoding::kMod_Register) &&
+                           (rm == Encoding::kRM_SIB) &&
+                           (out.addressSize != AddressSize::Addr16);
+
+            if (needSIB) {
+                err = DecodeSIB(bytes, offset, mode, out.prefixes, out);
+                if (err != ErrorCode::Success) return err;
+            }
+
+            // Phase 5: Displacement
+            uint8_t dispSize = 0;
+            if (mod == Encoding::kMod_Disp8) {
+                dispSize = 1;
+            } else if (mod == Encoding::kMod_Disp32) {
+                dispSize = (out.addressSize == AddressSize::Addr16) ? 2 : 4;
+            } else if (mod == Encoding::kMod_Indirect) {
+                if (out.addressSize == AddressSize::Addr16) {
+                    // 16-bit: mod=0, rm=6 → disp16
+                    if (rm == 6) dispSize = 2;
+                } else {
+                    // 32/64-bit: mod=0, rm=5 → disp32 (or RIP-relative in 64-bit)
+                    if (rm == Encoding::kRM_Disp32) {
+                        dispSize = 4;
+                    }
+                    // SIB with base=5, mod=0 → disp32
+                    if (out.hasSIB && Encoding::SIB_Base(out.sib) == Encoding::kSIB_Disp32Base) {
+                        dispSize = 4;
+                    }
+                }
+            }
+
+            if (dispSize > 0) {
+                err = DecodeDisplacement(bytes, offset, dispSize, out);
+                if (err != ErrorCode::Success) return err;
+            }
+        }
+    }
+
+    // Phase 6: Immediate
+    if (out.opcodeMap == OpcodeMap::OneByte &&
+        out.opcode >= 0xA0 && out.opcode <= 0xA3) {
+        err = DecodeMemoryOffset(bytes, offset, out);
+        if (err != ErrorCode::Success) return err;
+    }
+
+    uint8_t immSize = OpcodeImmediateSize(out.opcodeMap, out.opcode, out.opcodeExt, out.operandSize);
+    if (immSize > 0) {
+        err = DecodeImmediate(bytes, offset, immSize, out);
+        if (err != ErrorCode::Success) return err;
+    }
+
+    // Validate total length
+    if (offset > Encoding::kMaxInstructionLength) {
+        return ErrorCode::InstructionTooLong;
+    }
+
+    // Phase 7: Resolve operands into typed DecodedOperand objects.
+    // This bridges the raw decode (opcode, modrm, sib, displacement, immediate)
+    // and the executor which reads from inst.Op(0)/Op(1)/Op(2).
+    ResolveOperands(out, mode);
+
+    out.length = static_cast<uint8_t>(offset);
+    return ErrorCode::Success;
+}
+
+// ============================================================================
+// Phase 1: Prefix Decoding
+// ============================================================================
+
+ErrorCode InstructionDecoder::DecodePrefixes(
+    std::span<const uint8_t> bytes,
+    CPUMode mode,
+    InstructionPrefixes& prefixes,
+    uint32_t& offset) noexcept
+{
+    prefixes = InstructionPrefixes{};
+
+    while (offset < bytes.size() && offset < Encoding::kMaxInstructionLength) {
+        uint8_t b = bytes[offset];
+
+        // In 64-bit mode, 0x40-0x4F are REX prefixes, not INC/DEC
+        if (mode == CPUMode::Long64 && b >= Encoding::kREXBase && b <= Encoding::kREXMax) {
+            prefixes.hasREX = true;
+            prefixes.rexW = (b & Encoding::kREX_W) != 0;
+            prefixes.rexR = (b & Encoding::kREX_R) != 0;
+            prefixes.rexX = (b & Encoding::kREX_X) != 0;
+            prefixes.rexB = (b & Encoding::kREX_B) != 0;
+            prefixes.prefixCount++;
+            offset++;
+            // REX must be the last prefix — stop looking for more
+            break;
+        }
+
+        switch (b) {
+            // Group 1: Lock/Rep
+            case Encoding::kPrefixLOCK:
+                prefixes.hasLock = true;
+                break;
+            case Encoding::kPrefixREP:
+                prefixes.hasRep = true;
+                break;
+            case Encoding::kPrefixREPNE:
+                prefixes.hasRepNE = true;
+                break;
+
+            // Group 2: Segment overrides
+            case Encoding::kPrefixCS:
+                prefixes.hasSegOverride = true;
+                prefixes.segOverride = SegReg::CS;
+                break;
+            case Encoding::kPrefixSS:
+                prefixes.hasSegOverride = true;
+                prefixes.segOverride = SegReg::SS;
+                break;
+            case Encoding::kPrefixDS:
+                prefixes.hasSegOverride = true;
+                prefixes.segOverride = SegReg::DS;
+                break;
+            case Encoding::kPrefixES:
+                prefixes.hasSegOverride = true;
+                prefixes.segOverride = SegReg::ES;
+                break;
+            case Encoding::kPrefixFS:
+                prefixes.hasSegOverride = true;
+                prefixes.segOverride = SegReg::FS;
+                break;
+            case Encoding::kPrefixGS:
+                prefixes.hasSegOverride = true;
+                prefixes.segOverride = SegReg::GS;
+                break;
+
+            // Group 3: Operand size override
+            case Encoding::kPrefixOpSize:
+                prefixes.hasOpSizeOverride = true;
+                break;
+
+            // Group 4: Address size override
+            case Encoding::kPrefixAddrSize:
+                prefixes.hasAddrSizeOverride = true;
+                break;
+
+            default:
+                // Not a prefix — this is the opcode byte
+                return ErrorCode::Success;
+        }
+
+        prefixes.prefixCount++;
+        offset++;
+    }
+
+    return ErrorCode::Success;
+}
+
+// ============================================================================
+// Phase 1b: VEX Prefix Decoding
+// ============================================================================
+// VEX 2-byte (C5): [C5] [R|vvvv|L|pp]
+// VEX 3-byte (C4): [C4] [R|X|B|mmmmm] [W|vvvv|L|pp]
+//
+// In 64-bit mode C4/C5 are always VEX prefixes.
+// In 32-bit mode C4/C5 are VEX only if the byte following the lead byte
+// has bits [7:6] == 11b (otherwise they are LES/LDS).
+
+ErrorCode InstructionDecoder::DecodeVEX(
+    std::span<const uint8_t> bytes,
+    CPUMode mode,
+    InstructionPrefixes& prefixes,
+    uint32_t& offset) noexcept
+{
+    if (!CanReadInstructionBytes(bytes, offset, 1)) return ErrorCode::TruncatedInstruction;
+
+    uint8_t lead = bytes[offset];
+
+    if (lead == Encoding::kVEX2Byte) {
+        // Need at least 1 more byte (payload byte)
+        if (!CanReadInstructionBytes(bytes, offset, 2)) return ErrorCode::TruncatedInstruction;
+
+        uint8_t byte1 = bytes[offset + 1];
+
+        // In non-64-bit modes, verify bits [7:6] == 11b to distinguish from LDS (C5)
+        if (mode != CPUMode::Long64) {
+            if ((byte1 & 0xC0) != 0xC0) {
+                // Not a VEX prefix — leave offset unchanged so normal decode proceeds
+                return ErrorCode::Success;
+            }
+        }
+
+        // Consume the 2-byte VEX prefix
+        offset += 2;
+        prefixes.prefixCount += 2;
+        prefixes.hasVEX = true;
+        prefixes.hasREX = true;
+
+        // Byte 1: [R][vvvv][L][pp]
+        // R is inverted: 0 in VEX means REX.R=1
+        prefixes.rexR = ((byte1 >> 7) & 1) == 0;
+        // 2-byte VEX implies REX.X=0, REX.B=0 (non-inverted in REX terms)
+        prefixes.rexX = false;
+        prefixes.rexB = false;
+        prefixes.vexW = false;
+
+        prefixes.vexVVVV = (~(byte1 >> 3)) & 0x0F;
+        prefixes.vexL    = (byte1 >> 2) & 1;
+        prefixes.vexPP   = byte1 & 0x03;
+        // 2-byte VEX always implies map 0F
+        prefixes.vexMMMMM = 1;
+
+        // Map pp to implied legacy prefix flags
+        switch (prefixes.vexPP) {
+            case 1: prefixes.hasOpSizeOverride = true; break;   // 66
+            case 2: prefixes.hasRep = true;            break;   // F3
+            case 3: prefixes.hasRepNE = true;          break;   // F2
+            default: break;
+        }
+
+        return ErrorCode::Success;
+
+    } else if (lead == Encoding::kVEX3Byte) {
+        // Need at least 2 more bytes (payload bytes)
+        if (!CanReadInstructionBytes(bytes, offset, 3)) return ErrorCode::TruncatedInstruction;
+
+        uint8_t byte1 = bytes[offset + 1];
+        uint8_t byte2 = bytes[offset + 2];
+
+        // In non-64-bit modes, verify byte1 bits [7:6] == 11b to distinguish from LES (C4)
+        if (mode != CPUMode::Long64) {
+            if ((byte1 & 0xC0) != 0xC0) {
+                return ErrorCode::Success;
+            }
+        }
+
+        // Consume the 3-byte VEX prefix
+        offset += 3;
+        prefixes.prefixCount += 3;
+        prefixes.hasVEX = true;
+        prefixes.hasREX = true;
+
+        // Byte 1: [R][X][B][mmmmm]
+        // R, X, B are inverted
+        prefixes.rexR = ((byte1 >> 7) & 1) == 0;
+        prefixes.rexX = ((byte1 >> 6) & 1) == 0;
+        prefixes.rexB = ((byte1 >> 5) & 1) == 0;
+        prefixes.vexMMMMM = byte1 & 0x1F;
+
+        // Validate opcode map (only 1, 2, 3 are defined)
+        if (prefixes.vexMMMMM == 0 || prefixes.vexMMMMM > 3) {
+            return ErrorCode::InvalidPrefix;
+        }
+
+        // Byte 2: [W][vvvv][L][pp]
+        prefixes.vexW    = ((byte2 >> 7) & 1) != 0;
+        prefixes.rexW    = prefixes.vexW;
+        prefixes.vexVVVV = (~(byte2 >> 3)) & 0x0F;
+        prefixes.vexL    = (byte2 >> 2) & 1;
+        prefixes.vexPP   = byte2 & 0x03;
+
+        // Map pp to implied legacy prefix flags
+        switch (prefixes.vexPP) {
+            case 1: prefixes.hasOpSizeOverride = true; break;   // 66
+            case 2: prefixes.hasRep = true;            break;   // F3
+            case 3: prefixes.hasRepNE = true;          break;   // F2
+            default: break;
+        }
+
+        return ErrorCode::Success;
+    }
+
+    // Not a VEX prefix byte — should not reach here
+    return ErrorCode::Success;
+}
+
+// ============================================================================
+// Phase 1c: EVEX Prefix Decoding
+// ============================================================================
+// EVEX (4-byte): [62] [R|X|B|R'|00|mm] [W|vvvv|1|pp] [z|L'L|b|V'|aaa]
+
+ErrorCode InstructionDecoder::DecodeEVEX(
+    std::span<const uint8_t> bytes,
+    CPUMode mode,
+    InstructionPrefixes& prefixes,
+    uint32_t& offset) noexcept
+{
+    // EVEX needs 4 bytes total (0x62 + 3 payload bytes)
+    if (!CanReadInstructionBytes(bytes, offset, 4)) return ErrorCode::TruncatedInstruction;
+
+    uint8_t p1 = bytes[offset + 1]; // R|X|B|R'|00|mm
+    uint8_t p2 = bytes[offset + 2]; // W|vvvv|1|pp
+    uint8_t p3 = bytes[offset + 3]; // z|L'L|b|V'|aaa
+
+    const bool fixedBitsValid = ((p1 & 0x0C) == 0x00) && ((p2 & 0x04) != 0);
+    if (!fixedBitsValid) {
+        return (mode == CPUMode::Long64) ? ErrorCode::InvalidPrefix : ErrorCode::Success;
+    }
+
+    // Consume 4 bytes
+    offset += 4;
+    prefixes.prefixCount += 4;
+    prefixes.hasEVEX = true;
+    prefixes.hasREX = true;
+
+    // P1: [R|X|B|R'|0|0|mm]
+    prefixes.rexR   = ((p1 >> 7) & 1) == 0;
+    prefixes.rexX   = ((p1 >> 6) & 1) == 0;
+    prefixes.rexB   = ((p1 >> 5) & 1) == 0;
+    prefixes.evexR2 = ((p1 >> 4) & 1) == 0;
+    prefixes.vexMMMMM = p1 & 0x03;
+
+    // P2: [W|vvvv|1|pp]
+    prefixes.vexW    = ((p2 >> 7) & 1) != 0;
+    prefixes.rexW    = prefixes.vexW;
+    prefixes.vexVVVV = static_cast<uint8_t>((~(p2 >> 3)) & 0x0F);
+    prefixes.vexPP   = p2 & 0x03;
+
+    // P3: [z|L'L|b|V'|aaa]
+    prefixes.evexZ   = (p3 >> 7) & 1;
+    prefixes.evexLL  = (p3 >> 5) & 0x03;
+    prefixes.evexB   = (p3 >> 4) & 1;
+    prefixes.evexV2  = ((p3 >> 3) & 1) == 0;
+    prefixes.evexAAA = p3 & 0x07;
+
+    // Map pp to implied legacy prefix flags
+    switch (prefixes.vexPP) {
+        case 1: prefixes.hasOpSizeOverride = true; break;
+        case 2: prefixes.hasRep = true;            break;
+        case 3: prefixes.hasRepNE = true;          break;
+        default: break;
+    }
+
+    // Validate map (only 1, 2, 3 defined for EVEX)
+    if (prefixes.vexMMMMM == 0 || prefixes.vexMMMMM > 3) {
+        return ErrorCode::InvalidPrefix;
+    }
+
+    return ErrorCode::Success;
+}
+
+// ============================================================================
+// Phase 2: Opcode Decoding
+// ============================================================================
+
+ErrorCode InstructionDecoder::DecodeOpcode(
+    std::span<const uint8_t> bytes,
+    uint32_t& offset,
+    OpcodeMap& map,
+    uint8_t& opcode) noexcept
+{
+    if (!CanReadInstructionBytes(bytes, offset, 1)) return ErrorCode::TruncatedInstruction;
+
+    uint8_t b = bytes[offset++];
+
+    if (b != Encoding::kTwoByteEscape) {
+        // 1-byte opcode
+        map = OpcodeMap::OneByte;
+        opcode = b;
+        return ErrorCode::Success;
+    }
+
+    // 0x0F escape — need at least one more byte
+    if (!CanReadInstructionBytes(bytes, offset, 1)) return ErrorCode::TruncatedInstruction;
+
+    b = bytes[offset];
+
+    if (b == Encoding::kThreeByteEscape38) {
+        offset++;
+        if (!CanReadInstructionBytes(bytes, offset, 1)) return ErrorCode::TruncatedInstruction;
+        map = OpcodeMap::ThreeByte38;
+        opcode = bytes[offset++];
+        return ErrorCode::Success;
+    }
+
+    if (b == Encoding::kThreeByteEscape3A) {
+        offset++;
+        if (!CanReadInstructionBytes(bytes, offset, 1)) return ErrorCode::TruncatedInstruction;
+        map = OpcodeMap::ThreeByte3A;
+        opcode = bytes[offset++];
+        return ErrorCode::Success;
+    }
+
+    // 2-byte opcode (0F xx)
+    map = OpcodeMap::TwoByte;
+    opcode = b;
+    offset++;
+    return ErrorCode::Success;
+}
+
+// ============================================================================
+// Phase 3: ModR/M Decoding
+// ============================================================================
+
+ErrorCode InstructionDecoder::DecodeModRM(
+    std::span<const uint8_t> bytes,
+    uint32_t& offset,
+    CPUMode mode,
+    const InstructionPrefixes& prefixes,
+    DecodedInstruction& inst) noexcept
+{
+    (void)mode;
+    (void)prefixes;
+
+    if (!CanReadInstructionBytes(bytes, offset, 1)) return ErrorCode::TruncatedInstruction;
+
+    inst.modrm = bytes[offset++];
+    inst.hasModRM = true;
+
+    // Extract ModRM.reg extension (used for group opcodes)
+    inst.opcodeExt = Encoding::ModRM_Reg(inst.modrm);
+
+    return ErrorCode::Success;
+}
+
+// ============================================================================
+// Phase 4: SIB Decoding
+// ============================================================================
+
+ErrorCode InstructionDecoder::DecodeSIB(
+    std::span<const uint8_t> bytes,
+    uint32_t& offset,
+    [[maybe_unused]] CPUMode mode,
+    [[maybe_unused]] const InstructionPrefixes& prefixes,
+    DecodedInstruction& inst) noexcept
+{
+    if (!CanReadInstructionBytes(bytes, offset, 1)) return ErrorCode::TruncatedInstruction;
+
+    inst.sib = bytes[offset++];
+    inst.hasSIB = true;
+
+    return ErrorCode::Success;
+}
+
+// ============================================================================
+// Phase 5: Displacement Reading
+// ============================================================================
+
+ErrorCode InstructionDecoder::DecodeDisplacement(
+    std::span<const uint8_t> bytes,
+    uint32_t& offset,
+    uint8_t dispSize,
+    DecodedInstruction& inst) noexcept
+{
+    inst.dispSize = dispSize;
+
+    switch (dispSize) {
+        case 1: {
+            uint8_t val;
+            if (!ReadByte(bytes, offset, val)) return ErrorCode::TruncatedInstruction;
+            inst.displacement = SignExtend8(val);
+            offset += 1;
+            break;
+        }
+        case 2: {
+            uint16_t val;
+            if (!ReadWord(bytes, offset, val)) return ErrorCode::TruncatedInstruction;
+            inst.displacement = SignExtend16(val);
+            offset += 2;
+            break;
+        }
+        case 4: {
+            uint32_t val;
+            if (!ReadDword(bytes, offset, val)) return ErrorCode::TruncatedInstruction;
+            inst.displacement = SignExtend32(val);
+            offset += 4;
+            break;
+        }
+        default:
+            return ErrorCode::InvalidModRM;
+    }
+
+    return ErrorCode::Success;
+}
+
+// ============================================================================
+// Phase 6: Immediate Reading
+// ============================================================================
+
+ErrorCode InstructionDecoder::DecodeImmediate(
+    std::span<const uint8_t> bytes,
+    uint32_t& offset,
+    uint8_t immSize,
+    DecodedInstruction& inst) noexcept
+{
+    inst.immSize = immSize;
+
+    switch (immSize) {
+        case 1: {
+            uint8_t val;
+            if (!ReadByte(bytes, offset, val)) return ErrorCode::TruncatedInstruction;
+            inst.immediate = SignExtend8(val);
+            offset += 1;
+            break;
+        }
+        case 2: {
+            uint16_t val;
+            if (!ReadWord(bytes, offset, val)) return ErrorCode::TruncatedInstruction;
+            inst.immediate = SignExtend16(val);
+            offset += 2;
+            break;
+        }
+        case 4: {
+            uint32_t val;
+            if (!ReadDword(bytes, offset, val)) return ErrorCode::TruncatedInstruction;
+            inst.immediate = SignExtend32(val);
+            offset += 4;
+            break;
+        }
+        case 8: {
+            uint64_t val;
+            if (!ReadQword(bytes, offset, val)) return ErrorCode::TruncatedInstruction;
+            inst.immediate = static_cast<int64_t>(val);
+            offset += 8;
+            break;
+        }
+        default:
+            return ErrorCode::InvalidOpcode;
+    }
+
+    return ErrorCode::Success;
+}
+
+ErrorCode InstructionDecoder::DecodeMemoryOffset(
+    std::span<const uint8_t> bytes,
+    uint32_t& offset,
+    DecodedInstruction& inst) noexcept
+{
+    switch (inst.addressSize) {
+        case AddressSize::Addr16: {
+            uint16_t val = 0;
+            if (!ReadWord(bytes, offset, val)) return ErrorCode::TruncatedInstruction;
+            inst.displacement = static_cast<int64_t>(val);
+            inst.dispSize = 2;
+            offset += 2;
+            return ErrorCode::Success;
+        }
+        case AddressSize::Addr32: {
+            uint32_t val = 0;
+            if (!ReadDword(bytes, offset, val)) return ErrorCode::TruncatedInstruction;
+            inst.displacement = static_cast<int64_t>(val);
+            inst.dispSize = 4;
+            offset += 4;
+            return ErrorCode::Success;
+        }
+        case AddressSize::Addr64: {
+            uint64_t val = 0;
+            if (!ReadQword(bytes, offset, val)) return ErrorCode::TruncatedInstruction;
+            inst.displacement = static_cast<int64_t>(val);
+            inst.dispSize = 8;
+            offset += 8;
+            return ErrorCode::Success;
+        }
+        default:
+            return ErrorCode::InvalidOperandSize;
+    }
+}
+
+// ============================================================================
+// Operand Builders
+// ============================================================================
+
+void InstructionDecoder::BuildRegOperand(
+    DecodedOperand& op,
+    RegType regType,
+    uint8_t index,
+    OperandSize size,
+    bool isHighByte) noexcept
+{
+    op.type = OperandType::Register;
+    op.size = size;
+    op.reg.regType = regType;
+    op.reg.regIndex = index;
+    op.reg.isHighByte = isHighByte;
+}
+
+void InstructionDecoder::BuildMemOperand(
+    DecodedOperand& op,
+    const DecodedInstruction& inst,
+    CPUMode mode,
+    const InstructionPrefixes& prefixes) noexcept
+{
+    op.type = OperandType::Memory;
+    op.mem.hasBase = false;
+    op.mem.hasIndex = false;
+    op.mem.baseReg = kInvalidRegisterIndex;
+    op.mem.indexReg = kInvalidRegisterIndex;
+    op.mem.scale = 1;
+    op.mem.displacement = inst.displacement;
+    op.mem.ripRelative = false;
+
+    uint8_t mod = Encoding::ModRM_Mod(inst.modrm);
+    uint8_t rm  = Encoding::ModRM_RM(inst.modrm);
+
+    // Apply REX.B to r/m field
+    if (prefixes.hasREX && prefixes.rexB) {
+        rm |= 0x08;
+    }
+
+    if (mode == CPUMode::Real16 || inst.addressSize == AddressSize::Addr16) {
+        static constexpr uint8_t kBaseByRM[8] = {3, 3, 5, 5, 6, 7, 5, 3};
+        static constexpr uint8_t kIndexByRM[8] = {6, 7, 6, 7, kInvalidRegisterIndex, kInvalidRegisterIndex, kInvalidRegisterIndex, kInvalidRegisterIndex};
+        const uint8_t rm16 = static_cast<uint8_t>(rm & 0x07);
+
+        if (!(mod == Encoding::kMod_Indirect && rm16 == 6)) {
+            op.mem.hasBase = true;
+            op.mem.baseReg = kBaseByRM[rm16];
+            if (kIndexByRM[rm16] != kInvalidRegisterIndex) {
+                op.mem.hasIndex = true;
+                op.mem.indexReg = kIndexByRM[rm16];
+                op.mem.scale = 1;
+            }
+        }
+    } else if (mode == CPUMode::Long64 || mode == CPUMode::Protected32) {
+        if (inst.hasSIB) {
+            // SIB addressing
+            uint8_t base  = Encoding::SIB_Base(inst.sib);
+            uint8_t index = Encoding::SIB_Index(inst.sib);
+            uint8_t scale = Encoding::SIB_Scale(inst.sib);
+
+            // Apply REX extensions
+            if (prefixes.hasREX) {
+                if (prefixes.rexB) base |= 0x08;
+                if (prefixes.rexX) index |= 0x08;
+            }
+
+            // Base register
+            if (!(base == 5 && mod == Encoding::kMod_Indirect)) {
+                op.mem.hasBase = true;
+                op.mem.baseReg = base;
+            }
+
+            // Index register (index=4 means no index)
+            if ((index & 0x07) != Encoding::kSIB_NoIndex) {
+                op.mem.hasIndex = true;
+                op.mem.indexReg = index;
+                op.mem.scale = Encoding::kScaleFactors[scale];
+            }
+        } else {
+            // No SIB
+            if (mod == Encoding::kMod_Indirect && (rm & 0x07) == Encoding::kRM_Disp32) {
+                // RIP-relative in 64-bit, disp32 in 32-bit
+                if (mode == CPUMode::Long64) {
+                    op.mem.ripRelative = true;
+                }
+                // displacement already decoded
+            } else {
+                op.mem.hasBase = true;
+                op.mem.baseReg = rm;
+            }
+        }
+    }
+
+    // Determine segment
+    if (prefixes.hasSegOverride) {
+        op.mem.segment = prefixes.segOverride;
+    } else {
+        // Default: SS for RSP/RBP-based, DS for everything else
+        if (op.mem.hasBase) {
+            op.mem.segment = DefaultSegment(op.mem.baseReg);
+        } else {
+            op.mem.segment = SegReg::DS;
+        }
+    }
+}
+
+void InstructionDecoder::BuildImmOperand(
+    DecodedOperand& op,
+    int64_t value,
+    OperandSize size,
+    bool isSigned) noexcept
+{
+    op.type = OperandType::Immediate;
+    op.size = size;
+    op.imm.value = static_cast<uint64_t>(value);
+    op.imm.isSigned = isSigned;
+}
+
+void InstructionDecoder::BuildRelOperand(
+    DecodedOperand& op,
+    int64_t offset,
+    OperandSize size) noexcept
+{
+    op.type = OperandType::RelativeOffset;
+    op.size = size;
+    op.rel.offset = offset;
+}
+
+// ============================================================================
+// Opcode Classification Tables
+// ============================================================================
+
+bool InstructionDecoder::OpcodeRequiresModRM(OpcodeMap map, uint8_t opcode) const noexcept {
+    if (map == OpcodeMap::TwoByte || map == OpcodeMap::ThreeByte38 || map == OpcodeMap::ThreeByte3A) {
+        // Almost all 2-byte and 3-byte opcodes require ModR/M
+        // Exceptions: 0F 05 (SYSCALL), 0F 07 (SYSRET), 0F 0B (UD2),
+        //             0F 30-37 (WRMSR etc), 0F A2 (CPUID), 0F 31 (RDTSC)
+        switch (opcode) {
+            case 0x05: case 0x06: case 0x07: case 0x08:
+            case 0x09: case 0x0B: case 0x0E:
+            case 0x30: case 0x31: case 0x32: case 0x33:
+            case 0x34: case 0x35: case 0x36: case 0x37:
+            case 0x77: case 0xA2:
+                return (map == OpcodeMap::TwoByte) ? false : true;
+            default:
+                return true;
+        }
+    }
+
+    // 1-byte opcode ModRM requirement table
+    // Most ALU ops (00-3F), MOV variants, LEA, etc. require ModRM
+    // Short-form ALU (04/0C/14/1C/24/2C/34/3C + imm), PUSH/POP, INC/DEC (40-4F),
+    // Jcc short, RET, INT, etc. do NOT require ModRM
+
+    // Group by range:
+    if (opcode <= 0x3F) {
+        // ALU ops: xx0-xx5 require ModRM for 0,1,2,3 but not 4,5 (accum+imm)
+        uint8_t low3 = opcode & 0x07;
+        return (low3 <= 3);
+    }
+
+    // 0x40-0x4F: INC/DEC (32-bit) or REX (64-bit) — no ModRM
+    if (opcode >= 0x40 && opcode <= 0x4F) return false;
+
+    // 0x50-0x5F: PUSH/POP reg — no ModRM
+    if (opcode >= 0x50 && opcode <= 0x5F) return false;
+
+    // 0x60-0x6F
+    switch (opcode) {
+        case 0x60: case 0x61: return false; // PUSHA/POPA
+        case 0x62: return true;  // BOUND (32-bit) or EVEX (64-bit)
+        case 0x63: return true;  // ARPL (32-bit) / MOVSXD (64-bit)
+        case 0x68: return false; // PUSH imm32
+        case 0x69: return true;  // IMUL r, r/m, imm32
+        case 0x6A: return false; // PUSH imm8
+        case 0x6B: return true;  // IMUL r, r/m, imm8
+        case 0x6C: case 0x6D: case 0x6E: case 0x6F: return false; // INS/OUTS
+    }
+
+    // 0x70-0x7F: Jcc short — no ModRM
+    if (opcode >= 0x70 && opcode <= 0x7F) return false;
+
+    // 0x80-0x83: ALU group — ModRM
+    if (opcode >= 0x80 && opcode <= 0x83) return true;
+
+    // 0x84-0x8F
+    switch (opcode) {
+        case 0x84: case 0x85: return true; // TEST
+        case 0x86: case 0x87: return true; // XCHG
+        case 0x88: case 0x89: case 0x8A: case 0x8B: return true; // MOV
+        case 0x8C: case 0x8D: case 0x8E: return true; // MOV seg, LEA, MOV seg
+        case 0x8F: return true; // POP r/m
+    }
+
+    // 0x90-0x9F
+    if (opcode >= 0x90 && opcode <= 0x97) return false; // NOP/XCHG eAX
+    switch (opcode) {
+        case 0x98: case 0x99: return false; // CBW/CWD
+        case 0x9A: return false; // CALL FAR (not in 64-bit)
+        case 0x9B: return false; // WAIT/FWAIT
+        case 0x9C: case 0x9D: return false; // PUSHF/POPF
+        case 0x9E: case 0x9F: return false; // SAHF/LAHF
+    }
+
+    // 0xA0-0xAF: MOV moffs, string ops — no ModRM
+    if (opcode >= 0xA0 && opcode <= 0xAF) return false;
+
+    // 0xB0-0xBF: MOV reg, imm — no ModRM
+    if (opcode >= 0xB0 && opcode <= 0xBF) return false;
+
+    // 0xC0-0xCF
+    switch (opcode) {
+        case 0xC0: case 0xC1: return true;  // Shift group
+        case 0xC2: case 0xC3: return false;  // RET
+        case 0xC4: case 0xC5: return true;   // LES/LDS or VEX
+        case 0xC6: case 0xC7: return true;   // MOV r/m, imm
+        case 0xC8: return false;              // ENTER
+        case 0xC9: return false;              // LEAVE
+        case 0xCA: case 0xCB: return false;   // RETF
+        case 0xCC: return false;              // INT3
+        case 0xCD: return false;              // INT imm8
+        case 0xCE: return false;              // INTO
+        case 0xCF: return false;              // IRET
+    }
+
+    // 0xD0-0xDF
+    if (opcode >= 0xD0 && opcode <= 0xD3) return true; // Shift group
+    switch (opcode) {
+        case 0xD4: case 0xD5: return false;  // AAM/AAD
+        case 0xD6: return false;              // SALC (undoc)
+        case 0xD7: return false;              // XLAT
+    }
+    // 0xD8-0xDF: FPU opcodes — all require ModRM
+    if (opcode >= 0xD8 && opcode <= 0xDF) return true;
+
+    // 0xE0-0xEF: LOOP/Jcc/IN/OUT — no ModRM
+    if (opcode >= 0xE0 && opcode <= 0xEF) return false;
+
+    // 0xF0-0xFF
+    switch (opcode) {
+        case 0xF0: case 0xF1: return false;  // LOCK/INT1
+        case 0xF2: case 0xF3: return false;  // REPNE/REP
+        case 0xF4: return false;              // HLT
+        case 0xF5: return false;              // CMC
+        case 0xF6: case 0xF7: return true;   // Unary group (NOT/NEG/MUL/DIV/IDIV)
+        case 0xF8: case 0xF9: return false;  // CLC/STC
+        case 0xFA: case 0xFB: return false;  // CLI/STI
+        case 0xFC: case 0xFD: return false;  // CLD/STD
+        case 0xFE: case 0xFF: return true;   // INC/DEC/CALL/JMP group
+    }
+
+    return false;
+}
+
+uint8_t InstructionDecoder::OpcodeImmediateSize(
+    OpcodeMap map,
+    uint8_t opcode,
+    uint8_t opcodeExt,
+    OperandSize opSize) const noexcept
+{
+    if (map == OpcodeMap::ThreeByte3A) {
+        // 0F 3A xx: most take 1-byte immediate
+        return 1;
+    }
+
+    if (map == OpcodeMap::TwoByte) {
+        // Most 2-byte opcodes don't have immediates
+        // Exceptions: 0F 70 (PSHUFD imm8), 0F C2 (CMPPS imm8), etc.
+        switch (opcode) {
+            case 0x70: case 0x71: case 0x72: case 0x73:
+            case 0xC2: case 0xC4: case 0xC5: case 0xC6:
+            case 0xBA: // BT/BTS/BTR/BTC r/m, imm8
+                return 1;
+            default:
+                return 0;
+        }
+    }
+
+    // 1-byte opcode map
+    uint8_t opSizeBytes = static_cast<uint8_t>(opSize);
+
+    // ALU accum+imm forms (04,0C,14,1C,24,2C,34,3C for 8-bit; 05,0D,15,1D,25,2D,35,3D for full)
+    if (opcode <= 0x3F) {
+        uint8_t low3 = opcode & 0x07;
+        if (low3 == 4) return 1;                            // AL, imm8
+        if (low3 == 5) return (opSizeBytes == 8) ? 4 : opSizeBytes; // eAX, imm16/32
+        return 0;
+    }
+
+    switch (opcode) {
+        // PUSH imm
+        case 0x68: return (opSizeBytes == 8) ? 4 : opSizeBytes;
+        case 0x6A: return 1;
+
+        // IMUL r, r/m, imm
+        case 0x69: return (opSizeBytes == 8) ? 4 : opSizeBytes;
+        case 0x6B: return 1;
+
+        // Jcc short
+        case 0x70: case 0x71: case 0x72: case 0x73:
+        case 0x74: case 0x75: case 0x76: case 0x77:
+        case 0x78: case 0x79: case 0x7A: case 0x7B:
+        case 0x7C: case 0x7D: case 0x7E: case 0x7F:
+            return 1;
+
+        // ALU group r/m, imm
+        case 0x80: case 0x82: return 1;                     // r/m8, imm8
+        case 0x81: return (opSizeBytes == 8) ? 4 : opSizeBytes; // r/m, imm16/32
+        case 0x83: return 1;                                 // r/m, imm8 (sign-extended)
+
+        // MOV r, imm (register in opcode)
+        case 0xB0: case 0xB1: case 0xB2: case 0xB3:
+        case 0xB4: case 0xB5: case 0xB6: case 0xB7:
+            return 1;
+        case 0xB8: case 0xB9: case 0xBA: case 0xBB:
+        case 0xBC: case 0xBD: case 0xBE: case 0xBF:
+            // In 64-bit with REX.W, MOV r64, imm64 (10-byte encoding)
+            return opSizeBytes;
+
+        // Shift group imm
+        case 0xC0: case 0xC1: return 1;
+
+        // RET imm16
+        case 0xC2: case 0xCA: return 2;
+
+        // MOV r/m, imm
+        case 0xC6: return 1;
+        case 0xC7: return (opSizeBytes == 8) ? 4 : opSizeBytes;
+
+        // ENTER imm16, imm8
+        case 0xC8: return 3; // 2 + 1 (special: we handle this in executor)
+
+        // INT imm8
+        case 0xCD: return 1;
+
+        // TEST AL/eAX, imm
+        case 0xA8: return 1;
+        case 0xA9: return (opSizeBytes == 8) ? 4 : opSizeBytes;
+
+        // MOV moffs
+        case 0xA0: case 0xA1: case 0xA2: case 0xA3:
+            // Address size determines moffs size
+            return 0; // moffs is displacement, not immediate
+
+        // Jcc / CALL / JMP rel
+        case 0xE0: case 0xE1: case 0xE2: case 0xE3: return 1; // LOOPcc, JCXZ
+        case 0xE8: return 4; // CALL rel32
+        case 0xE9: return 4; // JMP rel32
+        case 0xEB: return 1; // JMP rel8
+
+        // IN/OUT imm8
+        case 0xE4: case 0xE5: case 0xE6: case 0xE7: return 1;
+
+        // TEST/NOT/NEG/MUL/DIV group — only /0 TEST has an immediate.
+        case 0xF6: return (opcodeExt == 0) ? 1 : 0;
+        case 0xF7: return (opcodeExt == 0) ? ((opSizeBytes == 8) ? 4 : opSizeBytes) : 0;
+
+        default:
+            return 0;
+    }
+}
+
+SegReg InstructionDecoder::DefaultSegment(uint8_t baseReg) const noexcept {
+    // RSP (4) and RBP (5) default to SS; everything else defaults to DS
+    if ((baseReg & 0x07) == 4 || (baseReg & 0x07) == 5) {
+        return SegReg::SS;
+    }
+    return SegReg::DS;
+}
+
+// ============================================================================
+// Operand decode helpers
+// ============================================================================
+
+void InstructionDecoder::DecodeModRMOperands(
+    DecodedInstruction& inst,
+    CPUMode mode,
+    OperandSize regSize,
+    OperandSize rmSize,
+    bool regIsDst) noexcept
+{
+    uint8_t reg = Encoding::ModRM_Reg(inst.modrm);
+    uint8_t mod = Encoding::ModRM_Mod(inst.modrm);
+
+    if (inst.prefixes.hasREX && inst.prefixes.rexR) {
+        reg |= 0x08;
+    }
+
+    uint8_t dstIdx = regIsDst ? 0 : 1;
+    uint8_t srcIdx = regIsDst ? 1 : 0;
+
+    // Register operand (from ModRM.reg)
+    BuildRegOperand(inst.operands[dstIdx], RegType::GPR, reg, regSize);
+
+    // R/M operand
+    if (mod == Encoding::kMod_Register) {
+        // Register direct
+        uint8_t rm = Encoding::ModRM_RM(inst.modrm);
+        if (inst.prefixes.hasREX && inst.prefixes.rexB) rm |= 0x08;
+        BuildRegOperand(inst.operands[srcIdx], RegType::GPR, rm, rmSize);
+    } else {
+        // Memory
+        inst.operands[srcIdx].size = rmSize;
+        BuildMemOperand(inst.operands[srcIdx], inst, mode, inst.prefixes);
+    }
+
+    inst.operandCount = 2;
+}
+
+void InstructionDecoder::DecodeAccumImm(
+    DecodedInstruction& inst,
+    OperandSize size) noexcept
+{
+    BuildRegOperand(inst.operands[0], RegType::GPR, 0, size); // AL/AX/EAX/RAX
+    BuildImmOperand(inst.operands[1], inst.immediate, size, true);
+    inst.operandCount = 2;
+}
+
+void InstructionDecoder::DecodeOpcodeReg(
+    DecodedInstruction& inst,
+    uint8_t opcode,
+    OperandSize size,
+    const InstructionPrefixes& prefixes) noexcept
+{
+    uint8_t reg = opcode & 0x07;
+    if (prefixes.hasREX && prefixes.rexB) reg |= 0x08;
+    BuildRegOperand(inst.operands[0], RegType::GPR, reg, size);
+    inst.operandCount = 1;
+}
+
+// ============================================================================
+// Raw byte reading with bounds checking
+// ============================================================================
+
+bool InstructionDecoder::ReadByte(
+    std::span<const uint8_t> bytes, uint32_t offset, uint8_t& out) const noexcept
+{
+    if (!CanReadInstructionBytes(bytes, offset, 1)) return false;
+    out = bytes[offset];
+    return true;
+}
+
+bool InstructionDecoder::ReadWord(
+    std::span<const uint8_t> bytes, uint32_t offset, uint16_t& out) const noexcept
+{
+    if (!CanReadInstructionBytes(bytes, offset, 2)) return false;
+    std::memcpy(&out, &bytes[offset], 2);
+    return true;
+}
+
+bool InstructionDecoder::ReadDword(
+    std::span<const uint8_t> bytes, uint32_t offset, uint32_t& out) const noexcept
+{
+    if (!CanReadInstructionBytes(bytes, offset, 4)) return false;
+    std::memcpy(&out, &bytes[offset], 4);
+    return true;
+}
+
+bool InstructionDecoder::ReadQword(
+    std::span<const uint8_t> bytes, uint32_t offset, uint64_t& out) const noexcept
+{
+    if (!CanReadInstructionBytes(bytes, offset, 8)) return false;
+    std::memcpy(&out, &bytes[offset], 8);
+    return true;
+}
+
+// ============================================================================
+// Phase 7: Operand Resolution
+// ============================================================================
+// Maps the raw decode (opcode, opcodeMap, modrm, sib, displacement, immediate,
+// prefixes, operandSize) into typed DecodedOperand objects.
+//
+// This is the bridge between the byte-level decoder and the semantic executor.
+// Without this phase, the executor receives zero-initialized operands and
+// returns InvalidOperandSize for any instruction that reads Op(0)/Op(1).
+//
+// Coverage: All one-byte, two-byte (0F), and three-byte (0F 38 / 0F 3A)
+// encodings used by the emulator's dispatch table.
+
+void InstructionDecoder::ResolveOperands(
+    DecodedInstruction& inst,
+    CPUMode mode) noexcept
+{
+    const uint8_t op = inst.opcode;
+    const OperandSize sz = inst.operandSize;
+
+    auto sz8 = OperandSize::Size8;
+
+    // High-byte register detection (AH/CH/DH/BH = indices 4-7 without REX)
+    auto isHighByte8 = [&](uint8_t idx) -> bool {
+        return !inst.prefixes.hasREX && idx >= 4 && idx <= 7;
+    };
+
+    // Build r/m operand (register-direct or memory) into target slot
+    auto buildRM = [&](DecodedOperand& dst, OperandSize rmSz) {
+        uint8_t mod = inst.hasModRM ? Encoding::ModRM_Mod(inst.modrm) : 0;
+        if (mod == Encoding::kMod_Register) {
+            uint8_t rm = Encoding::ModRM_RM(inst.modrm);
+            if (inst.prefixes.hasREX && inst.prefixes.rexB) rm |= 0x08;
+            bool hi = (rmSz == OperandSize::Size8) && isHighByte8(rm);
+            BuildRegOperand(dst, RegType::GPR, hi ? (rm - 4) : rm, rmSz, hi);
+        } else {
+            dst.size = rmSz;
+            BuildMemOperand(dst, inst, mode, inst.prefixes);
+        }
+    };
+
+    // Build ModRM.reg operand into target slot
+    auto buildReg = [&](DecodedOperand& dst, OperandSize regSz) {
+        uint8_t reg = inst.hasModRM ? Encoding::ModRM_Reg(inst.modrm) : 0;
+        if (inst.prefixes.hasREX && inst.prefixes.rexR) reg |= 0x08;
+        bool hi = (regSz == OperandSize::Size8) && isHighByte8(reg);
+        BuildRegOperand(dst, RegType::GPR, hi ? (reg - 4) : reg, regSz, hi);
+    };
+
+    // ====================================================================
+    // One-byte opcode map
+    // ====================================================================
+    if (inst.opcodeMap == OpcodeMap::OneByte) {
+
+        // ALU group: 0x00-0x3F (ADD, OR, ADC, SBB, AND, SUB, XOR, CMP)
+        // Pattern repeats every 8: +0 r/m8,r8  +1 r/m,r  +2 r8,r/m8
+        //                          +3 r,r/m    +4 AL,imm8 +5 eAX,imm
+        if (op <= 0x3F) {
+            uint8_t form = op & 0x07;
+            if (form <= 5) {
+                switch (form) {
+                    case 0: DecodeModRMOperands(inst, mode, sz8, sz8, false); return;
+                    case 1: DecodeModRMOperands(inst, mode, sz, sz, false);  return;
+                    case 2: DecodeModRMOperands(inst, mode, sz8, sz8, true); return;
+                    case 3: DecodeModRMOperands(inst, mode, sz, sz, true);   return;
+                    case 4: DecodeAccumImm(inst, sz8); return;
+                    case 5: DecodeAccumImm(inst, sz);  return;
+                }
+            }
+            return;
+        }
+
+        // PUSH reg / POP reg (0x50-0x5F)
+        if (op >= 0x50 && op <= 0x5F) {
+            OperandSize pushSz = (mode == CPUMode::Long64) ? OperandSize::Size64 : sz;
+            DecodeOpcodeReg(inst, op, pushSz, inst.prefixes);
+            return;
+        }
+
+        // PUSH imm (0x68 = imm16/32, 0x6A = imm8)
+        if (op == 0x68 || op == 0x6A) {
+            OperandSize immSz = (op == 0x6A) ? OperandSize::Size8 : sz;
+            BuildImmOperand(inst.operands[0], inst.immediate, immSz, true);
+            inst.operandCount = 1;
+            return;
+        }
+
+        // Jcc short (0x70-0x7F)
+        if (op >= 0x70 && op <= 0x7F) {
+            BuildRelOperand(inst.operands[0], inst.immediate, OperandSize::Size8);
+            inst.operandCount = 1;
+            return;
+        }
+
+        // ALU group 1 (0x80-0x83): r/m, imm
+        if (op >= 0x80 && op <= 0x83) {
+            OperandSize rmSz = (op == 0x80 || op == 0x82) ? sz8 : sz;
+            OperandSize immSz = (op == 0x80 || op == 0x82) ? sz8 :
+                                (op == 0x83) ? OperandSize::Size8 : sz;
+            buildRM(inst.operands[0], rmSz);
+            BuildImmOperand(inst.operands[1], inst.immediate, immSz, true);
+            inst.operandCount = 2;
+            return;
+        }
+
+        // TEST r/m, r (0x84 byte, 0x85 word/dword/qword)
+        if (op == 0x84 || op == 0x85) {
+            OperandSize testSz = (op == 0x84) ? sz8 : sz;
+            DecodeModRMOperands(inst, mode, testSz, testSz, false);
+            return;
+        }
+
+        // XCHG r, r/m (0x86 byte, 0x87 word/dword/qword)
+        if (op == 0x86 || op == 0x87) {
+            OperandSize xchgSz = (op == 0x86) ? sz8 : sz;
+            DecodeModRMOperands(inst, mode, xchgSz, xchgSz, true);
+            return;
+        }
+
+        // MOV (0x88-0x8B)
+        if (op >= 0x88 && op <= 0x8B) {
+            bool isByte = (op == 0x88 || op == 0x8A);
+            bool regIsDst = (op == 0x8A || op == 0x8B);
+            OperandSize movSz = isByte ? sz8 : sz;
+            DecodeModRMOperands(inst, mode, movSz, movSz, regIsDst);
+            return;
+        }
+
+        // MOV segment (0x8C: r/m16,Sreg  0x8E: Sreg,r/m16)
+        if (op == 0x8C || op == 0x8E) {
+            uint8_t sreg = inst.hasModRM ? Encoding::ModRM_Reg(inst.modrm) : 0;
+            if (op == 0x8C) {
+                buildRM(inst.operands[0], OperandSize::Size16);
+                BuildRegOperand(inst.operands[1], RegType::Segment, sreg, OperandSize::Size16);
+            } else {
+                BuildRegOperand(inst.operands[0], RegType::Segment, sreg, OperandSize::Size16);
+                buildRM(inst.operands[1], OperandSize::Size16);
+            }
+            inst.operandCount = 2;
+            return;
+        }
+
+        // LEA r, m (0x8D)
+        if (op == 0x8D) {
+            buildReg(inst.operands[0], sz);
+            buildRM(inst.operands[1], sz);
+            inst.operandCount = 2;
+            return;
+        }
+
+        // XCHG eAX, r (0x91-0x97) / NOP (0x90)
+        if (op >= 0x90 && op <= 0x97) {
+            if (op == 0x90) return; // NOP
+            BuildRegOperand(inst.operands[0], RegType::GPR, 0, sz);
+            uint8_t reg2 = op & 0x07;
+            if (inst.prefixes.hasREX && inst.prefixes.rexB) reg2 |= 0x08;
+            BuildRegOperand(inst.operands[1], RegType::GPR, reg2, sz);
+            inst.operandCount = 2;
+            return;
+        }
+
+        // CBW/CWD (0x98/0x99), PUSHF/POPF (0x9C/0x9D), SAHF/LAHF (0x9E/0x9F)
+        if (op >= 0x98 && op <= 0x9F) return;
+
+        // MOV AL/AX moffs (0xA0-0xA3)
+        if (op >= 0xA0 && op <= 0xA3) {
+            bool isByte = (op == 0xA0 || op == 0xA2);
+            OperandSize mSz = isByte ? sz8 : sz;
+            if (op <= 0xA1) {
+                BuildRegOperand(inst.operands[0], RegType::GPR, 0, mSz);
+                inst.operands[1].type = OperandType::Memory;
+                inst.operands[1].size = mSz;
+                inst.operands[1].mem = {};
+                inst.operands[1].mem.displacement = inst.displacement;
+                inst.operands[1].mem.baseReg = kInvalidRegisterIndex;
+                inst.operands[1].mem.indexReg = kInvalidRegisterIndex;
+                inst.operands[1].mem.scale = 1;
+                inst.operands[1].mem.segment = SegReg::DS;
+            } else {
+                inst.operands[0].type = OperandType::Memory;
+                inst.operands[0].size = mSz;
+                inst.operands[0].mem = {};
+                inst.operands[0].mem.displacement = inst.displacement;
+                inst.operands[0].mem.baseReg = kInvalidRegisterIndex;
+                inst.operands[0].mem.indexReg = kInvalidRegisterIndex;
+                inst.operands[0].mem.scale = 1;
+                inst.operands[0].mem.segment = SegReg::DS;
+                BuildRegOperand(inst.operands[1], RegType::GPR, 0, mSz);
+            }
+            inst.operandCount = 2;
+            return;
+        }
+
+        // String ops (0xA4-0xA7, 0xAA-0xAF) — implicit operands
+        if ((op >= 0xA4 && op <= 0xA7) || (op >= 0xAA && op <= 0xAF)) return;
+
+        // TEST AL/eAX, imm (0xA8, 0xA9)
+        if (op == 0xA8 || op == 0xA9) {
+            DecodeAccumImm(inst, (op == 0xA8) ? sz8 : sz);
+            return;
+        }
+
+        // MOV reg, imm8 (0xB0-0xB7)
+        if (op >= 0xB0 && op <= 0xB7) {
+            uint8_t reg = op & 0x07;
+            if (inst.prefixes.hasREX && inst.prefixes.rexB) reg |= 0x08;
+            bool hi = isHighByte8(reg);
+            BuildRegOperand(inst.operands[0], RegType::GPR,
+                            hi ? (reg - 4) : reg, sz8, hi);
+            BuildImmOperand(inst.operands[1], inst.immediate, sz8, false);
+            inst.operandCount = 2;
+            return;
+        }
+
+        // MOV reg, imm (0xB8-0xBF)
+        if (op >= 0xB8 && op <= 0xBF) {
+            uint8_t reg = op & 0x07;
+            if (inst.prefixes.hasREX && inst.prefixes.rexB) reg |= 0x08;
+            BuildRegOperand(inst.operands[0], RegType::GPR, reg, sz);
+            BuildImmOperand(inst.operands[1], inst.immediate, sz, false);
+            inst.operandCount = 2;
+            return;
+        }
+
+        // Shift/Rotate group 2 (0xC0/0xC1: r/m, imm8)
+        if (op == 0xC0 || op == 0xC1) {
+            OperandSize shSz = (op == 0xC0) ? sz8 : sz;
+            buildRM(inst.operands[0], shSz);
+            BuildImmOperand(inst.operands[1], inst.immediate, OperandSize::Size8, false);
+            inst.operandCount = 2;
+            return;
+        }
+
+        // RET near (0xC2: imm16, 0xC3: no operands)
+        if (op == 0xC2) {
+            BuildImmOperand(inst.operands[0], inst.immediate, OperandSize::Size16, false);
+            inst.operandCount = 1;
+            return;
+        }
+        if (op == 0xC3) return;
+
+        // MOV group 11 (0xC6: r/m8,imm8  0xC7: r/m,imm)
+        if (op == 0xC6 || op == 0xC7) {
+            OperandSize mSz = (op == 0xC6) ? sz8 : sz;
+            buildRM(inst.operands[0], mSz);
+            BuildImmOperand(inst.operands[1], inst.immediate, mSz, false);
+            inst.operandCount = 2;
+            return;
+        }
+
+        // ENTER/LEAVE (0xC8/0xC9)
+        if (op == 0xC8 || op == 0xC9) return;
+
+        // INT3 (0xCC), INT imm8 (0xCD)
+        if (op == 0xCC) return;
+        if (op == 0xCD) {
+            BuildImmOperand(inst.operands[0], inst.immediate, OperandSize::Size8, false);
+            inst.operandCount = 1;
+            return;
+        }
+
+        // Shift/Rotate (0xD0/0xD1: r/m,1  0xD2/0xD3: r/m,CL)
+        if (op >= 0xD0 && op <= 0xD3) {
+            OperandSize shSz = (op == 0xD0 || op == 0xD2) ? sz8 : sz;
+            buildRM(inst.operands[0], shSz);
+            if (op <= 0xD1) {
+                BuildImmOperand(inst.operands[1], 1, OperandSize::Size8, false);
+            } else {
+                BuildRegOperand(inst.operands[1], RegType::GPR, 1, OperandSize::Size8);
+            }
+            inst.operandCount = 2;
+            return;
+        }
+
+        // CALL rel (0xE8)
+        if (op == 0xE8) {
+            BuildRelOperand(inst.operands[0], inst.immediate, sz);
+            inst.operandCount = 1;
+            return;
+        }
+
+        // JMP near (0xE9), JMP short (0xEB)
+        if (op == 0xE9) {
+            BuildRelOperand(inst.operands[0], inst.immediate, sz);
+            inst.operandCount = 1;
+            return;
+        }
+        if (op == 0xEB) {
+            BuildRelOperand(inst.operands[0], inst.immediate, OperandSize::Size8);
+            inst.operandCount = 1;
+            return;
+        }
+
+        // IN/OUT (0xE4-0xE7, 0xEC-0xEF) — implicit
+        if ((op >= 0xE4 && op <= 0xE7) || (op >= 0xEC && op <= 0xEF)) return;
+
+        // HLT (0xF4)
+        if (op == 0xF4) return;
+
+        // Flag manipulation (0xF8-0xFD: CLC/STC/CLI/STI/CLD/STD)
+        if (op >= 0xF8 && op <= 0xFD) return;
+
+        // Unary group 3 (0xF6/0xF7): TEST/NOT/NEG/MUL/IMUL/DIV/IDIV
+        if (op == 0xF6 || op == 0xF7) {
+            OperandSize uSz = (op == 0xF6) ? sz8 : sz;
+            buildRM(inst.operands[0], uSz);
+            inst.operandCount = 1;
+            if (inst.opcodeExt == 0) {
+                BuildImmOperand(inst.operands[1], inst.immediate, uSz, false);
+                inst.operandCount = 2;
+            }
+            return;
+        }
+
+        // INC/DEC/CALL/JMP/PUSH group 5 (0xFE: byte, 0xFF)
+        if (op == 0xFE || op == 0xFF) {
+            OperandSize gSz = (op == 0xFE) ? sz8 : sz;
+            buildRM(inst.operands[0], gSz);
+            inst.operandCount = 1;
+            return;
+        }
+
+        return;
+    }
+
+    // ====================================================================
+    // Two-byte opcode map (0F xx)
+    // ====================================================================
+    if (inst.opcodeMap == OpcodeMap::TwoByte) {
+
+        // Jcc near (0x80-0x8F)
+        if (op >= 0x80 && op <= 0x8F) {
+            BuildRelOperand(inst.operands[0], inst.immediate, OperandSize::Size32);
+            inst.operandCount = 1;
+            return;
+        }
+
+        // SETcc (0x90-0x9F)
+        if (op >= 0x90 && op <= 0x9F) {
+            buildRM(inst.operands[0], sz8);
+            inst.operandCount = 1;
+            return;
+        }
+
+        // MOVZX (0xB6: r,r/m8  0xB7: r,r/m16)
+        if (op == 0xB6 || op == 0xB7) {
+            OperandSize srcSz = (op == 0xB6) ? sz8 : OperandSize::Size16;
+            buildReg(inst.operands[0], sz);
+            buildRM(inst.operands[1], srcSz);
+            inst.operandCount = 2;
+            return;
+        }
+
+        // MOVSX (0xBE: r,r/m8  0xBF: r,r/m16)
+        if (op == 0xBE || op == 0xBF) {
+            OperandSize srcSz = (op == 0xBE) ? sz8 : OperandSize::Size16;
+            buildReg(inst.operands[0], sz);
+            buildRM(inst.operands[1], srcSz);
+            inst.operandCount = 2;
+            return;
+        }
+
+        // POPCNT/BSF/TZCNT/BSR/LZCNT (0xB8, 0xBC, 0xBD)
+        if (op == 0xB8 || op == 0xBC || op == 0xBD) {
+            buildReg(inst.operands[0], sz);
+            buildRM(inst.operands[1], sz);
+            inst.operandCount = 2;
+            return;
+        }
+
+        // IMUL r, r/m (0xAF)
+        if (op == 0xAF) {
+            DecodeModRMOperands(inst, mode, sz, sz, true);
+            return;
+        }
+
+        // CMOVcc (0x40-0x4F)
+        if (op >= 0x40 && op <= 0x4F) {
+            DecodeModRMOperands(inst, mode, sz, sz, true);
+            return;
+        }
+
+        // BT/BTS/BTR/BTC register form (0xA3/0xAB/0xB3/0xBB)
+        if (op == 0xA3 || op == 0xAB || op == 0xB3 || op == 0xBB) {
+            DecodeModRMOperands(inst, mode, sz, sz, false);
+            return;
+        }
+
+        // BT group imm8 (0xBA)
+        if (op == 0xBA) {
+            buildRM(inst.operands[0], sz);
+            BuildImmOperand(inst.operands[1], inst.immediate, OperandSize::Size8, false);
+            inst.operandCount = 2;
+            return;
+        }
+
+        // BSWAP (0xC8-0xCF)
+        if (op >= 0xC8 && op <= 0xCF) {
+            uint8_t reg = op & 0x07;
+            if (inst.prefixes.hasREX && inst.prefixes.rexB) reg |= 0x08;
+            BuildRegOperand(inst.operands[0], RegType::GPR, reg, sz);
+            inst.operandCount = 1;
+            return;
+        }
+
+        // XADD (0xC0/0xC1)
+        if (op == 0xC0 || op == 0xC1) {
+            OperandSize xSz = (op == 0xC0) ? sz8 : sz;
+            DecodeModRMOperands(inst, mode, xSz, xSz, false);
+            return;
+        }
+
+        // CMPXCHG (0xB0/0xB1)
+        if (op == 0xB0 || op == 0xB1) {
+            OperandSize cSz = (op == 0xB0) ? sz8 : sz;
+            DecodeModRMOperands(inst, mode, cSz, cSz, false);
+            return;
+        }
+
+        // No-operand: CPUID, RDTSC, UD2, SYSCALL, SYSENTER
+        if (op == 0xA2 || op == 0x31 || op == 0x0B ||
+            op == 0x05 || op == 0x34) {
+            return;
+        }
+
+        // RDRAND/RDSEED (0xC7)
+        if (op == 0xC7) {
+            buildRM(inst.operands[0], sz);
+            inst.operandCount = 1;
+            return;
+        }
+
+        // Generic two-byte with ModRM fallback (SSE, etc.)
+        if (inst.hasModRM) {
+            DecodeModRMOperands(inst, mode, sz, sz, true);
+            return;
+        }
+
+        return;
+    }
+
+    // ====================================================================
+    // Three-byte opcode maps (0F 38 xx / 0F 3A xx)
+    // ====================================================================
+    if (inst.opcodeMap == OpcodeMap::ThreeByte38 ||
+        inst.opcodeMap == OpcodeMap::ThreeByte3A) {
+        if (inst.hasModRM) {
+            if (inst.opcodeMap == OpcodeMap::ThreeByte3A) {
+                buildReg(inst.operands[0], sz);
+                buildRM(inst.operands[1], sz);
+                BuildImmOperand(inst.operands[2], inst.immediate, OperandSize::Size8, false);
+                inst.operandCount = 3;
+            } else {
+                DecodeModRMOperands(inst, mode, sz, sz, true);
+            }
+            return;
+        }
+        return;
+    }
+
+    // VEX/EVEX — the executor reads from prefixes/modrm directly in many
+    // cases; for critical paths resolve the standard reg,r/m form here.
+    if (inst.prefixes.hasVEX || inst.prefixes.hasEVEX) {
+        if (inst.hasModRM) {
+            DecodeModRMOperands(inst, mode, sz, sz, true);
+        }
+        return;
+    }
+}
+
+} // namespace Phantom

@@ -1,0 +1,51 @@
+id: ss-mem-005
+detection_name: "Win32/Memory.HeapSpray.FixedAddress"
+description: "Detects heap spray behavior characterized by multiple large memory allocations at predictable fixed base addresses (e.g., 0x0c0c0c0c, 0x0a0a0a0a) within a single process. Heap spraying is used to reliably place shellcode at known memory addresses to increase the probability of successful exploitation of memory corruption vulnerabilities."
+scope: memory
+severity: critical
+status: stable
+source: native
+confidence: 0.85
+weight: 3.0
+version: 1
+
+attack:
+  - tactic: TA0004
+    technique: T1055
+    name: "Process Injection"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1055/"
+    title: "ATT&CK T1055"
+
+logic:
+  and:
+    - field_gt:
+        field: memory.heap_allocation_count
+        value: 100
+    - field_gt:
+        field: memory.allocation_size_bytes
+        value: 1048576
+    - or:
+        - field_regex:
+            field: memory.allocation_base_address
+            pattern: "^0x(0c0c0c0c|0a0a0a0a|0d0d0d0d|08080808|0e0e0e0e|20202020)"
+        - field_eq:
+            field: memory.allocation_pattern_uniform
+            value: "true"
+    - field_eq:
+        field: memory.region_protection
+        value: "RWX"
+
+fp_guard:
+  notes:
+    - "Browsers with JIT compilers and game engines may allocate large memory regions. Correlate with process type and allocation address patterns."
+    - "Java and .NET runtimes manage large heap allocations; focus on RWX (read-write-execute) regions specifically."
+  suppress:
+    - field: memory.process.name
+      values:
+        - chrome.exe
+        - firefox.exe
+        - msedge.exe
+        - java.exe
+        - javaw.exe

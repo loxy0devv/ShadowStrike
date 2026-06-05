@@ -1,0 +1,42 @@
+id: ss-static-006
+detection_name: "Win32/Rootkit.KernelLoad"
+description: "Binary statically references kernel driver loading APIs and known kernel structures — possible rootkit installer."
+scope: static
+severity: critical
+status: stable
+source: native
+confidence: 0.78
+weight: 2.5
+version: 1
+attack:
+  - tactic: TA0005
+    technique: T1014
+    name: "Rootkit"
+  - tactic: TA0003
+    technique: T1543
+    sub_technique: T1543.003
+    name: "Create or Modify System Process: Windows Service"
+logic:
+  and:
+    - or:
+        - api: NtLoadDriver
+        - api: ZwLoadDriver
+        - api: CreateService
+        - api: OpenSCManager
+        - string: "NtLoadDriver"
+        - string: "ZwLoadDriver"
+    - or:
+        - string: ".sys"
+        - section: ".rsrc"
+        - characteristic: driver
+    - or:
+        - api: DeviceIoControl
+        - api: NtDeviceIoControlFile
+        - api: CreateFile
+    - unsigned
+fp_guard:
+  notes:
+    - "Legitimate driver installers have the same pattern. Require unsigned binary from non-system path."
+  suppress:
+    - field: file.signer.subject
+      regex: "(?i)(Microsoft|Intel|NVIDIA|AMD|Realtek|Broadcom)"

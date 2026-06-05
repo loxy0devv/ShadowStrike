@@ -1,0 +1,26 @@
+id: ss-net-007
+detection_name: "Win32/BruteForce.RDP"
+description: "Multiple outbound or inbound connections to RDP port 3389 in short succession — brute force indicator."
+scope: network
+severity: high
+status: stable
+source: native
+confidence: 0.75
+weight: 2.0
+version: 1
+attack:
+  - tactic: TA0006
+    technique: T1110
+    name: "Brute Force"
+logic:
+  and:
+    - field_in:
+        field: network.destination.port
+        values: ["3389", "3388"]
+    - field_not_in:
+        field: process.name
+        values: [mstsc.exe, msrdc.exe, vmware-view.exe, citrix.exe]
+        case_insensitive: true
+fp_guard:
+  notes:
+    - "IT admins legitimately use RDP. Correlate with high connection rate or unusual source."

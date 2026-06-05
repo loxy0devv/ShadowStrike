@@ -1,0 +1,72 @@
+id: ss-net-011
+detection_name: "Win32/LDAP.Outbound.NonDCProcess"
+description: "Detects outbound LDAP (port 389) or LDAPS (port 636) connections initiated by non-domain-controller processes not typically associated with directory queries. Attackers use LDAP enumeration to discover Active Directory objects, group memberships, and privileged accounts as part of reconnaissance and lateral movement planning."
+scope: network
+severity: medium
+status: stable
+source: native
+confidence: 0.78
+weight: 1.5
+version: 1
+
+attack:
+  - tactic: TA0007
+    technique: T1018
+    name: "Remote System Discovery"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1018/"
+    title: "ATT&CK T1018"
+  - url: "https://attack.mitre.org/techniques/T1087.002/"
+    title: "ATT&CK T1087.002 - Domain Account Discovery"
+
+logic:
+  and:
+    - or:
+        - field_eq:
+            field: network.destination_port
+            value: 389
+        - field_eq:
+            field: network.destination_port
+            value: 636
+        - field_eq:
+            field: network.destination_port
+            value: 3268
+        - field_eq:
+            field: network.destination_port
+            value: 3269
+    - not:
+        field_in:
+          field: network.process.name
+          values:
+            - lsass.exe
+            - svchost.exe
+            - dsac.exe
+            - dsa.msc
+            - mmc.exe
+            - outlook.exe
+            - teams.exe
+          case_insensitive: true
+    - field_in:
+        field: network.process.name
+        values:
+          - powershell.exe
+          - cmd.exe
+          - wmic.exe
+          - python.exe
+          - python3.exe
+          - ldap.exe
+          - adfind.exe
+          - bloodhound.exe
+          - sharphound.exe
+        case_insensitive: true
+
+fp_guard:
+  notes:
+    - "Management tools like RSAT, Active Directory Users and Computers, and various monitoring agents legitimately query LDAP."
+    - "PowerShell scripts used by sysadmins for AD management will trigger this. Validate user context and script content."
+  suppress:
+    - field: network.process.name
+      values:
+        - mmc.exe
+        - powershell_ise.exe

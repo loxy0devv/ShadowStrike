@@ -1,0 +1,631 @@
+﻿/*
+ * ShadowStrike - Enterprise NGAV/EDR Platform
+ * Copyright (C) 2026 ShadowStrike Security
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+/*
+ * ============================================================================
+ * ShadowStrike SignatureFormat - ENTERPRISE-GRADE BINARY FORMAT
+ * ============================================================================
+ *
+ * Copyright (c) 2026 ShadowStrike Security Suite
+ * All rights reserved.
+ *
+ *
+ * Ultra-high performance binary format definitions for signature database
+ * Designed for memory-mapped I/O with zero-copy reads
+ * Target: < 1?s hash lookups, < 10ms pattern scans on 10MB files
+ *
+ * File Format Architecture:
+ * ???????????????????????????????????????????????????????????????
+ * ? FileHeader (4KB aligned)                                    ?
+ * ???????????????????????????????????????????????????????????????
+ * ? Hash Index Section (B+Tree, page-aligned)                  ?
+ * ???????????????????????????????????????????????????????????????
+ * ? Pattern Index Section (Optimized trie, cache-line aligned) ?
+ * ???????????????????????????????????????????????????????????????
+ * ? YARA Rules Section (Compiled bytecode)                     ?
+ * ???????????????????????????????????????????????????????????????
+ * ? Metadata Section (Compressed JSON)                         ?
+ * ???????????????????????????????????????????????????????????????
+ *
+ * Performance Standards: enterprise-grade/Sophos enterprise quality
+ *
+ * ============================================================================
+ */
+
+#pragma once
+
+#include <cstdint>
+#include <array>
+#include <string>
+#include <vector>
+#include <optional>
+#include <span>
+#include <cstring>
+#include <algorithm>
+
+#ifdef _WIN32
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  include <Windows.h>
+#endif
+
+namespace ShadowStrike {
+namespace SignatureStore {
+
+// ============================================================================
+// CORE CONSTANTS & CONFIGURATION
+// ============================================================================
+
+// Magic numbers for format validation
+constexpr uint32_t SIGNATURE_DB_MAGIC = 0x53535344;      // 'SSSD' = ShadowStrike Signature Database
+constexpr uint16_t SIGNATURE_DB_VERSION_MAJOR = 1;
+constexpr uint16_t SIGNATURE_DB_VERSION_MINOR = 1;       // v1.1: 64-bit offsets in B+Tree nodes
+
+// Performance-critical alignment constants
+constexpr size_t PAGE_SIZE = 4096;                        // Standard Windows page size
+constexpr size_t CACHE_LINE_SIZE = 64;                    // CPU cache line (Intel/AMD)
+constexpr size_t SECTOR_SIZE = 512;                       // Disk sector alignment
+
+// Index configuration for optimal performance
+constexpr size_t BTREE_ORDER = 128;                       // B+Tree node order (cache-optimized)
+constexpr size_t PATTERN_TRIE_FANOUT = 256;              // Full byte range for pattern matching
+constexpr size_t HASH_BUCKET_SIZE = 1024;                // Hash table bucket size
+
+// Size limits
+constexpr size_t MAX_SIGNATURE_NAME_LEN = 256;
+constexpr size_t MAX_PATTERN_LENGTH = 8192;              // Max single pattern size
+constexpr size_t MAX_YARA_RULE_SIZE = 1024 * 1024;       // 1MB per YARA rule
+constexpr uint64_t MAX_DATABASE_SIZE = 16ULL * 1024 * 1024 * 1024; // 16GB database limit
+
+// ============================================================================
+// HASH TYPES & STRUCTURES
+// ============================================================================
+
+// Hash type enumeration
+enum class HashType : uint8_t {
+    MD5 = 0,
+    SHA1 = 1,
+    SHA256 = 2,
+    SHA512 = 3,
+    IMPHASH = 4,        // PE Import Hash
+    FUZZY = 5,          // Context-triggered piecewise hash
+    TLSH = 6,           // Trend Micro Locality Sensitive Hash
+    All = 0xFF          // Sentinel: match any hash type (used as export/query filter)
+};
+
+// Fixed-size hash storage (zero-copy compatible)
+// NOTE: alignas(8) required for safe reinterpret_cast from memory-mapped files
+#pragma pack(push, 1)
+struct alignas(8) HashValue {
+    HashType type;
+    uint8_t length;                                       // Actual hash length in bytes
+    uint8_t reserved[2];                                  // Alignment padding
+    std::array<uint8_t, 64> data;                        // Max hash size (SHA-512)
+    uint8_t padding[4];                                  // Pad to 72 bytes (8-byte aligned)
+
+    // Zero-cost hash comparison (inlined, cache-friendly)
+    // SECURITY: Clamp length to data buffer size to prevent OOB read
+    // from corrupted memory-mapped structures where length may be untrusted
+    [[nodiscard]] bool operator==(const HashValue& other) const noexcept {
+        if (type != other.type || length != other.length) return false;
+        const size_t safeLen = std::min(static_cast<size_t>(length), data.size());
+        return std::memcmp(data.data(), other.data.data(), safeLen) == 0;
+    }
+
+    [[nodiscard]] uint64_t FastHash() const noexcept {
+        // FNV-1a hash for hash table indexing (ironically)
+        // SECURITY: Clamp to data.size() - length is untrusted from mmap
+        uint64_t h = 14695981039346656037ULL;
+        const size_t safeLen = std::min(static_cast<size_t>(length), data.size());
+        for (size_t i = 0; i < safeLen; ++i) {
+            h ^= data[i];
+            h *= 1099511628211ULL;
+        }
+        return h;
+    }
+};
+#pragma pack(pop)
+
+static_assert(sizeof(HashValue) == 72, "HashValue must be 72 bytes for 8-byte alignment");
+static_assert(alignof(HashValue) == 8, "HashValue must be 8-byte aligned");
+
+// Compile-time hash length lookup (constexpr for optimal codegen)
+[[nodiscard]] constexpr uint8_t GetHashLengthForType(HashType type) noexcept {
+    switch (type) {
+        case HashType::MD5:     return 16;
+        case HashType::SHA1:    return 20;
+        case HashType::SHA256:  return 32;
+        case HashType::SHA512:  return 64;
+        case HashType::IMPHASH: return 16;
+        case HashType::FUZZY:   return 64;
+        case HashType::TLSH:    return 35;
+        default:                return 0;
+    }
+}
+
+// ============================================================================
+// PATTERN STRUCTURES
+// ============================================================================
+
+// Pattern matching mode
+enum class PatternMode : uint8_t {
+    Exact = 0,          // Exact byte sequence match
+    Wildcard = 1,       // With '?' wildcards
+    Regex = 2,          // Regex pattern (slowest)
+    ByteMask = 3        // Byte + mask pairs
+};
+
+// Pattern entry (memory-mapped structure)
+// NOTE: alignas(8) required for safe reinterpret_cast from memory-mapped files
+#pragma pack(push, 1)
+struct alignas(8) PatternEntry {
+    PatternMode mode;
+    uint8_t reserved[3];                                  // Alignment
+    uint32_t patternLength;                               // Pattern data length
+    uint32_t nameOffset;                                  // Offset to name string
+    uint32_t dataOffset;                                  // Offset to pattern data
+    uint32_t threatLevel;                                 // 0-100 severity score
+    uint64_t signatureId;                                 // Unique signature ID
+    uint64_t flags;                                       // Additional metadata flags
+
+    // Performance hint: pattern entropy (higher = better for quick rejection)
+    float entropy;
+
+    // Statistics for optimization
+    uint32_t hitCount;                                    // Detection count (heatmap)
+    uint32_t lastUpdateTime;                              // Unix timestamp
+};
+#pragma pack(pop)
+
+static_assert(sizeof(PatternEntry) == 48, "PatternEntry must be 48 bytes");
+static_assert(alignof(PatternEntry) == 8, "PatternEntry must be 8-byte aligned");
+
+// ============================================================================
+// YARA RULE STRUCTURES
+// ============================================================================
+
+// YARA rule metadata
+// NOTE: alignas(8) required for safe reinterpret_cast from memory-mapped files
+#pragma pack(push, 1)
+struct alignas(8) YaraRuleEntry {
+    uint64_t ruleId;                                      // Unique rule identifier
+    uint32_t nameOffset;                                  // Offset to rule name
+    uint32_t sourceOffset;                                // Offset to YARA source code
+    uint32_t compiledOffset;                              // Offset to compiled bytecode
+    uint32_t compiledSize;                                // Compiled bytecode size
+    uint32_t threatLevel;                                 // Severity: 0-100
+    uint32_t flags;                                       // Compilation flags
+    uint64_t lastModified;                                // Unix timestamp
+    uint32_t dependencies;                                // Bitmask of rule dependencies
+    uint32_t reserved;                                    // Future use
+};
+#pragma pack(pop)
+
+static_assert(sizeof(YaraRuleEntry) == 48, "YaraRuleEntry must be 48 bytes");
+static_assert(alignof(YaraRuleEntry) == 8, "YaraRuleEntry must be 8-byte aligned");
+
+// ============================================================================
+// B+TREE INDEX STRUCTURES (for hash lookups)
+// ============================================================================
+
+// NOTE: alignas(8) required for safe reinterpret_cast from memory-mapped files
+#pragma pack(push, 1)
+struct alignas(8) BPlusTreeNode {
+    static constexpr size_t ORDER = BTREE_ORDER;
+    static constexpr size_t MAX_KEYS = ORDER - 1;
+    static constexpr size_t MAX_CHILDREN = ORDER;
+
+    bool isLeaf;
+    uint8_t reserved[7];                                  // Alignment to 8 bytes
+    uint32_t keyCount;                                    // Number of keys in this node
+    uint32_t reserved2;                                   // Padding for alignment
+    uint64_t parentOffset;                                // Offset to parent node (0 = root)
+    
+    // Keys: hash fast-hash values for quick comparison
+    std::array<uint64_t, MAX_KEYS> keys;
+    
+    // Values/Children: 
+    // - Internal nodes: offsets to child nodes
+    // - Leaf nodes: offsets to signature data
+    // 
+    // SECURITY NOTE (v1.1): Changed from uint32_t to uint64_t to prevent
+    // integer truncation when database exceeds 4GB. On 64-bit systems with
+    // ASLR enabled, memory addresses can exceed 4GB boundary, causing pointer
+    // corruption if truncated to 32 bits. This is a BREAKING FORMAT CHANGE.
+    std::array<uint64_t, MAX_CHILDREN> children;
+    
+    // Leaf node linked list for sequential scans
+    // SECURITY NOTE (v1.1): Changed from uint32_t to uint64_t for consistency
+    // with children array and to support databases larger than 4GB.
+    uint64_t nextLeaf;                                    // Next leaf in sequence
+    uint64_t prevLeaf;                                    // Previous leaf in sequence
+};
+#pragma pack(pop)
+
+// Ensure node fits in cache-friendly size (multiple cache lines)
+// NOTE (v1.1): Node size increased due to 64-bit offsets, but still within page size
+static_assert(sizeof(BPlusTreeNode) <= PAGE_SIZE, "BPlusTreeNode too large");
+static_assert(alignof(BPlusTreeNode) == 8, "BPlusTreeNode must be 8-byte aligned");
+
+// ============================================================================
+// FILE HEADER (First 4KB of database)
+// ============================================================================
+// NOTE: alignas(8) required for safe reinterpret_cast from memory-mapped files
+#pragma pack(push, 1)
+struct alignas(8) SignatureDatabaseHeader {
+    // Magic & version
+    uint32_t magic;                                       // SIGNATURE_DB_MAGIC
+    uint16_t versionMajor;
+    uint16_t versionMinor;
+    
+    // Database identification
+    std::array<uint8_t, 16> databaseUuid;                // UUID for database tracking
+    uint64_t creationTime;                                // Unix timestamp
+    uint64_t lastUpdateTime;                              // Unix timestamp
+    uint64_t buildNumber;                                 // Incremental build ID
+    
+    // Section offsets (all 4KB aligned)
+    uint64_t hashIndexOffset;                             // B+Tree root for hash index
+    uint64_t hashIndexSize;
+    uint64_t patternIndexOffset;                          // Pattern trie root
+    uint64_t patternIndexSize;
+    uint64_t yaraRulesOffset;                             // YARA rules section
+    uint64_t yaraRulesSize;
+    uint64_t metadataOffset;                              // JSON metadata
+    uint64_t metadataSize;
+    uint64_t stringPoolOffset;                            // String pool (names, etc.)
+    uint64_t stringPoolSize;
+    
+    // Statistics
+    uint64_t totalHashes;                                 // Total hash signatures
+    uint64_t totalPatterns;                               // Total byte patterns
+    uint64_t totalYaraRules;                              // Total YARA rules
+    uint64_t totalDetections;                             // Lifetime detection count
+    
+    // Performance hints
+    uint32_t recommendedCacheSize;                        // Suggested cache size in MB
+    uint32_t compressionFlags;                            // Compression algorithms used
+    
+    // Integrity
+    std::array<uint8_t, 32> sha256Checksum;              // SHA-256 of entire database
+    
+    // Reserved for future extensions
+    std::array<uint8_t, 3896> reserved;                   // Pad to exactly 4KB (4096 bytes)
+};
+
+#pragma pack(pop)
+
+static_assert(sizeof(SignatureDatabaseHeader) == 4096,
+    "Header must be exactly 4KB (4096 bytes)");
+static_assert(alignof(SignatureDatabaseHeader) == 8, "SignatureDatabaseHeader must be 8-byte aligned");
+
+// ============================================================================
+// AHO-CORASICK TRIE BINARY SERIALIZATION FORMAT
+// ============================================================================
+
+
+// NOTE: alignas(8) required for safe reinterpret_cast from memory-mapped files
+#pragma pack(push, 1)
+
+// Binary representation of a single Trie node on disk
+struct alignas(8) TrieNodeBinary {
+    // Header (16 bytes)
+    uint32_t magic;                      // 0x54524945 = 'TRIE' for validation
+    uint16_t version;                    // Version 1
+    uint16_t reserved;                   // Alignment padding
+
+    // Node structure (1024 + 4 + 4 + 4 + 4 + 4 = 1044 bytes)
+    std::array<uint32_t, 256> childOffsets;  // Child node disk offsets (or 0 if null)
+    uint32_t failureLinkOffset;          // Failure link disk offset (0 = root/self)
+    uint32_t outputCount;                // Number of pattern IDs in outputs
+    uint32_t outputOffset;               // Disk offset to output pattern IDs (if > 0)
+    uint32_t depth;                      // Node depth in trie (0 = root)
+    uint32_t reserved2;                  // Future use
+    
+    // Pad to 1056 bytes (8-byte aligned: 1056 = 132 * 8)
+    uint8_t padding[4];
+};
+
+#pragma pack(pop)
+
+static_assert(sizeof(TrieNodeBinary) == 1056, "TrieNodeBinary must be 1056 bytes for 8-byte alignment");
+static_assert(alignof(TrieNodeBinary) == 8, "TrieNodeBinary must be 8-byte aligned");
+
+// ============================================================================
+// TRIE INDEX STRUCTURE (Header of entire trie section)
+// ============================================================================
+
+#pragma pack(push, 1)
+
+struct alignas(8) TrieIndexHeader {
+    uint32_t magic;                      // 0x54524945 = 'TRIE'
+    uint32_t version;                    // 1
+    uint64_t totalNodes;                 // Total number of nodes in trie
+    uint64_t totalPatterns;              // Total unique patterns indexed
+    uint64_t rootNodeOffset;             // Offset to root TrieNodeBinary
+    uint64_t outputPoolOffset;           // Offset to start of pattern ID pool
+    uint64_t outputPoolSize;             // Total bytes in output pool
+    uint32_t maxNodeDepth;               // Maximum depth reached in trie
+    uint32_t flags;                      // Bit flags: 0x01 = Aho-Corasick optimized
+    uint64_t checksumCRC64;              // CRC64 of entire trie section (for integrity)
+    uint64_t reserved[4];                // Future use (32 bytes total)
+};
+
+#pragma pack(pop)
+
+static_assert(sizeof(TrieIndexHeader) == 96, "TrieIndexHeader must be exactly 96 bytes");
+
+
+// ============================================================================
+// DETECTION RESULT STRUCTURES
+// ============================================================================
+
+// Detection severity levels
+enum class ThreatLevel : uint8_t {
+    Info = 0,           // Informational
+    Low = 25,           // Low threat
+    Medium = 50,        // Medium threat
+    High = 75,          // High threat
+    Critical = 100      // Critical threat
+};
+
+// Detection result (move-optimized for performance)
+struct DetectionResult {
+    uint64_t signatureId{0};                              // Matched signature ID
+    std::string signatureName;                            // Human-readable name
+    ThreatLevel threatLevel{ThreatLevel::Info};           // Severity
+    uint64_t fileOffset{0};                               // Where in file (for patterns)
+    std::string description;                              // Threat description
+    std::vector<std::string> tags;                        // Metadata tags
+    uint64_t matchTimestamp{0};                           // Detection time (us precision)
+    uint64_t matchTimeNanoseconds{0};                     // Time to match (profiling)
+    float similarity{0.0f};                               // Fuzzy match similarity [0.0, 1.0]
+
+    // Default constructor
+    DetectionResult() = default;
+
+    // Move constructor (noexcept for optimal container performance)
+    DetectionResult(DetectionResult&&) noexcept = default;
+    DetectionResult& operator=(DetectionResult&&) noexcept = default;
+
+    // Copy constructor
+    DetectionResult(const DetectionResult&) = default;
+    DetectionResult& operator=(const DetectionResult&) = default;
+
+    // Comparison for sorting by threat level
+    [[nodiscard]] bool operator<(const DetectionResult& other) const noexcept {
+        return static_cast<uint8_t>(threatLevel) > static_cast<uint8_t>(other.threatLevel);
+    }
+};
+
+// ============================================================================
+// MEMORY-MAPPED FILE HANDLE
+// ============================================================================
+
+struct MemoryMappedView {
+    HANDLE fileHandle{INVALID_HANDLE_VALUE};
+    HANDLE mappingHandle{INVALID_HANDLE_VALUE};
+    void* baseAddress{nullptr};
+    uint64_t fileSize{0};
+    bool readOnly{true};
+    
+    [[nodiscard]] bool IsValid() const noexcept {
+        return baseAddress != nullptr && fileHandle != INVALID_HANDLE_VALUE;
+    }
+    
+    template<typename T>
+    [[nodiscard]] const T* GetAt(uint64_t offset) const noexcept {
+        // SECURITY: Two-step check prevents uint64_t overflow in (offset + sizeof(T)).
+        // A crafted offset near UINT64_MAX would wrap around and bypass a single add check.
+        if (offset > fileSize || sizeof(T) > fileSize - offset) return nullptr;
+        return reinterpret_cast<const T*>(
+            static_cast<const uint8_t*>(baseAddress) + offset
+        );
+    }
+    
+    template<typename T>
+    [[nodiscard]] T* GetAtMutable(uint64_t offset) noexcept {
+        if (!baseAddress) return nullptr;
+        if (readOnly) return nullptr;
+        // SECURITY: Two-step check prevents uint64_t overflow in (offset + sizeof(T))
+        if (offset > fileSize || sizeof(T) > fileSize - offset) return nullptr;
+
+        return reinterpret_cast<T*>(
+            static_cast<uint8_t*>(baseAddress) + offset
+            );
+    }
+    
+    [[nodiscard]] std::span<const uint8_t> GetSpan(uint64_t offset, size_t length) const noexcept {
+        // SECURITY: Two-step check prevents uint64_t overflow in (offset + length)
+        if (offset > fileSize || length > fileSize - offset) return {};
+        return std::span<const uint8_t>(
+            static_cast<const uint8_t*>(baseAddress) + offset, length
+        );
+    }
+};
+
+// ============================================================================
+// ERROR HANDLING
+// ============================================================================
+
+enum class SignatureStoreError : uint32_t {
+    Success = 0,
+    FileNotFound,
+    InvalidFormat,
+    CorruptedDatabase,
+    VersionMismatch,
+    AccessDenied,
+    OutOfMemory,
+    InvalidSignature,
+    DuplicateEntry,
+    IndexCorrupted,
+    MappingFailed,
+    ChecksumMismatch,
+    TooLarge,
+    CompilationFailed,      // Yara rule compilation failed
+    Unknown = 0xFFFFFFFF
+};
+
+struct StoreError {
+    SignatureStoreError code{SignatureStoreError::Success};
+    DWORD win32Error{0};
+    std::string message;
+    
+    [[nodiscard]] bool IsSuccess() const noexcept {
+        return code == SignatureStoreError::Success;
+    }
+    
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return IsSuccess();
+    }
+
+    // Factory methods for common errors (exception-safe)
+    [[nodiscard]] static StoreError Success() noexcept {
+        return StoreError{ SignatureStoreError::Success, 0, {} };
+    }
+
+    [[nodiscard]] static StoreError FromWin32(SignatureStoreError code, DWORD win32Err) noexcept {
+        StoreError err;
+        err.code = code;
+        err.win32Error = win32Err;
+        // Message intentionally empty - caller should set if needed
+        return err;
+    }
+
+    // Clear error state
+    void Clear() noexcept {
+        code = SignatureStoreError::Success;
+        win32Error = 0;
+        message.clear();
+    }
+};
+
+// ============================================================================
+// QUERY & SEARCH OPTIONS
+// ============================================================================
+
+struct QueryOptions {
+    bool exactMatch{true};                                // Exact or fuzzy matching
+    uint32_t maxResults{1000};                            // Maximum results to return
+    uint32_t timeoutMilliseconds{5000};                   // Query timeout
+    bool enableCache{true};                               // Use query result cache
+    ThreatLevel minThreatLevel{ThreatLevel::Info};       // Filter by severity
+};
+
+// ============================================================================
+// STATISTICS & MONITORING
+// ============================================================================
+
+struct StoreStatistics {
+    uint64_t totalQueries{0};
+    uint64_t cacheHits{0};
+    uint64_t cacheMisses{0};
+    uint64_t totalDetections{0};
+    uint64_t averageQueryTimeMicroseconds{0};
+    uint64_t peakMemoryUsageBytes{0};
+    uint64_t databaseSizeBytes{0};
+    
+    [[nodiscard]] double CacheHitRate() const noexcept {
+        uint64_t total = cacheHits + cacheMisses;
+        return total > 0 ? (static_cast<double>(cacheHits) / total) : 0.0;
+    }
+};
+
+// ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
+
+namespace Format {
+
+// Validate database header integrity (fileSize > 0 enables section-within-file bounds checks)
+[[nodiscard]] bool ValidateHeader(const SignatureDatabaseHeader* header, uint64_t fileSize = 0) noexcept;
+
+// Calculate optimal cache size based on database size
+[[nodiscard]] uint32_t CalculateOptimalCacheSize(uint64_t dbSizeBytes) noexcept;
+
+// Align offset to page boundary
+[[nodiscard]] constexpr uint64_t AlignToPage(uint64_t offset) noexcept {
+    return (offset + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+}
+
+// Align offset to cache line
+[[nodiscard]] constexpr size_t AlignToCacheLine(size_t offset) noexcept {
+    return (offset + CACHE_LINE_SIZE - 1) & ~(CACHE_LINE_SIZE - 1);
+}
+
+// Convert hash type to string
+ const char* HashTypeToString(HashType type) noexcept;
+
+// Parse hash string to HashValue
+[[nodiscard]] std::optional<HashValue> ParseHashString(
+    const std::string& hashStr, HashType type) noexcept;
+
+// Format hash value as hex string
+[[nodiscard]] std::string FormatHashString(const HashValue& hash);
+
+/**
+ * @brief Validates and canonicalizes a file path for safe file operations.
+ * 
+ * @param inputPath The user-provided path to validate.
+ * @param canonicalPath Output: The canonicalized (resolved) absolute path.
+ * @param errorMessage Output: Error description if validation fails.
+ * @return true if path is safe to use, false if validation failed.
+ * 
+ * @details Security measures (CWE-22 Path Traversal prevention):
+ * 1. Rejects empty paths
+ * 2. Rejects excessively long paths (DoS prevention)
+ * 3. Rejects paths with embedded NUL characters (truncation attack)
+ * 4. Rejects paths with traversal patterns (..)
+ * 5. Rejects Windows reserved device names (CON, PRN, AUX, NUL, etc.)
+ * 6. Canonicalizes the path to resolve any remaining . or .. components
+ * 7. Ensures path is absolute (starts with drive letter or UNC)
+ * 
+ * @security This function is critical for preventing path traversal attacks
+ * where an attacker provides paths like "..\..\Windows\System32\config" to
+ * access sensitive system files.
+ */
+[[nodiscard]] bool ValidateAndCanonicalizePath(
+    const std::wstring& inputPath,
+    std::wstring& canonicalPath,
+    std::string& errorMessage
+) noexcept;
+
+} // namespace Format
+namespace MemoryMapping {
+
+    // Open memory-mapped view
+    [[nodiscard]] bool OpenView(
+        const std::wstring& path,
+        bool readOnly,
+        MemoryMappedView& view,
+        StoreError& error
+    ) noexcept;
+
+    // Close memory-mapped view
+    void CloseView(MemoryMappedView& view) noexcept;
+
+    // Flush view to disk
+    [[nodiscard]] bool FlushView(
+        MemoryMappedView& view,
+        StoreError& error
+    ) noexcept;
+
+} // namespace MemoryMapping
+
+} // namespace SignatureStore
+} // namespace ShadowStrike

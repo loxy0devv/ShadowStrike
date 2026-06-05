@@ -1,0 +1,54 @@
+id: ss-mem-010
+detection_name: "Win32/KernelDriver.UserModeImageMap"
+description: "Detects a kernel-mode driver mapping a user-mode PE image (EXE or DLL) into kernel address space, or kernel memory with execution permissions being allocated for user-supplied content. This technique is used by rootkits and BYOVD (Bring Your Own Vulnerable Driver) attacks to execute attacker code with kernel privileges."
+scope: memory
+severity: critical
+status: stable
+source: native
+confidence: 0.91
+weight: 4.0
+version: 1
+
+attack:
+  - tactic: TA0003
+    technique: T1547.006
+    name: "Boot or Logon Autostart Execution: Kernel Modules and Extensions"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1547/006/"
+    title: "ATT&CK T1547.006"
+
+logic:
+  and:
+    - field_eq:
+        field: memory.operation_context
+        value: "kernel_mode"
+    - or:
+        - and:
+            - field_eq:
+                field: memory.operation
+                value: "map_view_of_section"
+            - field_eq:
+                field: memory.source_image_type
+                value: "PE_user_mode"
+            - field_eq:
+                field: memory.target_address_range
+                value: "kernel_space"
+        - and:
+            - field_eq:
+                field: memory.kernel_allocation_protection
+                value: "PAGE_EXECUTE_READWRITE"
+            - field_eq:
+                field: memory.allocating_driver_signed
+                value: "false"
+
+fp_guard:
+  notes:
+    - "Hypervisors (Hyper-V, VMware, VirtualBox) map user-mode images as part of virtualization. Only alert on unsigned or non-Microsoft drivers."
+    - "Security kernel modules may legitimately map content for analysis; validate driver signing chain."
+  suppress:
+    - field: memory.allocating_driver
+      values:
+        - "hvix64.sys"
+        - "vmm.sys"
+        - "VBoxDrv.sys"

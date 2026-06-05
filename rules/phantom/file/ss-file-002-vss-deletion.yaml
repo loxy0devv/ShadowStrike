@@ -1,0 +1,54 @@
+id: ss-file-002
+detection_name: "Ransomware.ShadowCopy.Deletion"
+description: "Shadow copy or backup catalog deletion command — pre-encryption ransomware preparation step."
+scope: process
+severity: critical
+status: stable
+source: native
+confidence: 0.95
+weight: 4.0
+version: 1
+attack:
+  - tactic: TA0040
+    technique: T1490
+    name: "Inhibit System Recovery"
+logic:
+  or:
+    - and:
+        - field_in:
+            field: process.name
+            values: [vssadmin.exe, wmic.exe]
+            case_insensitive: true
+        - or:
+            - field_contains:
+                field: process.command_line
+                value: "delete shadows"
+            - field_contains:
+                field: process.command_line
+                value: "shadowcopy delete"
+            - field_contains:
+                field: process.command_line
+                value: "resize shadowstorage"
+    - and:
+        - field_in:
+            field: process.name
+            values: [wbadmin.exe]
+            case_insensitive: true
+        - field_contains:
+            field: process.command_line
+            value: "delete catalog"
+    - and:
+        - field_in:
+            field: process.name
+            values: [bcdedit.exe]
+            case_insensitive: true
+        - or:
+            - field_contains:
+                field: process.command_line
+                value: "recoveryenabled no"
+            - field_contains:
+                field: process.command_line
+                value: "bootstatuspolicy ignoreallfailures"
+fp_guard:
+  notes:
+    - "System administrators legitimately manage shadow copies. Correlate with file rename activity."

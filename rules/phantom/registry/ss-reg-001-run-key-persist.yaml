@@ -1,0 +1,49 @@
+id: ss-reg-001
+detection_name: "Win32/Persist.RunKey"
+description: "New Run/RunOnce registry entry written by a non-system process — persistence via auto-start extensibility point."
+scope: registry
+severity: medium
+status: stable
+source: native
+confidence: 0.65
+weight: 1.5
+version: 1
+
+attack:
+  - tactic: TA0003
+    technique: T1547
+    sub_technique: T1547.001
+    name: "Boot or Logon Autostart Execution: Registry Run Keys"
+
+logic:
+  and:
+    - or:
+        - field_contains:
+            field: registry.key
+            value: "\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run"
+        - field_contains:
+            field: registry.key
+            value: "\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\RunOnce"
+        - field_contains:
+            field: registry.key
+            value: "\\SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Run"
+        - field_contains:
+            field: registry.key
+            value: "\\System\\CurrentControlSet\\Services"
+    - field_not_in:
+        field: process.name
+        values:
+          - msiexec.exe
+          - services.exe
+          - svchost.exe
+          - TrustedInstaller.exe
+          - WmiPrvSE.exe
+          - setup.exe
+          - unins000.exe
+          - uninstall.exe
+        case_insensitive: true
+
+fp_guard:
+  notes:
+    - "Legitimate installers frequently write Run keys. Require unsigned parent or suspicious command line value."
+    - "Enterprise management tools (SCCM, Intune) write Run keys via msiexec.exe which is suppressed above."

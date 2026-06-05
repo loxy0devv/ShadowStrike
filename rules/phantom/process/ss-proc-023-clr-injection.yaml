@@ -1,0 +1,41 @@
+id: ss-proc-023
+detection_name: "Win32/Injection.CLR"
+description: "Unmanaged host process loaded the .NET CLR and executed managed code — typical of .NET injection techniques."
+scope: image
+severity: high
+status: stable
+source: native
+confidence: 0.75
+weight: 2.0
+version: 1
+attack:
+  - tactic: TA0005
+    technique: T1055
+    sub_technique: T1055.013
+logic:
+  and:
+    - field_in:
+        field: image.path
+        values: [clr.dll, clrjit.dll, mscoree.dll, mscorwks.dll]
+        case_insensitive: true
+    - field_not_in:
+        field: process.name
+        values:
+          - dotnet.exe
+          - msbuild.exe
+          - powershell.exe
+          - pwsh.exe
+          - csc.exe
+          - vbc.exe
+          - jsc.exe
+          - mmc.exe
+          - devenv.exe
+          - code.exe
+        case_insensitive: true
+fp_guard:
+  notes:
+    - "Many legitimate applications host the CLR (SQL Server, Office, etc.)."
+    - "Suppress for signed binaries from known vendors."
+  suppress:
+    - field: file.signer.subject
+      regex: "(?i)(Microsoft|Adobe|Oracle|SAP|Autodesk)"

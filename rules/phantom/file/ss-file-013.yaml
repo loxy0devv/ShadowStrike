@@ -1,0 +1,53 @@
+id: ss-file-013
+detection_name: "Win32/HostsFile.Modification"
+description: "Detects write or modification operations to the Windows hosts file (C:\\Windows\\System32\\drivers\\etc\\hosts). Attackers modify the hosts file to redirect DNS lookups for security tools, block security vendor domains (AV updates, telemetry), or redirect users to attacker-controlled infrastructure for credential harvesting."
+scope: file
+severity: high
+status: stable
+source: native
+confidence: 0.85
+weight: 2.5
+version: 1
+
+attack:
+  - tactic: TA0040
+    technique: T1565.001
+    name: "Data Manipulation: Stored Data Manipulation"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1565/001/"
+    title: "ATT&CK T1565.001"
+
+logic:
+  and:
+    - field_regex:
+        field: file.path
+        pattern: "(?i)C:\\\\Windows\\\\System32\\\\drivers\\\\etc\\\\hosts$"
+    - field_in:
+        field: file.operation
+        values:
+          - write
+          - modify
+          - append
+          - create
+    - not:
+        field_in:
+          field: file.process.name
+          values:
+            - trustedinstaller.exe
+            - svchost.exe
+            - msiexec.exe
+          case_insensitive: true
+
+fp_guard:
+  notes:
+    - "System administrators and network configuration scripts may legitimately modify the hosts file."
+    - "VPN software may add entries to the hosts file during connection setup."
+    - "Development tooling (e.g., Docker Desktop, WSL) modifies the hosts file for local name resolution."
+  suppress:
+    - field: file.process.name
+      values:
+        - vpnclient.exe
+        - docker.exe
+        - docker-desktop.exe
+        - com.docker.service.exe

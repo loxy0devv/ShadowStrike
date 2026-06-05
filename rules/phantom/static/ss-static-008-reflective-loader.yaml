@@ -1,0 +1,34 @@
+id: ss-static-008
+detection_name: "Win32/Injection.ReflectiveDLL"
+description: "Binary contains reflective DLL loading shellcode signatures and memory allocation pattern."
+scope: static
+severity: critical
+status: stable
+source: native
+confidence: 0.85
+weight: 3.0
+version: 1
+attack:
+  - tactic: TA0005
+    technique: T1620
+    name: "Reflective Code Loading"
+logic:
+  and:
+    - or:
+        - string: "ReflectiveDllInjection"
+        - string: "ReflectiveLoader"
+        - string: "LoadRemoteLibraryR"
+        - string: "InjectDll"
+        - bytes: "4d 5a 41 52"
+    - or:
+        - api: VirtualAlloc
+        - api: VirtualAllocEx
+        - api: NtAllocateVirtualMemory
+    - or:
+        - api: CreateRemoteThread
+        - api: NtCreateThreadEx
+        - api: QueueUserAPC
+fp_guard:
+  notes:
+    - "Security testing frameworks (Metasploit, Cobalt Strike, etc.) use reflective loading."
+    - "Pentesters should have these on allowlist. Production systems should never have them."

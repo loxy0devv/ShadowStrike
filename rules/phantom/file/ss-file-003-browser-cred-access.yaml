@@ -1,0 +1,53 @@
+id: ss-file-003
+detection_name: "Trojan.Stealer.BrowserCreds"
+description: "Process accessed browser credential or cookie database files — credential stealer activity."
+scope: file
+severity: high
+status: stable
+source: native
+confidence: 0.80
+weight: 2.5
+version: 1
+attack:
+  - tactic: TA0006
+    technique: T1555
+    sub_technique: T1555.003
+    name: "Credentials from Web Browsers"
+logic:
+  and:
+    - or:
+        - field_contains:
+            field: file.path
+            value: "Login Data"
+        - field_contains:
+            field: file.path
+            value: "Cookies"
+        - field_contains:
+            field: file.path
+            value: "Web Data"
+        - field_contains:
+            field: file.path
+            value: "key4.db"
+        - field_contains:
+            field: file.path
+            value: "logins.json"
+        - field_regex:
+            field: file.path
+            value: "(?i)(Chrome|Edge|Firefox|Brave|Opera)[\\\\\/]User Data"
+    - field_not_in:
+        field: process.name
+        values:
+          - chrome.exe
+          - msedge.exe
+          - firefox.exe
+          - brave.exe
+          - opera.exe
+          - iexplore.exe
+          - SearchIndexer.exe
+          - MsMpEng.exe
+          - Antimalware Service Executable
+        case_insensitive: true
+fp_guard:
+  notes:
+    - "Password managers and backup software may read these files."
+    - "Require process to be unsigned or from temp/user directory."

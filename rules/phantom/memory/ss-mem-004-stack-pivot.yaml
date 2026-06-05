@@ -1,0 +1,30 @@
+id: ss-mem-004
+detection_name: "Win32/Exploit.StackPivot"
+description: "Thread stack pointer (RSP/ESP) outside expected stack memory region — ROP chain or stack pivot exploit."
+scope: memory
+severity: critical
+status: stable
+source: native
+confidence: 0.92
+weight: 3.5
+version: 1
+attack:
+  - tactic: TA0005
+    technique: T1055
+    name: "Process Injection"
+  - tactic: TA0004
+    technique: T1068
+    name: "Exploitation for Privilege Escalation"
+logic:
+  and:
+    - field_equals:
+        field: deep.finding
+        value: "6"
+    - field_not_in:
+        field: process.name
+        values: [chrome.exe, msedge.exe, sandbox.exe]
+        case_insensitive: true
+fp_guard:
+  notes:
+    - "Browser sandboxes may legitimately use alternative stacks."
+    - "Fiber-based applications have non-standard RSP values — correlate carefully."

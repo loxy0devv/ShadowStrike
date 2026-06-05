@@ -1,0 +1,500 @@
+name: Build & Package
+
+on:
+  push:
+    branches: [main, master, dev]
+    tags:     ['v*.*.*']
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+# Cancel in-progress runs on the same ref (keeps queue clean on fast-push branches)
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PLATFORM_TOOLSET: v143
+  PLATFORM: x64
+  # Force 64-bit compiler host — avoids the ~2 GB heap cap of HostX86 (32-bit CL).
+  PREFER_TOOL_ARCH: x64
+  # CI-only: disable Whole-Program Optimization (LTCG, /GL + /LTCG).
+  # LTCG keeps every TU's IR in memory for cross-unit inlining; on the 7 GB
+  # runner this overflows when compiling JITCompiler.cpp under /O2.
+  # The binary is still fully correct — only peak throughput is marginally lower.
+  # Local release builds and tagged releases should still use LTCG.
+  WPO_OVERRIDE: /p:WholeProgramOptimization=false
+  # Limit parallel CL invocations to 2 to halve peak RSS.
+  # /m already builds projects in parallel; /MP within a project multiplies that.
+  MP_OVERRIDE: /p:MultiProcessorCompilation=true /p:CL_MPCount=2
+  # Force Node.js 24 for all actions (mandatory from June 2026)
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  # ============================================================================
+  # Job 1: User-mode binaries
+  # Build order: PhantomCoreLib (static lib) → Service → Tray → UI
+  # The service vcxproj has a ProjectReference to PhantomCoreLib so MSBuild
+  # would handle ordering, but we drive them explicitly for clear log separation.
+  # ============================================================================
+  build-usermode:
+    name: User-mode binaries (x64 Release)
+    runs-on: windows-2022
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      # Restoring intermediate build files shaves ~40% off repeat builds.
+      # Key covers all vcxproj + props + source files so a stale cache is
+      # never used after code changes.
+      - name: Cache MSBuild intermediates
+        uses: actions/cache@v4
+        with:
+          path: x64
+          key: msbuild-${{ runner.os }}-${{ hashFiles('**/*.vcxproj', '**/*.props', 'src/**/*.cpp', 'src/**/*.hpp', 'PhantomEmulator/**/*.cpp') }}
+          restore-keys: msbuild-${{ runner.os }}-
+
+      # Cache the compiled rules blob separately, keyed on the rules/ directory
+      # content. When rules haven't changed the blob is restored and the bake
+      # step is skipped entirely. The PhantomCoreLib PreBuildEvent runs the same
+      # script (idempotent) but this explicit step gives clear CI log attribution
+      # and avoids the I/O on cache-hit builds.
+      - name: Cache rules blob
+        id: rules-blob-cache
+        uses: actions/cache@v4
+        with:
+          path: src/PhantomCore/Detection/Rules/RulesBlob.generated.cpp
+          key: rules-blob-${{ runner.os }}-${{ hashFiles('rules/**') }}
+
+      # Compile all rule corpora (capa 9.4.0 / Sigma / Elastic / native phantom)
+      # into an XOR-obfuscated C++ byte array embedded in the service binary.
+      # Rules are NOT shipped as plaintext on disk in production packages.
+      - name: Bake rule corpus into binary blob
+        if: steps.rules-blob-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass `
+            -File tools/bake_rules.ps1 `
+            -SolutionDir "$env:GITHUB_WORKSPACE" `
+            -OutFile "$env:GITHUB_WORKSPACE\src\PhantomCore\Detection\Rules\RulesBlob.generated.cpp"
+          $f  = "$env:GITHUB_WORKSPACE\src\PhantomCore\Detection\Rules\RulesBlob.generated.cpp"
+          $kb = [math]::Round((Get-Item $f).Length / 1KB, 1)
+          Write-Host "RulesBlob.generated.cpp: ${kb} KB"
+
+      # Build the JIT sub-library first with clang-cl.
+      # clang-cl handles JITCompiler.cpp without the heap exhaustion that MSVC
+      # hits under /O2 on this translation unit. No WPO override needed here
+      # because ClangCL never emits MSVC LTCG bitcode anyway.
+      - name: Build PhantomJIT (clang-cl static library)
+        shell: pwsh
+        run: |
+          msbuild PhantomJIT.vcxproj `
+            /t:Rebuild /p:Configuration=Release /p:Platform=$env:PLATFORM `
+            /p:PreferredToolArchitecture=$env:PREFER_TOOL_ARCH `
+            /m:1 /nologo /flp:"LogFile=build_jit.log;Verbosity=minimal"
+
+      - name: Build PhantomCoreLib (engine static library)
+        shell: pwsh
+        run: |
+          msbuild PhantomCoreLib.vcxproj `
+            /t:Rebuild /p:Configuration=Release /p:Platform=$env:PLATFORM `
+            /p:PlatformToolset=$env:PLATFORM_TOOLSET /p:PreferredToolArchitecture=$env:PREFER_TOOL_ARCH `
+            $env:WPO_OVERRIDE $env:MP_OVERRIDE `
+            /m:1 /nologo /flp:"LogFile=build_corelib.log;Verbosity=minimal"
+
+      # OpenSSL MSVC import libs (libcrypto.lib / libssl.lib) are required by the
+      # linker but are NOT reliably present on every runner image revision.
+      # Strategy:
+      #   1. Check if the full dev libs are already on the runner (fast path).
+      #   2. If not, install the full OpenSSL package explicitly via Chocolatey
+      #      (--force upgrades a pre-installed "light" version to the full one).
+      #   3. Stage libcrypto.lib + libssl.lib into vendor/ which is already on
+      #      AdditionalLibraryDirectories in every vcxproj that needs OpenSSL.
+      #
+      # This is intentionally explicit rather than relying on image pre-installs
+      # because the runner image ships have historically varied between the "light"
+      # (runtime-only) and "full" (developer) OpenSSL packages.
+      - name: Ensure OpenSSL developer libs (libcrypto.lib / libssl.lib)
+        shell: pwsh
+        run: |
+          # Ordered candidate paths — cover both choco-default and alternate layouts
+          $candidates = @(
+            'C:\Program Files\OpenSSL-Win64\lib\VC\x64\MD',
+            'C:\Program Files\OpenSSL-Win64\lib',
+            'C:\Program Files\OpenSSL\lib\VC\x64\MD',
+            'C:\Program Files\OpenSSL\lib'
+          )
+          $libDir = $candidates | Where-Object { Test-Path "$_\libcrypto.lib" } | Select-Object -First 1
+
+          if (-not $libDir) {
+            Write-Host "libcrypto.lib not found in known paths — installing full OpenSSL via Chocolatey..."
+            # --force ensures an existing light install is upgraded to the full dev package
+            choco install openssl -y --no-progress --force
+            # Re-probe after install
+            $libDir = $candidates | Where-Object { Test-Path "$_\libcrypto.lib" } | Select-Object -First 1
+          }
+
+          if (-not $libDir) {
+            Write-Error "libcrypto.lib still not found after choco install. Aborting."
+            exit 1
+          }
+
+          Write-Host "OpenSSL lib dir: $libDir"
+          foreach ($lib in 'libcrypto.lib', 'libssl.lib') {
+            $src = Join-Path $libDir $lib
+            if (Test-Path $src) {
+              Copy-Item $src vendor\ -Force
+              Write-Host "Staged: $lib -> vendor\"
+            } else {
+              Write-Warning "$lib not present in $libDir — linker may fail for this lib"
+            }
+          }
+
+      - name: Build ShadowStrikePhantomService
+        shell: pwsh
+        run: |
+          msbuild ShadowStrikePhantomService.vcxproj `
+            /t:Rebuild /p:Configuration=Release /p:Platform=$env:PLATFORM `
+            /p:PlatformToolset=$env:PLATFORM_TOOLSET /p:PreferredToolArchitecture=$env:PREFER_TOOL_ARCH `
+            $env:WPO_OVERRIDE $env:MP_OVERRIDE `
+            /m:1 /nologo /flp:"LogFile=build_service.log;Verbosity=minimal"
+
+      - name: Build ShadowStrikePhantomTray
+        shell: pwsh
+        run: |
+          msbuild ShadowStrikePhantomTray.vcxproj `
+            /t:Rebuild /p:Configuration=Release /p:Platform=$env:PLATFORM `
+            /p:PlatformToolset=$env:PLATFORM_TOOLSET /p:PreferredToolArchitecture=$env:PREFER_TOOL_ARCH `
+            $env:WPO_OVERRIDE $env:MP_OVERRIDE `
+            /m:1 /nologo /flp:"LogFile=build_tray.log;Verbosity=minimal"
+
+      - name: Build ShadowStrikePhantomUI
+        shell: pwsh
+        run: |
+          msbuild ShadowStrikePhantomUI.vcxproj `
+            /t:Rebuild /p:Configuration=Release /p:Platform=$env:PLATFORM `
+            /p:PlatformToolset=$env:PLATFORM_TOOLSET /p:PreferredToolArchitecture=$env:PREFER_TOOL_ARCH `
+            $env:WPO_OVERRIDE $env:MP_OVERRIDE `
+            /m:1 /nologo /flp:"LogFile=build_ui.log;Verbosity=minimal"
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-usermode
+          path: |
+            build_jit.log
+            build_corelib.log
+            build_service.log
+            build_tray.log
+            build_ui.log
+          retention-days: 7
+
+      # Stage all user-mode binaries into one flat directory for the
+      # packaging job. Globbing here avoids hardcoding output paths that
+      # differ between vcxproj configurations.
+      - name: Stage user-mode binaries
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force usermode-staging | Out-Null
+          $exes = Get-ChildItem "x64\Release\*.exe" -ErrorAction SilentlyContinue
+          if (-not $exes) {
+            Write-Error "No .exe files found in x64\Release — build may have failed"
+            exit 1
+          }
+          $exes | Copy-Item -Destination usermode-staging\
+          Write-Host "Staged: $($exes.Name -join ', ')"
+
+      - name: Upload user-mode binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: usermode-bin
+          path: usermode-staging/
+          retention-days: 1
+
+  # ============================================================================
+  # Job 2: Kernel driver (PhantomSensor.sys)
+  # windows-2022 GitHub-hosted runners include WDK 10.0.x pre-installed.
+  # The driver is test-signed with a temporary self-signed cert.
+  # Production builds must use an EV code-signing cert (Azure Trusted Signing
+  # or HSM) — replace the test-sign step with a call to your signing service.
+  # ============================================================================
+  build-driver:
+    name: Kernel driver (x64 Release)
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Verify WDK kernel headers
+        shell: pwsh
+        run: |
+          $wdkRoot = 'C:\Program Files (x86)\Windows Kits\10\Include'
+          $found = Get-ChildItem $wdkRoot -Directory |
+                   Where-Object { Test-Path (Join-Path $_.FullName 'km\ntifs.h') } |
+                   Sort-Object { [Version]($_.Name -replace '[^0-9.]', '') } -Descending |
+                   Select-Object -First 1
+          if (-not $found) {
+            Write-Error "WDK km headers not found — driver build cannot proceed"
+            exit 1
+          }
+          Write-Host "WDK: $($found.Name)"
+
+      - name: Build PhantomSensor
+        shell: pwsh
+        run: |
+          msbuild PhantomSensor\PhantomSensor.vcxproj `
+            /t:Rebuild /p:Configuration=Release /p:Platform=$env:PLATFORM `
+            /p:PreferredToolArchitecture=$env:PREFER_TOOL_ARCH `
+            /p:InfVerif_Enable=false /p:InfVerif_NoError=true `
+            /m /nologo /flp:"LogFile=build_driver.log;Verbosity=minimal"
+
+      - name: Test-sign driver
+        shell: pwsh
+        run: |
+          # Create a temporary code-signing cert valid for 1 year.
+          # Targets must run with bcdedit /set testsigning on.
+          $cert = New-SelfSignedCertificate `
+            -Subject "CN=ShadowStrike TestSign, O=ShadowStrike Security" `
+            -CertStoreLocation "Cert:\CurrentUser\My" `
+            -Type CodeSigningCert `
+            -KeyUsage DigitalSignature `
+            -KeyAlgorithm RSA -KeyLength 2048 `
+            -NotAfter (Get-Date).AddYears(1)
+          Write-Host "Test cert: $($cert.Thumbprint)"
+
+          # Locate signtool.exe shipped with the WDK/SDK
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" `
+                        -Filter signtool.exe -Recurse |
+                      Where-Object { $_.FullName -match '\\x64\\' } |
+                      Sort-Object LastWriteTime -Descending |
+                      Select-Object -First 1 -ExpandProperty FullName
+          if (-not $signtool) { Write-Error "signtool.exe not found"; exit 1 }
+
+          $sys = "build\installer\staging\drivers\PhantomSensor.sys"
+          if (-not (Test-Path $sys)) {
+            # Fallback: some WDK configs put the output directly under PhantomSensor\
+            $sys = Get-ChildItem "PhantomSensor" -Filter PhantomSensor.sys -Recurse |
+                   Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $sys) { Write-Error "PhantomSensor.sys not found after build"; exit 1 }
+
+          & $signtool sign /fd sha256 /s My /sha1 $cert.Thumbprint `
+            /t http://timestamp.digicert.com "$sys"
+          Write-Host "Signed: $sys"
+
+      - name: Stage driver artifacts
+        shell: pwsh
+        run: |
+          # Collect sys + inf + optional cat into a flat staging dir so the
+          # download-artifact step in the packaging job has a predictable layout.
+          New-Item -ItemType Directory -Force driver-staging | Out-Null
+
+          $sys = Get-ChildItem "build\installer\staging\drivers\PhantomSensor.sys" `
+                               -ErrorAction SilentlyContinue
+          if (-not $sys) {
+            $sys = Get-ChildItem "PhantomSensor" -Filter PhantomSensor.sys -Recurse |
+                   Select-Object -First 1
+          }
+          Copy-Item $sys.FullName driver-staging\PhantomSensor.sys
+
+          $inf = Get-ChildItem "PhantomSensor" -Filter PhantomSensor.inf -Recurse |
+                 Select-Object -First 1
+          if ($inf) { Copy-Item $inf.FullName driver-staging\PhantomSensor.inf }
+
+          $cat = Get-ChildItem "build\installer\staging\drivers" -Filter "*.cat" `
+                               -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($cat) { Copy-Item $cat.FullName driver-staging\ }
+
+          Write-Host "Driver staging:"
+          Get-ChildItem driver-staging | Select-Object Name, Length
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-driver
+          path: build_driver.log
+          retention-days: 7
+
+      - name: Upload driver artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: driver-bin
+          path: driver-staging/
+          retention-days: 1
+
+  # ============================================================================
+  # Job 3: React dashboard
+  # Runs on ubuntu-latest (faster Node.js builds, no Windows licensing overhead).
+  # ============================================================================
+  build-frontend:
+    name: React dashboard
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        working-directory: frontend
+        # Use npm install (not npm ci) — package-lock.json may not yet be committed.
+        # Once you commit the lockfile, switch this to: npm ci --prefer-offline
+        run: npm install
+
+      - name: Build
+        working-directory: frontend
+        run: npm run build
+        env:
+          # The dashboard is static; VITE_API_URL bakes into the bundle.
+          # Override at deploy time by rebuilding with the real service URL.
+          VITE_API_URL: https://localhost:9443
+
+      - name: Upload dashboard dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+          retention-days: 1
+
+  # ============================================================================
+  # Job 4: Package — assemble all artifacts into a single downloadable ZIP.
+  # Runs only after all three build jobs succeed.
+  # ============================================================================
+  package:
+    name: Package release ZIP
+    runs-on: windows-2022
+    needs: [build-usermode, build-driver, build-frontend]
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout (for rules corpus + ORT DLLs)
+        uses: actions/checkout@v4
+
+      - name: Download user-mode binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: usermode-bin
+          path: dist/
+
+      - name: Download driver artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: driver-bin
+          path: dist/driver/
+
+      - name: Download dashboard
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: dist/dashboard/
+
+      - name: Assemble package layout
+        shell: pwsh
+        run: |
+          # ONNX Runtime — required at runtime (no static build available)
+          Copy-Item vendor\onnxruntime\onnxruntime.dll                 dist\
+          Copy-Item vendor\onnxruntime\onnxruntime_providers_shared.dll dist\
+
+          # NOTE: rule corpus is compiled directly into ShadowStrikePhantomService.exe
+          # as an XOR-obfuscated binary blob. No rules/ directory is needed or included.
+
+          # Version stamp
+          $sha  = "${{ github.sha }}".Substring(0, 8)
+          $ref  = "${{ github.ref_name }}"
+          @"
+          ShadowStrike Phantom
+          Ref  : $ref
+          SHA  : $sha
+          Date : $(Get-Date -Format 'yyyy-MM-dd HH:mm UTC')
+
+          Detection rules: compiled into ShadowStrikePhantomService.exe (embedded, not on disk).
+          ONNX model files (.onnx) are NOT included.
+          Deploy trained models to %ProgramData%\ShadowStrike\models\ separately.
+          The service runs without models; ML scoring is inactive until models are present.
+          "@ | Out-File dist\VERSION.txt -Encoding utf8
+
+          Write-Host "=== Package layout ==="
+          Get-ChildItem dist -Recurse | Select-Object FullName
+
+      - name: Create ZIP
+        shell: pwsh
+        run: |
+          # Sanitise ref_name: slashes (branch names) become dashes
+          $version = "${{ github.ref_name }}" -replace '[/\\]', '-'
+          $zipName      = "ShadowStrike-${version}-x64.zip"
+          $artifactName = "ShadowStrike-${version}-x64"
+          Compress-Archive -Path dist\* -DestinationPath $zipName -CompressionLevel Optimal
+          $sizeMB = [math]::Round((Get-Item $zipName).Length / 1MB, 2)
+          Write-Host "Created: $zipName (${sizeMB} MB)"
+          "ZIP_NAME=$zipName"           | Out-File $env:GITHUB_ENV -Append
+          "ARTIFACT_NAME=$artifactName" | Out-File $env:GITHUB_ENV -Append
+
+      - name: Upload ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.ZIP_NAME }}
+          retention-days: 30
+
+      # Only create a GitHub Release when a version tag is pushed (v*.*.*)
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ZIP_NAME }}
+          generate_release_notes: true
+          body: |
+            ## ShadowStrike Phantom ${{ github.ref_name }}
+
+            ### Quick install (elevated CMD)
+            ```cmd
+            rem 1. Enable test-signing (once, then reboot) — skip if using production EV cert
+            bcdedit /set testsigning on
+
+            rem 2. Install the driver
+            pnputil /add-driver driver\PhantomSensor.inf /install
+
+            rem 3. Install & start the service
+            ShadowStrikePhantomService.exe --install
+            ShadowStrikePhantomService.exe --start
+            ```
+
+            ### Package contents
+            | Path | Description |
+            |------|-------------|
+            | `ShadowStrikePhantomService.exe` | Windows service — detection engine, IPC server, **~3,400 rules compiled in** |
+            | `ShadowStrikePhantomTray.exe` | System-tray status app |
+            | `ShadowStrikePhantomUI.exe` | Native UI |
+            | `onnxruntime.dll` | ONNX Runtime — required for ML inference |
+            | `onnxruntime_providers_shared.dll` | ONNX Runtime provider |
+            | `dashboard/` | React dashboard (open `index.html` or serve statically) |
+            | `driver/PhantomSensor.sys` | Kernel minifilter (test-signed) |
+            | `driver/PhantomSensor.inf` | Driver INF for pnputil |
+
+            > **Detection rules are compiled into `ShadowStrikePhantomService.exe`** as an
+            > obfuscated binary blob. No plaintext rule files are included or required.
+            > To update rules, rebuild from source and redeploy the service binary.
+
+            > **ML models not included.** Deploy trained `.onnx` files to
+            > `%ProgramData%\ShadowStrike\models\` and set
+            > `HKLM\SOFTWARE\ShadowStrike\PhantomCortex\ModelDirectory` accordingly.
+            > The service operates without them — ML scoring is simply inactive.

@@ -1,0 +1,52 @@
+id: ss-mem-008
+detection_name: "Win32/Memory.NTDLL.Unhook.Remap"
+description: "Detects attempts to remap ntdll.dll from a clean copy on disk into a process's memory space, replacing the hooked version loaded by the OS. This technique is used by malware and some offensive tools to bypass EDR user-mode hooks placed in ntdll, effectively neutralizing API call monitoring without invoking the hooked functions."
+scope: memory
+severity: critical
+status: stable
+source: native
+confidence: 0.92
+weight: 3.5
+version: 1
+
+attack:
+  - tactic: TA0005
+    technique: T1562.001
+    name: "Impair Defenses: Disable or Modify Tools"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1562/001/"
+    title: "ATT&CK T1562.001"
+
+logic:
+  and:
+    - field_eq:
+        field: memory.operation
+        value: "section_map"
+    - field_regex:
+        field: memory.source_file
+        pattern: "(?i)\\\\Windows\\\\System32\\\\ntdll\\.dll$"
+    - field_eq:
+        field: memory.section_access
+        value: "read"
+    - field_eq:
+        field: memory.target_process_is_self
+        value: "true"
+    - or:
+        - field_eq:
+            field: memory.existing_ntdll_hooks_present
+            value: "true"
+        - field_gt:
+            field: memory.ntdll_write_page_count
+            value: 0
+
+fp_guard:
+  notes:
+    - "Some security products (anti-cheat, DLP) legitimately read ntdll to compare clean vs. runtime copies for tamper detection. Validate signing and vendor."
+    - "Memory forensic tools may map ntdll for analysis purposes."
+  suppress:
+    - field: memory.process.name
+      values:
+        - MsMpEng.exe
+        - CylanceSvc.exe
+        - SentinelAgent.exe

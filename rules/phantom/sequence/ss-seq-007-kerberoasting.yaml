@@ -1,0 +1,46 @@
+id: ss-seq-007
+detection_name: "Win32/CredTheft.Kerberoast"
+description: "Kerberoasting attack pattern: SPN enumeration followed by Kerberos TGS request for service ticket."
+scope: sequence
+severity: high
+status: stable
+source: native
+confidence: 0.80
+weight: 2.8
+version: 1
+attack:
+  - tactic: TA0006
+    technique: T1558
+    sub_technique: T1558.003
+    name: "Steal or Forge Kerberos Tickets: Kerberoasting"
+logic:
+  sequence:
+    - or:
+        - field_contains:
+            field: process.command_line
+            value: "setspn"
+        - field_contains:
+            field: process.command_line
+            value: "GetUserSPNs"
+        - field_contains:
+            field: process.command_line
+            value: "Get-NetUser -SPN"
+        - field_contains:
+            field: process.command_line
+            value: "ldapsearch"
+    - or:
+        - field_contains:
+            field: process.command_line
+            value: "Invoke-Kerberoast"
+        - field_contains:
+            field: process.command_line
+            value: "rubeus"
+        - field_contains:
+            field: process.command_line
+            value: "impacket"
+        - field_contains:
+            field: process.command_line
+            value: "GetTGT"
+fp_guard:
+  notes:
+    - "AD administrators enumerate SPNs for troubleshooting. Tool name correlation (Rubeus) is strong signal."

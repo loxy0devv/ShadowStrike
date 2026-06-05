@@ -1,0 +1,46 @@
+id: ss-proc-018
+detection_name: "Win32/PS.DownloadCradle"
+description: "PowerShell executed with a download cradle — common for fileless payload delivery."
+scope: process
+severity: high
+status: stable
+source: native
+confidence: 0.82
+weight: 2.2
+version: 1
+attack:
+  - tactic: TA0011
+    technique: T1059
+    sub_technique: T1059.001
+logic:
+  and:
+    - field_in:
+        field: process.name
+        values: [powershell.exe, pwsh.exe]
+        case_insensitive: true
+    - or:
+        - field_contains:
+            field: process.command_line
+            value: "DownloadString"
+        - field_contains:
+            field: process.command_line
+            value: "DownloadFile"
+        - field_contains:
+            field: process.command_line
+            value: "Invoke-Expression"
+        - field_contains:
+            field: process.command_line
+            value: "IEX"
+        - field_contains:
+            field: process.command_line
+            value: "Net.WebClient"
+        - field_contains:
+            field: process.command_line
+            value: "WebRequest"
+        - field_contains:
+            field: process.command_line
+            value: "Start-BitsTransfer"
+fp_guard:
+  notes:
+    - "Package managers and CI tools legitimately use PowerShell download cradles."
+    - "Suppress for processes signed by known package managers."

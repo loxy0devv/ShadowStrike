@@ -1,0 +1,36 @@
+id: ss-net-008
+detection_name: "Win32/LateralMovement.SMB"
+description: "Unusual process established an outbound SMB connection — possible lateral movement via admin shares."
+scope: network
+severity: high
+status: stable
+source: native
+confidence: 0.72
+weight: 2.0
+version: 1
+attack:
+  - tactic: TA0008
+    technique: T1021
+    sub_technique: T1021.002
+logic:
+  and:
+    - field_in:
+        field: network.destination.port
+        values: ["445", "139"]
+    - field_not_in:
+        field: process.name
+        values:
+          - svchost.exe
+          - lsass.exe
+          - System
+          - explorer.exe
+          - ntoskrnl.exe
+        case_insensitive: true
+    - field_not_in:
+        field: process.parent.name
+        values: [services.exe, svchost.exe]
+        case_insensitive: true
+fp_guard:
+  notes:
+    - "File server access and backup agents legitimately use SMB."
+    - "Suppress for processes signed by backup/storage vendors."

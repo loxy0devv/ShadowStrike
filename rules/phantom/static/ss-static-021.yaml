@@ -1,0 +1,66 @@
+id: ss-static-021
+detection_name: "Win32/Mimikatz.BinaryIndicators"
+description: "Binary contains Mimikatz credential dumping tool strings: module names (sekurlsa, lsadump, kerberos), function exports, and privilege escalation markers."
+scope: static
+severity: critical
+status: stable
+source: native
+confidence: 0.95
+weight: 4.0
+version: 1
+
+attack:
+  - tactic: TA0006
+    technique: T1003
+    name: "OS Credential Dumping"
+  - tactic: TA0004
+    technique: T1134
+    name: "Access Token Manipulation"
+
+references:
+  - url: "https://attack.mitre.org/software/S0002/"
+    title: "ATT&CK Mimikatz"
+  - url: "https://github.com/gentilkiwi/mimikatz"
+    title: "Mimikatz source"
+
+logic:
+  or:
+    - and:
+        - field_contains:
+            field: static.strings
+            value: "sekurlsa"
+        - or:
+            - field_contains:
+                field: static.strings
+                value: "logonpasswords"
+            - field_contains:
+                field: static.strings
+                value: "wdigest"
+    - and:
+        - field_contains:
+            field: static.strings
+            value: "lsadump"
+        - or:
+            - field_contains:
+                field: static.strings
+                value: "sam"
+            - field_contains:
+                field: static.strings
+                value: "dcsync"
+            - field_contains:
+                field: static.strings
+                value: "lsa"
+    - field_regex:
+        field: static.strings
+        pattern: "(?i)kerberos::list|kerberos::ptt|kerberos::golden"
+    - field_contains:
+        field: static.strings
+        value: "gentilkiwi"
+    - field_regex:
+        field: static.strings
+        pattern: "(?i)mimikatz_initOrClean"
+
+fp_guard:
+  notes:
+    - "Security testing tools and LSASS analysis utilities may contain some of these strings in documentation."
+    - "Alert on any binary containing these — there is no legitimate production use for Mimikatz modules."

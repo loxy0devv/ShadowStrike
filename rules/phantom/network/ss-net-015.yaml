@@ -1,0 +1,47 @@
+id: ss-net-015
+detection_name: "Win32/Kerberos.ASREPRoast.NonDCRequest"
+description: "Detects Kerberos AS-REQ packets sent without pre-authentication to hosts that are not known domain controllers. AS-REP Roasting attacks target accounts with Kerberos pre-authentication disabled; an attacker sends AS-REQ requests without credentials and receives an encrypted TGT that can be cracked offline to recover passwords."
+scope: network
+severity: critical
+status: stable
+source: native
+confidence: 0.87
+weight: 3.0
+version: 1
+
+attack:
+  - tactic: TA0006
+    technique: T1558.003
+    name: "Steal or Forge Kerberos Tickets: AS-REP Roasting"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1558/003/"
+    title: "ATT&CK T1558.003"
+
+logic:
+  and:
+    - field_eq:
+        field: network.destination_port
+        value: 88
+    - field_eq:
+        field: network.protocol
+        value: "kerberos"
+    - field_eq:
+        field: network.kerberos.message_type
+        value: "AS-REQ"
+    - field_eq:
+        field: network.kerberos.pre_auth_present
+        value: "false"
+    - field_eq:
+        field: network.destination_is_dc
+        value: "false"
+
+fp_guard:
+  notes:
+    - "Legacy Kerberos implementations and some cross-realm configurations may issue AS-REQ without pre-auth. Validate destination host role."
+    - "Test/lab environments with simplified Kerberos configurations may trigger this."
+  suppress:
+    - field: network.destination_ip
+      values:
+        - "10.0.0.1"
+        - "10.0.0.2"

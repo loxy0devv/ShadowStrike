@@ -1,0 +1,45 @@
+id: ss-static-005
+detection_name: "Win32/RAT.Generic"
+description: "Binary combines remote-access, keylogging, and screen-capture APIs — characteristic of a remote access trojan."
+scope: static
+severity: high
+status: stable
+source: native
+confidence: 0.72
+weight: 2.0
+version: 1
+attack:
+  - tactic: TA0011
+    technique: T1219
+    name: "Remote Access Software"
+  - tactic: TA0009
+    technique: T1113
+    name: "Screen Capture"
+logic:
+  and:
+    - or:
+        - api: SetWindowsHookExA
+        - api: SetWindowsHookExW
+        - api: GetAsyncKeyState
+        - api: GetKeyState
+        - api: GetKeyboardState
+    - or:
+        - api: BitBlt
+        - api: GetDC
+        - api: CreateCompatibleBitmap
+        - string: "screenshot"
+        - string: "keylog"
+        - string: "keylogger"
+    - or:
+        - api: socket
+        - api: connect
+        - api: InternetOpenA
+        - api: WinHttpOpen
+    - unsigned
+fp_guard:
+  notes:
+    - "Remote desktop software and accessibility tools use keyboard hooks + screen capture."
+    - "Suppress for widely-distributed signed products: AnyDesk, TeamViewer, LogMeIn."
+  suppress:
+    - field: file.signer.subject
+      regex: "(?i)(AnyDesk|TeamViewer|LogMeIn|Splashtop|GoTo|Datto)"

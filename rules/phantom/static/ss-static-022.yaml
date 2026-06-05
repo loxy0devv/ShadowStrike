@@ -1,0 +1,57 @@
+id: ss-static-022
+detection_name: "Win32/Meterpreter.ShellcodeSignature"
+description: "Binary or shellcode blob contains Metasploit Meterpreter signatures: staged payload headers, reflective DLL loader stubs, and API hashing routines characteristic of msfvenom output."
+scope: static
+severity: critical
+status: stable
+source: native
+confidence: 0.92
+weight: 4.0
+version: 1
+
+attack:
+  - tactic: TA0002
+    technique: T1059
+    sub_technique: T1059.005
+    name: "Command and Scripting Interpreter: Visual Basic"
+  - tactic: TA0005
+    technique: T1620
+    name: "Reflective Code Loading"
+
+references:
+  - url: "https://attack.mitre.org/software/S0250/"
+    title: "ATT&CK Meterpreter"
+
+logic:
+  or:
+    - field_bytes:
+        field: static.bytes
+        hex: "FC4889D04889C24889C14831C04889C7B028"
+    - field_bytes:
+        field: static.bytes
+        hex: "FC488981E0000000488D8181000000488D51"
+    - and:
+        - field_contains:
+            field: static.strings
+            value: "ReflectiveLoader"
+        - or:
+            - field_contains:
+                field: static.strings
+                value: "metsrv"
+            - field_contains:
+                field: static.strings
+                value: "ext_server"
+    - and:
+        - field_regex:
+            field: static.strings
+            pattern: "(?i)(recv|send|WSAStartup|connect)"
+        - feature: EntropyAbove
+          threshold: 7.2
+        - feature: ImportCountAbove
+          threshold: 3
+        - feature: Characteristic
+          value: "no-exports"
+
+fp_guard:
+  notes:
+    - "Packed legitimate binaries may trigger the entropy + import count check. Require all sub-conditions."

@@ -1,0 +1,71 @@
+id: ss-seq-013
+detection_name: "Win32/Sequence.WebShellUpload.ReverseShellSpawn"
+description: "Detects a web shell attack sequence: a web server process writing a script file to the webroot, followed within a short window by that same web server process spawning an interactive shell or executing system commands. This two-step pattern confirms both the web shell upload and its subsequent weaponization."
+scope: sequence
+severity: critical
+status: stable
+source: native
+confidence: 0.91
+weight: 4.0
+version: 1
+
+attack:
+  - tactic: TA0003
+    technique: T1505.003
+    name: "Server Software Component: Web Shell"
+  - tactic: TA0002
+    technique: T1059
+    name: "Command and Scripting Interpreter"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1505/003/"
+    title: "ATT&CK T1505.003"
+
+logic:
+  sequence:
+    - id: step1_webshell_write
+      within: 3600s
+      event:
+        and:
+          - field_in:
+              field: file.process.name
+              values:
+                - w3wp.exe
+                - httpd.exe
+                - php-cgi.exe
+                - nginx.exe
+                - tomcat.exe
+              case_insensitive: true
+          - field_regex:
+              field: file.path
+              pattern: "(?i)(inetpub|wwwroot|htdocs|webapps)\\\\.*\\.(aspx|asp|php|jsp|jspx|cfm|shtml)"
+          - field_eq:
+              field: file.operation
+              value: "create"
+    - id: step2_shell_spawn
+      within: 7200s
+      after: step1_webshell_write
+      event:
+        and:
+          - field_eq:
+              field: process.parent.name
+              value: "{{step1_webshell_write.file.process.name}}"
+          - field_in:
+              field: process.name
+              values:
+                - cmd.exe
+                - powershell.exe
+                - pwsh.exe
+                - sh.exe
+                - bash.exe
+                - wscript.exe
+              case_insensitive: true
+
+fp_guard:
+  notes:
+    - "CMS auto-update mechanisms and web-based deployment tools may write script files and then execute them. Validate against known deployment patterns."
+    - "WordPress plugin activation may write PHP files and immediately execute them via web server."
+  suppress:
+    - field: file.process.user
+      values:
+        - "IIS APPPOOL\\DefaultAppPool"

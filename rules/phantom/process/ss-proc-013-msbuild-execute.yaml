@@ -1,0 +1,33 @@
+id: ss-proc-013
+detection_name: "Win32/LOLBin.MSBuildExec"
+description: "MSBuild used to execute embedded C# payload — proxy execution via build tool."
+scope: process
+severity: high
+status: stable
+source: native
+confidence: 0.82
+weight: 2.2
+version: 1
+attack:
+  - tactic: TA0005
+    technique: T1127
+    sub_technique: T1127.001
+    name: "Trusted Developer Utilities Proxy Execution: MSBuild"
+logic:
+  and:
+    - field_in:
+        field: process.name
+        values: [MSBuild.exe, msbuild.exe]
+        case_insensitive: true
+    - or:
+        - field_not_in:
+            field: process.parent.name
+            values: [devenv.exe, VsDevCmd.bat, vstestconsole.exe, vstest.console.exe, cmd.exe]
+            case_insensitive: true
+        - field_regex:
+            field: process.command_line
+            value: "(?i)(Temp|AppData|ProgramData|\\\\Users\\\\[^\\\\]+\\\\Downloads)"
+fp_guard:
+  notes:
+    - "MSBuild is heavily used by developers from cmd.exe and CI systems."
+    - "Flag only when project file comes from temp/download directories."

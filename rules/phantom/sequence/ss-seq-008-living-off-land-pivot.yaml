@@ -1,0 +1,43 @@
+id: ss-seq-008
+detection_name: "Win32/Pivot.LOLBinChain"
+description: "Multi-step LOLBin chain: a living-off-the-land binary downloaded a payload that spawned another LOLBin."
+scope: sequence
+severity: high
+status: stable
+source: native
+confidence: 0.80
+weight: 2.8
+version: 1
+attack:
+  - tactic: TA0005
+    technique: T1218
+    name: "System Binary Proxy Execution"
+logic:
+  sequence:
+    - and:
+        - field_in:
+            field: process.name
+            values:
+              - certutil.exe
+              - bitsadmin.exe
+              - mshta.exe
+              - regsvr32.exe
+              - cmstp.exe
+              - installutil.exe
+            case_insensitive: true
+        - field_exists:
+            field: network.destination.ip
+    - field_in:
+        field: process.parent.name
+        values:
+          - certutil.exe
+          - bitsadmin.exe
+          - mshta.exe
+          - regsvr32.exe
+          - cmstp.exe
+          - installutil.exe
+        case_insensitive: true
+fp_guard:
+  notes:
+    - "certutil is commonly used to download certificates in enterprise automation."
+    - "This rule fires on the second-stage execution, requiring two LOLBins in sequence."

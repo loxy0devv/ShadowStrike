@@ -1,0 +1,81 @@
+id: ss-seq-001
+detection_name: "Win32/LateralMovement.ReconChain"
+description: "Reconnaissance commands followed by lateral movement indicators within the same process tree."
+scope: sequence
+severity: high
+status: stable
+source: native
+confidence: 0.80
+weight: 3.0
+version: 1
+
+attack:
+  - tactic: TA0007
+    technique: T1082
+    name: "System Information Discovery"
+  - tactic: TA0008
+    technique: T1021
+    name: "Remote Services"
+
+logic:
+  sequence:
+    - or:
+        - field_contains:
+            field: process.command_line
+            value: "whoami"
+        - field_contains:
+            field: process.command_line
+            value: "net user"
+        - field_contains:
+            field: process.command_line
+            value: "net group"
+        - field_contains:
+            field: process.command_line
+            value: "systeminfo"
+        - field_contains:
+            field: process.command_line
+            value: "ipconfig"
+        - field_contains:
+            field: process.command_line
+            value: "arp -a"
+        - field_contains:
+            field: process.command_line
+            value: "nltest"
+        - field_contains:
+            field: process.command_line
+            value: "tasklist"
+    - or:
+        - field_contains:
+            field: process.command_line
+            value: "psexec"
+        - field_contains:
+            field: process.command_line
+            value: "wmiexec"
+        - field_contains:
+            field: process.command_line
+            value: "winrm"
+        - field_contains:
+            field: process.command_line
+            value: "Enter-PSSession"
+        - field_contains:
+            field: process.command_line
+            value: "Invoke-Command"
+        - field_contains:
+            field: process.command_line
+            value: "net use \\\\"
+        - field_contains:
+            field: network.destination.port
+            value: "445"
+        - field_contains:
+            field: network.destination.port
+            value: "5985"
+
+fp_guard:
+  notes:
+    - "IT administrators running inventory scripts followed by RDP or PSSession is a common FP scenario."
+    - "Suppress when initiated from a management console process signed by a trusted vendor."
+  suppress:
+    - field: process.parent.name
+      values:
+        - CcmExec.exe
+        - ccmsetup.exe

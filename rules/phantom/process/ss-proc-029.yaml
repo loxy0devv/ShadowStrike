@@ -1,0 +1,51 @@
+id: ss-proc-029
+detection_name: "Win32/ParentSpoofing.ExplorerSystemBinary"
+description: "Detects processes claiming explorer.exe as their parent but with a process ID (PPID) that does not match the actual running explorer.exe PID. Parent process ID spoofing is used by attackers to make malicious child processes appear to originate from trusted user-context binaries, evading parent-child chain detection."
+scope: process
+severity: critical
+status: stable
+source: native
+confidence: 0.90
+weight: 3.0
+version: 1
+
+attack:
+  - tactic: TA0005
+    technique: T1134.004
+    name: "Access Token Manipulation: Parent PID Spoofing"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1134/004/"
+    title: "ATT&CK T1134.004"
+
+logic:
+  and:
+    - field_in:
+        field: process.parent.name
+        values:
+          - explorer.exe
+        case_insensitive: true
+    - field_in:
+        field: process.name
+        values:
+          - lsass.exe
+          - svchost.exe
+          - services.exe
+          - csrss.exe
+          - wininit.exe
+          - smss.exe
+          - lsm.exe
+          - winlogon.exe
+        case_insensitive: true
+    - field_eq:
+        field: process.ppid_mismatch
+        value: "true"
+
+fp_guard:
+  notes:
+    - "This rule requires PPID mismatch detection capability. The listed system binaries should never be spawned by explorer.exe under normal circumstances."
+    - "Legitimate software rarely if ever spawns these system-level binaries from explorer context."
+  suppress:
+    - field: process.executable_path
+      values:
+        - "C:\\Windows\\System32\\svchost.exe"

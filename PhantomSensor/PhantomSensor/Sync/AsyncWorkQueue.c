@@ -1,0 +1,2649 @@
+﻿/*
+ * ShadowStrike - Enterprise NGAV/EDR Platform
+ * Copyright (C) 2026 ShadowStrike Security
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+/**
+ * ============================================================================
+ * ShadowStrike NGAV â€” Async Work Queue Implementation
+ * ============================================================================
+ *
+ * @file AsyncWorkQueue.c
+ *
+ * Enterprise-grade asynchronous work queue for kernel-mode EDR operations.
+ *
+ * Architecture:
+ *   - Four priority queues (Critical > High > Normal > Low)
+ *   - Worker thread pool with dynamic idle-timeout scaling
+ *   - EX_PUSH_LOCK for all synchronization (IRQL <= APC_LEVEL)
+ *   - EX_RUNDOWN_REF for safe concurrent shutdown
+ *   - Reference-counted items for safe lookup/wait/cancel
+ *   - Chained hash table for O(1) item lookup by ID
+ *   - All callbacks invoked at PASSIVE_LEVEL outside any lock
+ *   - Serialized execution enforced at enqueue time
+ *
+ * @copyright (c) ShadowStrike Security. All rights reserved.
+ * ============================================================================
+ */
+
+#include "../Core/DriverEntry.h"
+#include "AsyncWorkQueue.h"
+#include "../Performance/PerformanceMonitor.h"
+#include <ntstrsafe.h>
+
+// ============================================================================
+// PAGE segment declarations (NOT INIT â€” callable after DriverEntry)
+// ============================================================================
+
+#ifdef ALLOC_PRAGMA
+#pragma alloc_text(PAGE, AwqInitialize)
+#pragma alloc_text(PAGE, AwqShutdown)
+#pragma alloc_text(PAGE, AwqPause)
+#pragma alloc_text(PAGE, AwqResume)
+#pragma alloc_text(PAGE, AwqDrain)
+#pragma alloc_text(PAGE, AwqSetThreadCount)
+#pragma alloc_text(PAGE, AwqSetDefaultTimeout)
+#pragma alloc_text(PAGE, AwqSetDynamicThreads)
+#pragma alloc_text(PAGE, AwqWaitForItem)
+#endif
+
+// ============================================================================
+// Internal constants
+// ============================================================================
+
+#define AWQ_MANAGER_MAGIC   0x4D515741  /* 'AWQM' */
+#define AWQ_ITEM_MAGIC      0x49515741  /* 'AWQI' */
+
+// ============================================================================
+// Internal: hash bucket entry (chained)
+// ============================================================================
+
+typedef struct _AWQ_HASH_ENTRY {
+    LIST_ENTRY              HashLink;
+    struct _AWQ_WORK_ITEM_I *Item;
+} AWQ_HASH_ENTRY, *PAWQ_HASH_ENTRY;
+
+// ============================================================================
+// Internal work item
+// ============================================================================
+
+typedef struct _AWQ_WORK_ITEM_I {
+    LIST_ENTRY              QueueLink;      // on priority queue
+    LIST_ENTRY              TrackLink;      // on active-items list
+
+    ULONG                   Magic;
+    volatile LONG           RefCount;       // ref-counted for safe access
+
+    ULONG64                 ItemId;
+    AWQ_PRIORITY            Priority;
+    AWQ_WORK_FLAGS          Flags;
+    volatile LONG           State;          // AWQ_ITEM_STATE via interlocked
+
+    PAWQ_WORK_CALLBACK      WorkCallback;
+    PAWQ_COMPLETION_CALLBACK CompletionCallback;
+    PAWQ_CLEANUP_CALLBACK   CleanupCallback;
+    PVOID                   CompletionContext;
+
+    PVOID                   Context;
+    ULONG                   ContextSize;
+    PVOID                   AllocatedContext;   // non-NULL if we own the copy
+
+    ULONG                   TimeoutMs;
+    ULONG                   RetryCount;
+    ULONG                   MaxRetries;
+    ULONG                   RetryDelayMs;
+    ULONG64                 SerializationKey;
+
+    KEVENT                  CompletionEvent;    // embedded, always valid
+    NTSTATUS                CompletionStatus;
+
+    // Chain support
+    struct _AWQ_WORK_ITEM_I *NextInChain;
+    ULONG                   ChainIndex;
+    ULONG                   ChainLength;
+
+    // Hash entry (embedded, one per item)
+    AWQ_HASH_ENTRY          HashEntry;
+
+    // Back-pointer (set at allocation)
+    struct _AWQ_MANAGER_I   *Manager;
+
+    LARGE_INTEGER           SubmitTime;
+    LARGE_INTEGER           ExecutionStartTime; // Set when callback begins
+
+    //
+    // Non-zero while the item lives on a serialization key's PendingItems
+    // list (linked via QueueLink). Used by cancel paths to route between
+    // the priority-queue lock and the serialization lock without racing.
+    //
+    volatile LONG           OnSerialPending;
+
+} AWQ_WORK_ITEM_I, *PAWQ_WORK_ITEM_I;
+
+// ============================================================================
+// Internal per-priority queue
+// ============================================================================
+
+typedef struct _AWQ_PQUEUE {
+    LIST_ENTRY              ItemList;
+    EX_PUSH_LOCK            Lock;
+    volatile LONG           ItemCount;
+    ULONG                   MaxItems;
+
+    volatile LONG64         TotalEnqueued;
+    volatile LONG64         TotalDequeued;
+    volatile LONG64         TotalDropped;
+} AWQ_PQUEUE, *PAWQ_PQUEUE;
+
+// ============================================================================
+// Internal worker thread
+// ============================================================================
+
+typedef struct _AWQ_WORKER_I {
+    LIST_ENTRY              ListEntry;
+    PKTHREAD                ThreadObject;   // referenced
+    ULONG                   ThreadId;
+    volatile LONG           Running;        // 1=running, 0=stop requested
+    volatile LONG           Idle;           // 1=idle, 0=active
+    LARGE_INTEGER           IdleStartTime;
+    LARGE_INTEGER           LastActivityTime;
+    volatile LONG64         ItemsProcessed;
+    struct _AWQ_MANAGER_I   *Manager;       // direct pointer, no CONTAINING_RECORD hack
+} AWQ_WORKER_I, *PAWQ_WORKER_I;
+
+// ============================================================================
+// Internal serialization key tracker
+// ============================================================================
+
+typedef struct _AWQ_SKEY {
+    LIST_ENTRY              ListEntry;
+    ULONG64                 Key;
+    volatile LONG           ActiveCount;    // items currently executing
+    LIST_ENTRY              PendingItems;   // items waiting for execution
+} AWQ_SKEY, *PAWQ_SKEY;
+
+// ============================================================================
+// Internal manager
+// ============================================================================
+
+typedef struct _AWQ_MANAGER_I {
+    ULONG                   Magic;
+    volatile LONG           Initialized;
+    volatile LONG           State;          // AWQ_QUEUE_STATE via interlocked
+
+    EX_RUNDOWN_REF          RundownRef;
+
+    // Priority queues
+    AWQ_PQUEUE              Queues[AwqPriority_Count];
+
+    // Worker threads
+    LIST_ENTRY              WorkerList;
+    EX_PUSH_LOCK            WorkerLock;
+    volatile LONG           WorkerCount;
+    volatile LONG           IdleWorkerCount;
+    volatile LONG           ActiveWorkerCount;
+    ULONG                   MinWorkers;
+    ULONG                   MaxWorkers;
+
+    // Thread signaling
+    KEVENT                  NewWorkEvent;       // auto-reset
+    KEVENT                  ShutdownEvent;       // manual-reset
+    KEVENT                  DrainCompleteEvent;  // manual-reset
+
+    // Item ID generation
+    volatile LONG64         NextItemId;
+
+    // Chained hash table for item lookup
+    struct {
+        LIST_ENTRY          *Buckets;       // array of list heads
+        EX_PUSH_LOCK        Lock;
+        ULONG               BucketCount;
+    } Hash;
+
+    // Active item tracking
+    struct {
+        LIST_ENTRY          List;
+        EX_PUSH_LOCK        Lock;
+        volatile LONG       Count;
+    } ActiveItems;
+
+    // Serialization
+    struct {
+        LIST_ENTRY          KeyList;
+        EX_PUSH_LOCK        Lock;
+    } Serialization;
+
+    // Work item cache (lookaside-like free list)
+    struct {
+        LIST_ENTRY          FreeList;
+        EX_PUSH_LOCK        Lock;
+        volatile LONG       FreeCount;
+        ULONG               MaxFree;
+    } Cache;
+
+    // Configuration
+    struct {
+        ULONG               DefaultTimeoutMs;
+        ULONG               MaxQueueSize;
+        volatile LONG       EnableDynamicThreads;
+    } Config;
+
+    // Statistics
+    struct {
+        volatile LONG64     TotalSubmitted;
+        volatile LONG64     TotalCompleted;
+        volatile LONG64     TotalCancelled;
+        volatile LONG64     TotalFailed;
+        volatile LONG64     TotalRetries;
+        volatile LONG64     TotalTimeouts;
+        LARGE_INTEGER       StartTime;
+    } Stats;
+
+} AWQ_MANAGER_I, *PAWQ_MANAGER_I;
+
+// ============================================================================
+// Forward declarations
+// ============================================================================
+
+static VOID AwqpWorkerThread(_In_ PVOID Ctx);
+
+static PAWQ_WORK_ITEM_I AwqpAllocItem(_In_ PAWQ_MANAGER_I Mgr);
+static VOID AwqpFreeItem(_In_ PAWQ_MANAGER_I Mgr, _In_ PAWQ_WORK_ITEM_I Item);
+
+static VOID AwqpRefItem(_In_ PAWQ_WORK_ITEM_I Item);
+static VOID AwqpDerefItem(_In_ PAWQ_MANAGER_I Mgr, _In_ PAWQ_WORK_ITEM_I Item);
+
+static NTSTATUS AwqpEnqueue(_In_ PAWQ_MANAGER_I Mgr, _In_ PAWQ_WORK_ITEM_I Item);
+static PAWQ_WORK_ITEM_I AwqpDequeue(_In_ PAWQ_MANAGER_I Mgr);
+
+static VOID AwqpRegisterItem(_In_ PAWQ_MANAGER_I Mgr, _In_ PAWQ_WORK_ITEM_I Item);
+static VOID AwqpUnregisterItem(_In_ PAWQ_MANAGER_I Mgr, _In_ PAWQ_WORK_ITEM_I Item);
+static PAWQ_WORK_ITEM_I AwqpFindItem(_In_ PAWQ_MANAGER_I Mgr, _In_ ULONG64 Id);
+
+static VOID AwqpCompleteItem(_In_ PAWQ_MANAGER_I Mgr,
+                             _In_ PAWQ_WORK_ITEM_I Item,
+                             _In_ NTSTATUS Status);
+static VOID AwqpExecuteItem(_In_ PAWQ_MANAGER_I Mgr,
+                            _In_ PAWQ_WORKER_I Worker,
+                            _In_ PAWQ_WORK_ITEM_I Item);
+
+static NTSTATUS AwqpCreateWorker(_In_ PAWQ_MANAGER_I Mgr, _Out_ PAWQ_WORKER_I *Out);
+
+static NTSTATUS AwqpSerializationCheck(_In_ PAWQ_MANAGER_I Mgr, _In_ PAWQ_WORK_ITEM_I Item);
+static VOID AwqpSerializationRelease(_In_ PAWQ_MANAGER_I Mgr, _In_ ULONG64 Key);
+
+static VOID AwqpCheckDrainComplete(_In_ PAWQ_MANAGER_I Mgr);
+
+//
+// Cancel and complete every successor of the given chain head.
+// Successors live in the hash + ActiveItems list but are NOT on any
+// priority queue, so cancelling the head alone leaks them and stalls
+// drain/shutdown. Caller must own no AWQ locks. Item->NextInChain is
+// cleared so a concurrent path cannot re-walk the same chain.
+//
+static VOID AwqpCancelChainSuccessors(_In_ PAWQ_MANAGER_I Mgr,
+                                      _In_ PAWQ_WORK_ITEM_I Item);
+
+// ============================================================================
+// Helper: safe acquire/release for push lock with critical region
+// ============================================================================
+
+#define AWQ_LOCK_EXCLUSIVE(pLock)    \
+    do { KeEnterCriticalRegion(); ExAcquirePushLockExclusive(pLock); } while(0)
+
+#define AWQ_UNLOCK_EXCLUSIVE(pLock)  \
+    do { ExReleasePushLockExclusive(pLock); KeLeaveCriticalRegion(); } while(0)
+
+#define AWQ_LOCK_SHARED(pLock)      \
+    do { KeEnterCriticalRegion(); ExAcquirePushLockShared(pLock); } while(0)
+
+#define AWQ_UNLOCK_SHARED(pLock)    \
+    do { ExReleasePushLockShared(pLock); KeLeaveCriticalRegion(); } while(0)
+
+// ============================================================================
+// Validate handle â†’ internal pointer
+// ============================================================================
+
+static __forceinline PAWQ_MANAGER_I
+AwqpFromHandle(
+    _In_ HAWQ_MANAGER Handle
+    )
+{
+    PAWQ_MANAGER_I Mgr = (PAWQ_MANAGER_I)(ULONG_PTR)Handle;
+    if (Mgr == NULL) return NULL;
+    if (Mgr->Magic != AWQ_MANAGER_MAGIC) return NULL;
+    if (Mgr->Initialized == 0) return NULL;
+    return Mgr;
+}
+
+// ============================================================================
+//  AwqInitialize
+// ============================================================================
+
+_IRQL_requires_(PASSIVE_LEVEL)
+_Must_inspect_result_
+NTSTATUS
+AwqInitialize(
+    _Out_ HAWQ_MANAGER *Handle,
+    _In_ ULONG MinThreads,
+    _In_ ULONG MaxThreads,
+    _In_ ULONG MaxQueueSize
+    )
+{
+    PAWQ_MANAGER_I Mgr = NULL;
+    NTSTATUS Status;
+    ULONG i;
+    ULONG ProcessorCount;
+
+    PAGED_CODE();
+
+    if (Handle == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *Handle = NULL;
+
+    ProcessorCount = KeQueryActiveProcessorCountEx(ALL_PROCESSOR_GROUPS);
+
+    //
+    // Clamp parameters
+    //
+    if (MinThreads == 0) MinThreads = AWQ_MIN_THREADS;
+    if (MaxThreads == 0) MaxThreads = min(ProcessorCount * AWQ_DEFAULT_THREADS_PER_CPU, AWQ_MAX_THREADS);
+    if (MinThreads > MaxThreads) MinThreads = MaxThreads;
+    if (MaxThreads > AWQ_MAX_THREADS) MaxThreads = AWQ_MAX_THREADS;
+    if (MinThreads < AWQ_MIN_THREADS) MinThreads = AWQ_MIN_THREADS;
+    if (MaxQueueSize == 0) MaxQueueSize = AWQ_DEFAULT_QUEUE_SIZE;
+    if (MaxQueueSize < AWQ_MIN_QUEUE_SIZE) MaxQueueSize = AWQ_MIN_QUEUE_SIZE;
+    if (MaxQueueSize > AWQ_MAX_QUEUE_SIZE) MaxQueueSize = AWQ_MAX_QUEUE_SIZE;
+
+    //
+    // Allocate manager (ExAllocatePool2 zero-inits)
+    //
+    Mgr = (PAWQ_MANAGER_I)ExAllocatePool2(
+        POOL_FLAG_NON_PAGED, sizeof(AWQ_MANAGER_I), AWQ_POOL_TAG_MGR);
+    if (Mgr == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    Mgr->Magic = AWQ_MANAGER_MAGIC;
+    InterlockedExchange(&Mgr->State, (LONG)AwqQueueState_Running);
+
+    ExInitializeRundownProtection(&Mgr->RundownRef);
+
+    //
+    // Priority queues
+    //
+    for (i = 0; i < AwqPriority_Count; i++) {
+        InitializeListHead(&Mgr->Queues[i].ItemList);
+        ExInitializePushLock(&Mgr->Queues[i].Lock);
+        Mgr->Queues[i].MaxItems = MaxQueueSize;
+    }
+
+    //
+    // Worker thread list
+    //
+    InitializeListHead(&Mgr->WorkerList);
+    ExInitializePushLock(&Mgr->WorkerLock);
+    Mgr->MinWorkers = MinThreads;
+    Mgr->MaxWorkers = MaxThreads;
+
+    //
+    // Events
+    //
+    KeInitializeEvent(&Mgr->NewWorkEvent, SynchronizationEvent, FALSE);
+    KeInitializeEvent(&Mgr->ShutdownEvent, NotificationEvent, FALSE);
+    KeInitializeEvent(&Mgr->DrainCompleteEvent, NotificationEvent, FALSE);
+
+    //
+    // ID generator (start at 1)
+    //
+    Mgr->NextItemId = 1;
+
+    //
+    // Hash table (chained)
+    //
+    Mgr->Hash.BucketCount = AWQ_HASH_BUCKET_COUNT;
+    Mgr->Hash.Buckets = (LIST_ENTRY *)ExAllocatePool2(
+        POOL_FLAG_NON_PAGED,
+        Mgr->Hash.BucketCount * sizeof(LIST_ENTRY),
+        AWQ_POOL_TAG_HASH);
+    if (Mgr->Hash.Buckets == NULL) {
+        ExFreePoolWithTag(Mgr, AWQ_POOL_TAG_MGR);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    for (i = 0; i < Mgr->Hash.BucketCount; i++) {
+        InitializeListHead(&Mgr->Hash.Buckets[i]);
+    }
+    ExInitializePushLock(&Mgr->Hash.Lock);
+
+    //
+    // Active item tracking
+    //
+    InitializeListHead(&Mgr->ActiveItems.List);
+    ExInitializePushLock(&Mgr->ActiveItems.Lock);
+
+    //
+    // Serialization
+    //
+    InitializeListHead(&Mgr->Serialization.KeyList);
+    ExInitializePushLock(&Mgr->Serialization.Lock);
+
+    //
+    // Item cache
+    //
+    InitializeListHead(&Mgr->Cache.FreeList);
+    ExInitializePushLock(&Mgr->Cache.Lock);
+    Mgr->Cache.MaxFree = AWQ_ITEM_CACHE_SIZE;
+
+    //
+    // Pre-populate cache
+    //
+    for (i = 0; i < min(AWQ_ITEM_CACHE_SIZE / 4, 32); i++) {
+        PAWQ_WORK_ITEM_I Item = (PAWQ_WORK_ITEM_I)ExAllocatePool2(
+            POOL_FLAG_NON_PAGED, sizeof(AWQ_WORK_ITEM_I), AWQ_POOL_TAG_ITEM);
+        if (Item != NULL) {
+            Item->Magic = AWQ_ITEM_MAGIC;
+            InsertTailList(&Mgr->Cache.FreeList, &Item->QueueLink);
+            Mgr->Cache.FreeCount++;
+        }
+    }
+
+    //
+    // Configuration
+    //
+    Mgr->Config.DefaultTimeoutMs = AWQ_DEFAULT_TIMEOUT_MS;
+    Mgr->Config.MaxQueueSize = MaxQueueSize;
+    InterlockedExchange(&Mgr->Config.EnableDynamicThreads, 1);
+
+    //
+    // Statistics
+    //
+    KeQuerySystemTimePrecise(&Mgr->Stats.StartTime);
+
+    //
+    // Create initial workers
+    //
+    for (i = 0; i < MinThreads; i++) {
+        PAWQ_WORKER_I W = NULL;
+        Status = AwqpCreateWorker(Mgr, &W);
+        if (!NT_SUCCESS(Status)) {
+            if (Mgr->WorkerCount == 0) {
+                //
+                // No workers at all â€” tear down and fail
+                //
+                while (!IsListEmpty(&Mgr->Cache.FreeList)) {
+                    PLIST_ENTRY E = RemoveHeadList(&Mgr->Cache.FreeList);
+                    PAWQ_WORK_ITEM_I It = CONTAINING_RECORD(E, AWQ_WORK_ITEM_I, QueueLink);
+                    ExFreePoolWithTag(It, AWQ_POOL_TAG_ITEM);
+                }
+                ExFreePoolWithTag(Mgr->Hash.Buckets, AWQ_POOL_TAG_HASH);
+                ExFreePoolWithTag(Mgr, AWQ_POOL_TAG_MGR);
+                return Status;
+            }
+            break;  // partial success is acceptable
+        }
+    }
+
+    InterlockedExchange(&Mgr->Initialized, 1);
+    *Handle = (HAWQ_MANAGER)(ULONG_PTR)Mgr;
+
+    return STATUS_SUCCESS;
+}
+
+// ============================================================================
+//  AwqShutdown
+// ============================================================================
+
+_IRQL_requires_(PASSIVE_LEVEL)
+VOID
+AwqShutdown(
+    _In_ HAWQ_MANAGER Handle
+    )
+{
+    PAWQ_MANAGER_I Mgr;
+    LIST_ENTRY WorkersToDestroy;
+    PLIST_ENTRY Entry;
+    ULONG i;
+    LARGE_INTEGER Timeout;
+
+    PAGED_CODE();
+
+    Mgr = AwqpFromHandle(Handle);
+    if (Mgr == NULL) return;
+
+    //
+    // Idempotent: only one caller wins
+    //
+    if (InterlockedCompareExchange(&Mgr->Initialized, 0, 1) != 1) {
+        return;
+    }
+
+    InterlockedExchange(&Mgr->State, (LONG)AwqQueueState_ShuttingDown);
+
+    //
+    // Signal shutdown, wake all workers
+    //
+    KeSetEvent(&Mgr->ShutdownEvent, IO_NO_INCREMENT, FALSE);
+    KeSetEvent(&Mgr->NewWorkEvent, IO_NO_INCREMENT, FALSE);
+
+    //
+    // Wait for all in-flight API calls to drain
+    //
+    ExWaitForRundownProtectionRelease(&Mgr->RundownRef);
+
+    //
+    // Collect all workers under lock
+    //
+    InitializeListHead(&WorkersToDestroy);
+
+    AWQ_LOCK_EXCLUSIVE(&Mgr->WorkerLock);
+    while (!IsListEmpty(&Mgr->WorkerList)) {
+        Entry = RemoveHeadList(&Mgr->WorkerList);
+        InsertTailList(&WorkersToDestroy, Entry);
+    }
+    AWQ_UNLOCK_EXCLUSIVE(&Mgr->WorkerLock);
+
+    //
+    // Signal each worker to stop and wait for thread exit.
+    //
+    // We MUST NOT free the manager while any worker thread is still alive:
+    // workers continue to read Mgr->State, Mgr->NewWorkEvent, etc. on every
+    // loop iteration. A bounded timeout followed by ExFreePool would be a
+    // guaranteed BSOD use-after-free as soon as the leaked worker resumes.
+    //
+    // We therefore wait with a diagnostic timeout, log a warning if the
+    // wait does not complete in time, and then re-wait without bound. A
+    // hung user callback can stall shutdown, but that is strictly
+    // preferable to corrupting the kernel pool.
+    //
+    Timeout.QuadPart = -((LONGLONG)AWQ_SHUTDOWN_TIMEOUT_MS * 10000);
+
+    while (!IsListEmpty(&WorkersToDestroy)) {
+        Entry = RemoveHeadList(&WorkersToDestroy);
+        PAWQ_WORKER_I W = CONTAINING_RECORD(Entry, AWQ_WORKER_I, ListEntry);
+
+        InterlockedExchange(&W->Running, 0);
+
+        if (W->ThreadObject != NULL) {
+            NTSTATUS waitStatus = KeWaitForSingleObject(
+                W->ThreadObject, Executive, KernelMode, FALSE, &Timeout);
+
+            while (waitStatus == STATUS_TIMEOUT) {
+#if DBG
+                DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
+                    "[ShadowStrike] AWQ: Worker thread %u still running %u ms after "
+                    "shutdown signal; continuing to wait (callback may be stuck).\n",
+                    W->ThreadId, AWQ_SHUTDOWN_TIMEOUT_MS);
+#endif
+                // Re-arm signaling in case the worker missed the wake-up.
+                KeSetEvent(&Mgr->ShutdownEvent, IO_NO_INCREMENT, FALSE);
+                KeSetEvent(&Mgr->NewWorkEvent, IO_NO_INCREMENT, FALSE);
+
+                waitStatus = KeWaitForSingleObject(
+                    W->ThreadObject, Executive, KernelMode, FALSE, &Timeout);
+            }
+
+            ObDereferenceObject(W->ThreadObject);
+        }
+        ExFreePoolWithTag(W, AWQ_POOL_TAG_THREAD);
+    }
+
+    //
+    // Cancel and free all remaining queued items.
+    // Callbacks are called outside the lock (free-outside-lock pattern).
+    //
+    for (i = 0; i < AwqPriority_Count; i++) {
+        LIST_ENTRY FreeList;
+        InitializeListHead(&FreeList);
+
+        AWQ_LOCK_EXCLUSIVE(&Mgr->Queues[i].Lock);
+        while (!IsListEmpty(&Mgr->Queues[i].ItemList)) {
+            Entry = RemoveHeadList(&Mgr->Queues[i].ItemList);
+            InsertTailList(&FreeList, Entry);
+            InterlockedDecrement(&Mgr->Queues[i].ItemCount);
+        }
+        AWQ_UNLOCK_EXCLUSIVE(&Mgr->Queues[i].Lock);
+
+        while (!IsListEmpty(&FreeList)) {
+            Entry = RemoveHeadList(&FreeList);
+            PAWQ_WORK_ITEM_I Item = CONTAINING_RECORD(Entry, AWQ_WORK_ITEM_I, QueueLink);
+
+            // Cancel any chained successors before completing this item
+            AwqpCancelChainSuccessors(Mgr, Item);
+
+            InterlockedExchange(&Item->State, (LONG)AwqItemState_Cancelled);
+            AwqpCompleteItem(Mgr, Item, STATUS_CANCELLED);
+        }
+    }
+
+    //
+    // Free cached items
+    //
+    AWQ_LOCK_EXCLUSIVE(&Mgr->Cache.Lock);
+    while (!IsListEmpty(&Mgr->Cache.FreeList)) {
+        Entry = RemoveHeadList(&Mgr->Cache.FreeList);
+        PAWQ_WORK_ITEM_I Item = CONTAINING_RECORD(Entry, AWQ_WORK_ITEM_I, QueueLink);
+        ExFreePoolWithTag(Item, AWQ_POOL_TAG_ITEM);
+    }
+    AWQ_UNLOCK_EXCLUSIVE(&Mgr->Cache.Lock);
+
+    //
+    // Free serialization keys
+    //
+    AWQ_LOCK_EXCLUSIVE(&Mgr->Serialization.Lock);
+    while (!IsListEmpty(&Mgr->Serialization.KeyList)) {
+        Entry = RemoveHeadList(&Mgr->Serialization.KeyList);
+        PAWQ_SKEY SK = CONTAINING_RECORD(Entry, AWQ_SKEY, ListEntry);
+
+        // Complete pending items properly â€” they are registered in the hash
+        // table and active items list. Raw ExFreePoolWithTag would leave
+        // dangling entries â†’ use-after-free during hash cleanup.
+        while (!IsListEmpty(&SK->PendingItems)) {
+            PLIST_ENTRY PE = RemoveHeadList(&SK->PendingItems);
+            PAWQ_WORK_ITEM_I PI = CONTAINING_RECORD(PE, AWQ_WORK_ITEM_I, QueueLink);
+            InterlockedExchange(&PI->OnSerialPending, 0);
+            InterlockedExchange(&PI->State, (LONG)AwqItemState_Cancelled);
+            AwqpCompleteItem(Mgr, PI, STATUS_CANCELLED);
+        }
+        ExFreePoolWithTag(SK, AWQ_POOL_TAG_SKEY);
+    }
+    AWQ_UNLOCK_EXCLUSIVE(&Mgr->Serialization.Lock);
+
+    //
+    // Free hash table
+    //
+    if (Mgr->Hash.Buckets != NULL) {
+        //
+        // Free any remaining hash entries
+        //
+        for (i = 0; i < Mgr->Hash.BucketCount; i++) {
+            while (!IsListEmpty(&Mgr->Hash.Buckets[i])) {
+                Entry = RemoveHeadList(&Mgr->Hash.Buckets[i]);
+                // Hash entries are embedded in items, no separate free needed
+            }
+        }
+        ExFreePoolWithTag(Mgr->Hash.Buckets, AWQ_POOL_TAG_HASH);
+    }
+
+    //
+    // Clear magic and free manager
+    //
+    Mgr->Magic = 0;
+    ExFreePoolWithTag(Mgr, AWQ_POOL_TAG_MGR);
+}
+
+// ============================================================================
+//  AwqPause / AwqResume
+// ============================================================================
+
+_IRQL_requires_(PASSIVE_LEVEL)
+_Must_inspect_result_
+NTSTATUS
+AwqPause(
+    _In_ HAWQ_MANAGER Handle
+    )
+{
+    PAWQ_MANAGER_I Mgr;
+
+    PAGED_CODE();
+
+    Mgr = AwqpFromHandle(Handle);
+    if (Mgr == NULL) return STATUS_INVALID_PARAMETER;
+    if (!ExAcquireRundownProtection(&Mgr->RundownRef)) return STATUS_DELETE_PENDING;
+
+    if (InterlockedCompareExchange(&Mgr->State,
+            (LONG)AwqQueueState_Paused,
+            (LONG)AwqQueueState_Running) != (LONG)AwqQueueState_Running) {
+        ExReleaseRundownProtection(&Mgr->RundownRef);
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+
+    ExReleaseRundownProtection(&Mgr->RundownRef);
+    return STATUS_SUCCESS;
+}
+
+_IRQL_requires_(PASSIVE_LEVEL)
+_Must_inspect_result_
+NTSTATUS
+AwqResume(
+    _In_ HAWQ_MANAGER Handle
+    )
+{
+    PAWQ_MANAGER_I Mgr;
+
+    PAGED_CODE();
+
+    Mgr = AwqpFromHandle(Handle);
+    if (Mgr == NULL) return STATUS_INVALID_PARAMETER;
+    if (!ExAcquireRundownProtection(&Mgr->RundownRef)) return STATUS_DELETE_PENDING;
+
+    if (InterlockedCompareExchange(&Mgr->State,
+            (LONG)AwqQueueState_Running,
+            (LONG)AwqQueueState_Paused) != (LONG)AwqQueueState_Paused) {
+        ExReleaseRundownProtection(&Mgr->RundownRef);
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+
+    KeSetEvent(&Mgr->NewWorkEvent, IO_NO_INCREMENT, FALSE);
+
+    ExReleaseRundownProtection(&Mgr->RundownRef);
+    return STATUS_SUCCESS;
+}
+
+// ============================================================================
+//  AwqDrain
+// ============================================================================
+
+_IRQL_requires_(PASSIVE_LEVEL)
+_Must_inspect_result_
+NTSTATUS
+AwqDrain(
+    _In_ HAWQ_MANAGER Handle,
+    _In_ ULONG TimeoutMs
+    )
+{
+    PAWQ_MANAGER_I Mgr;
+    NTSTATUS Status;
+    LARGE_INTEGER Timeout;
+
+    PAGED_CODE();
+
+    Mgr = AwqpFromHandle(Handle);
+    if (Mgr == NULL) return STATUS_INVALID_PARAMETER;
+    if (!ExAcquireRundownProtection(&Mgr->RundownRef)) return STATUS_DELETE_PENDING;
+
+    //
+    // Use ActiveItems.Count as the in-flight gauge. It is incremented in
+    // AwqpRegisterItem (called BEFORE the item is enqueued or pushed onto
+    // the serialization pending list) and decremented in AwqpUnregisterItem
+    // (called from AwqpCompleteItem). It therefore covers every item in
+    // existence between submit and completion, including:
+    //   - items waiting in priority queues
+    //   - items currently executing in workers
+    //   - items deferred on serialization PendingItems
+    //   - items mid-retry between dequeue and re-enqueue
+    //
+    // The previous implementation summed Queue[i].ItemCount + ActiveWorkerCount,
+    // which leaves a window between AwqpDequeue (decrements ItemCount) and
+    // the ActiveWorkerCount increment in AwqpExecuteItem where both read zero,
+    // letting drain falsely complete with work still in flight.
+    //
+    if (Mgr->ActiveItems.Count == 0) {
+        ExReleaseRundownProtection(&Mgr->RundownRef);
+        return STATUS_SUCCESS;
+    }
+
+    //
+    // Set draining state (block new submissions).
+    // CRITICAL: Clear the drain event BEFORE setting state to Draining.
+    // If we set Draining first, a worker completing the last item could
+    // signal DrainCompleteEvent between our state-set and event-clear,
+    // and KeClearEvent would lose that signal â†’ drain hangs until timeout.
+    //
+    KeClearEvent(&Mgr->DrainCompleteEvent);
+    MemoryBarrier();
+    InterlockedExchange(&Mgr->State, (LONG)AwqQueueState_Draining);
+
+    //
+    // Re-check after publishing Draining: items may have completed in the
+    // window between the initial check and the state change.
+    //
+    if (Mgr->ActiveItems.Count == 0) {
+        InterlockedExchange(&Mgr->State, (LONG)AwqQueueState_Running);
+        ExReleaseRundownProtection(&Mgr->RundownRef);
+        return STATUS_SUCCESS;
+    }
+
+    if (TimeoutMs == 0) TimeoutMs = AWQ_SHUTDOWN_TIMEOUT_MS;
+    Timeout.QuadPart = -((LONGLONG)TimeoutMs * 10000);
+
+    Status = KeWaitForSingleObject(
+        &Mgr->DrainCompleteEvent, Executive, KernelMode, FALSE, &Timeout);
+
+    //
+    // Restore running state regardless of outcome
+    //
+    InterlockedExchange(&Mgr->State, (LONG)AwqQueueState_Running);
+
+    ExReleaseRundownProtection(&Mgr->RundownRef);
+    return (Status == STATUS_TIMEOUT) ? STATUS_TIMEOUT : STATUS_SUCCESS;
+}
+
+// ============================================================================
+//  AwqSubmit
+// ============================================================================
+
+_IRQL_requires_max_(APC_LEVEL)
+_Must_inspect_result_
+NTSTATUS
+AwqSubmit(
+    _In_ HAWQ_MANAGER Handle,
+    _In_ PAWQ_WORK_CALLBACK Callback,
+    _In_opt_ PVOID Context,
+    _In_ ULONG ContextSize,
+    _In_opt_ PAWQ_SUBMIT_OPTIONS Options,
+    _Out_opt_ PULONG64 ItemId
+    )
+{
+    PAWQ_MANAGER_I Mgr;
+    PAWQ_WORK_ITEM_I Item = NULL;
+    NTSTATUS Status;
+    AWQ_PRIORITY Priority = AwqPriority_Normal;
+    AWQ_WORK_FLAGS Flags = AwqFlag_None;
+
+    if (ItemId != NULL) *ItemId = 0;
+
+    Mgr = AwqpFromHandle(Handle);
+    if (Mgr == NULL) return STATUS_INVALID_PARAMETER;
+    if (Callback == NULL) return STATUS_INVALID_PARAMETER;
+    if (ContextSize > AWQ_MAX_CONTEXT_SIZE) return STATUS_BUFFER_OVERFLOW;
+
+    if (!ExAcquireRundownProtection(&Mgr->RundownRef)) return STATUS_DELETE_PENDING;
+
+    //
+    // Only accept work in Running state
+    //
+    {
+        LONG CurState = Mgr->State;
+        if (CurState != (LONG)AwqQueueState_Running) {
+            ExReleaseRundownProtection(&Mgr->RundownRef);
+            return STATUS_DEVICE_NOT_READY;
+        }
+    }
+
+    if (Options != NULL) {
+        Priority = Options->Priority;
+        Flags = Options->Flags;
+        if ((ULONG)Priority >= AwqPriority_Count) Priority = AwqPriority_Normal;
+    }
+
+    //
+    // Capacity check
+    //
+    if ((ULONG)Mgr->Queues[Priority].ItemCount >= Mgr->Config.MaxQueueSize) {
+        InterlockedIncrement64(&Mgr->Queues[Priority].TotalDropped);
+        {
+            PSSPM_MONITOR pm = ShadowStrikeGetPerformanceMonitor();
+            if (pm != NULL) {
+                SsPmRecordSample(pm, SsPmMetric_DroppedEvents, 1);
+            }
+        }
+        ExReleaseRundownProtection(&Mgr->RundownRef);
+        return STATUS_QUOTA_EXCEEDED;
+    }
+
+    //
+    // Allocate item
+    //
+    Item = AwqpAllocItem(Mgr);
+    if (Item == NULL) {
+        ExReleaseRundownProtection(&Mgr->RundownRef);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    //
+    // Initialize
+    //
+    Item->ItemId = InterlockedIncrement64(&Mgr->NextItemId);
+    Item->Priority = Priority;
+    Item->Flags = Flags;
+    InterlockedExchange(&Item->State, (LONG)AwqItemState_Queued);
+    Item->WorkCallback = Callback;
+    Item->Context = Context;
+    Item->ContextSize = ContextSize;
+    Item->Manager = Mgr;
+    KeInitializeEvent(&Item->CompletionEvent, NotificationEvent, FALSE);
+    KeQuerySystemTimePrecise(&Item->SubmitTime);
+
+    if (Options != NULL) {
+        Item->SerializationKey = Options->SerializationKey;
+        Item->CompletionCallback = Options->CompletionCallback;
+        Item->CleanupCallback = Options->CleanupCallback;
+        Item->CompletionContext = Options->CompletionContext;
+        Item->TimeoutMs = Options->TimeoutMs;
+        Item->MaxRetries = min(Options->MaxRetries, AWQ_MAX_RETRIES);
+        Item->RetryDelayMs = Options->RetryDelayMs;
+    }
+    if (Item->TimeoutMs == 0) {
+        Item->TimeoutMs = Mgr->Config.DefaultTimeoutMs;
+    }
+
+    //
+    // Copy context if DeleteContext flag is set
+    //
+    if ((Flags & AwqFlag_DeleteContext) && Context != NULL && ContextSize > 0) {
+        Item->AllocatedContext = ExAllocatePool2(
+            POOL_FLAG_NON_PAGED, ContextSize, AWQ_POOL_TAG_CTX);
+        if (Item->AllocatedContext == NULL) {
+            AwqpFreeItem(Mgr, Item);
+            ExReleaseRundownProtection(&Mgr->RundownRef);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        RtlCopyMemory(Item->AllocatedContext, Context, ContextSize);
+        Item->Context = Item->AllocatedContext;
+    }
+
+    //
+    // Register in hash + active list
+    //
+    AwqpRegisterItem(Mgr, Item);
+
+    //
+    // Serialization check: if serialized and key is busy, defer
+    //
+    if ((Flags & AwqFlag_Serialized) && Item->SerializationKey != 0) {
+        Status = AwqpSerializationCheck(Mgr, Item);
+        if (Status == STATUS_PENDING) {
+            // Item was deferred into the serialization pending list
+            InterlockedIncrement64(&Mgr->Stats.TotalSubmitted);
+            if (ItemId != NULL) *ItemId = Item->ItemId;
+            ExReleaseRundownProtection(&Mgr->RundownRef);
+            return STATUS_SUCCESS;
+        }
+        if (!NT_SUCCESS(Status)) {
+            // Serialization key allocation failed
+            AwqpUnregisterItem(Mgr, Item);
+            AwqpFreeItem(Mgr, Item);
+            ExReleaseRundownProtection(&Mgr->RundownRef);
+            return Status;
+        }
+        // STATUS_SUCCESS means we're clear to enqueue
+    }
+
+    //
+    // Enqueue
+    //
+    Status = AwqpEnqueue(Mgr, Item);
+    if (!NT_SUCCESS(Status)) {
+        AwqpUnregisterItem(Mgr, Item);
+        AwqpFreeItem(Mgr, Item);
+        ExReleaseRundownProtection(&Mgr->RundownRef);
+        return Status;
+    }
+
+    InterlockedIncrement64(&Mgr->Stats.TotalSubmitted);
+
+    if (ItemId != NULL) *ItemId = Item->ItemId;
+
+    ExReleaseRundownProtection(&Mgr->RundownRef);
+    return STATUS_SUCCESS;
+}
+
+// ============================================================================
+//  AwqSubmitWithContext
+// ============================================================================
+
+_IRQL_requires_max_(APC_LEVEL)
+_Must_inspect_result_
+NTSTATUS
+AwqSubmitWithContext(
+    _In_ HAWQ_MANAGER Handle,
+    _In_ PAWQ_WORK_CALLBACK Callback,
+    _In_reads_bytes_(ContextSize) PVOID Context,
+    _In_ ULONG ContextSize,
+    _In_ AWQ_PRIORITY Priority,
+    _Out_opt_ PULONG64 ItemId
+    )
+{
+    AWQ_SUBMIT_OPTIONS Opts;
+    RtlZeroMemory(&Opts, sizeof(Opts));
+    Opts.Priority = Priority;
+    Opts.Flags = AwqFlag_DeleteContext;
+    return AwqSubmit(Handle, Callback, Context, ContextSize, &Opts, ItemId);
+}
+
+// ============================================================================
+//  AwqSubmitChain
+// ============================================================================
+
+_IRQL_requires_max_(APC_LEVEL)
+_Must_inspect_result_
+NTSTATUS
+AwqSubmitChain(
+    _In_ HAWQ_MANAGER Handle,
+    _In_reads_(Count) PAWQ_WORK_CALLBACK *Callbacks,
+    _In_reads_opt_(Count) PVOID *Contexts,
+    _In_reads_opt_(Count) ULONG *ContextSizes,
+    _In_ ULONG Count,
+    _In_ AWQ_PRIORITY Priority,
+    _Out_opt_ PULONG64 ChainId
+    )
+{
+    PAWQ_MANAGER_I Mgr;
+    PAWQ_WORK_ITEM_I *Items = NULL;
+    NTSTATUS Status;
+    ULONG i;
+    ULONG64 BaseId;
+
+    if (ChainId != NULL) *ChainId = 0;
+
+    Mgr = AwqpFromHandle(Handle);
+    if (Mgr == NULL) return STATUS_INVALID_PARAMETER;
+    if (Callbacks == NULL || Count == 0) return STATUS_INVALID_PARAMETER;
+    if (Count > AWQ_MAX_CHAIN_LENGTH) return STATUS_INVALID_PARAMETER;
+    if ((ULONG)Priority >= AwqPriority_Count) return STATUS_INVALID_PARAMETER;
+
+    if (!ExAcquireRundownProtection(&Mgr->RundownRef)) return STATUS_DELETE_PENDING;
+
+    if (Mgr->State != (LONG)AwqQueueState_Running) {
+        ExReleaseRundownProtection(&Mgr->RundownRef);
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    //
+    // Allocate pointer array
+    //
+    Items = (PAWQ_WORK_ITEM_I *)ExAllocatePool2(
+        POOL_FLAG_NON_PAGED,
+        Count * sizeof(PAWQ_WORK_ITEM_I),
+        AWQ_POOL_TAG_CTX);
+    if (Items == NULL) {
+        ExReleaseRundownProtection(&Mgr->RundownRef);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    //
+    // Allocate all items upfront
+    //
+    for (i = 0; i < Count; i++) {
+        Items[i] = AwqpAllocItem(Mgr);
+        if (Items[i] == NULL) {
+            Status = STATUS_INSUFFICIENT_RESOURCES;
+            goto ChainCleanup;
+        }
+    }
+
+    //
+    // Reserve IDs atomically
+    //
+    BaseId = InterlockedAdd64(&Mgr->NextItemId, (LONG64)Count);
+    BaseId -= Count;
+
+    //
+    // Initialize and chain items
+    //
+    for (i = 0; i < Count; i++) {
+        PAWQ_WORK_ITEM_I It = Items[i];
+
+        It->ItemId = BaseId + i + 1;
+        It->Priority = Priority;
+        It->Flags = AwqFlag_CanCancel;  // chains are cancellable
+        InterlockedExchange(&It->State, (LONG)AwqItemState_Queued);
+        It->WorkCallback = Callbacks[i];
+        It->Context = (Contexts != NULL) ? Contexts[i] : NULL;
+        It->ContextSize = (ContextSizes != NULL) ? ContextSizes[i] : 0;
+        It->ChainIndex = i;
+        It->ChainLength = Count;
+        It->Manager = Mgr;
+        InitializeListHead(&It->QueueLink);  // FIX AWQ-C1: safe for RemoveEntryList if cancelled before enqueue
+        KeInitializeEvent(&It->CompletionEvent, NotificationEvent, FALSE);
+        KeQuerySystemTimePrecise(&It->SubmitTime);
+
+        if (i < Count - 1) {
+            It->NextInChain = Items[i + 1];
+        }
+    }
+
+    //
+    // Register ALL chain items in hash table (so they're all findable)
+    //
+    for (i = 0; i < Count; i++) {
+        AwqpRegisterItem(Mgr, Items[i]);
+    }
+
+    //
+    // Enqueue only the first item
+    //
+    Status = AwqpEnqueue(Mgr, Items[0]);
+    if (!NT_SUCCESS(Status)) {
+        for (i = 0; i < Count; i++) {
+            AwqpUnregisterItem(Mgr, Items[i]);
+            AwqpFreeItem(Mgr, Items[i]);
+        }
+        ExFreePoolWithTag(Items, AWQ_POOL_TAG_CTX);
+        ExReleaseRundownProtection(&Mgr->RundownRef);
+        return Status;
+    }
+
+    InterlockedIncrement64(&Mgr->Stats.TotalSubmitted);
+
+    if (ChainId != NULL) *ChainId = Items[0]->ItemId;
+
+    ExFreePoolWithTag(Items, AWQ_POOL_TAG_CTX);
+    ExReleaseRundownProtection(&Mgr->RundownRef);
+    return STATUS_SUCCESS;
+
+ChainCleanup:
+    for (i = 0; i < Count; i++) {
+        if (Items[i] != NULL) {
+            AwqpFreeItem(Mgr, Items[i]);
+        }
+    }
+    ExFreePoolWithTag(Items, AWQ_POOL_TAG_CTX);
+    ExReleaseRundownProtection(&Mgr->RundownRef);
+    return Status;
+}
+
+// ============================================================================
+//  AwqCancel
+// ============================================================================
+
+_IRQL_requires_max_(APC_LEVEL)
+_Must_inspect_result_
+NTSTATUS
+AwqCancel(
+    _In_ HAWQ_MANAGER Handle,
+    _In_ ULONG64 ItemId
+    )
+{
+    PAWQ_MANAGER_I Mgr;
+    PAWQ_WORK_ITEM_I Item;
+    BOOLEAN Removed = FALSE;
+
+    Mgr = AwqpFromHandle(Handle);
+    if (Mgr == NULL) return STATUS_INVALID_PARAMETER;
+    if (ItemId == 0) return STATUS_INVALID_PARAMETER;
+    if (!ExAcquireRundownProtection(&Mgr->RundownRef)) return STATUS_DELETE_PENDING;
+
+    //
+    // Find item (acquires a reference)
+    //
+    Item = AwqpFindItem(Mgr, ItemId);
+    if (Item == NULL) {
+        ExReleaseRundownProtection(&Mgr->RundownRef);
+        return STATUS_NOT_FOUND;
+    }
+
+    if (!(Item->Flags & AwqFlag_CanCancel)) {
+        AwqpDerefItem(Mgr, Item);
+        ExReleaseRundownProtection(&Mgr->RundownRef);
+        return STATUS_NOT_SUPPORTED;
+    }
+
+    //
+    // Route 1: item is parked on a serialization key's PendingItems list.
+    // Its QueueLink lives under the serialization lock, NOT the priority
+    // queue lock â€” the priority-queue path below would corrupt that list
+    // by removing a link the queue lock does not protect.
+    //
+    if (Item->OnSerialPending != 0) {
+        BOOLEAN RemovedFromSerial = FALSE;
+
+        AWQ_LOCK_EXCLUSIVE(&Mgr->Serialization.Lock);
+        if (Item->OnSerialPending != 0 &&
+            InterlockedCompareExchange(&Item->State,
+                (LONG)AwqItemState_Cancelled,
+                (LONG)AwqItemState_Queued) == (LONG)AwqItemState_Queued) {
+            RemoveEntryList(&Item->QueueLink);
+            InitializeListHead(&Item->QueueLink);
+            InterlockedExchange(&Item->OnSerialPending, 0);
+            RemovedFromSerial = TRUE;
+        }
+        AWQ_UNLOCK_EXCLUSIVE(&Mgr->Serialization.Lock);
+
+        if (RemovedFromSerial) {
+            AwqpCancelChainSuccessors(Mgr, Item);
+            AwqpCompleteItem(Mgr, Item, STATUS_CANCELLED);
+            InterlockedIncrement64(&Mgr->Stats.TotalCancelled);
+            AwqpDerefItem(Mgr, Item);
+            ExReleaseRundownProtection(&Mgr->RundownRef);
+            return STATUS_SUCCESS;
+        }
+        // Fall through â€” the item was already promoted out of the pending
+        // list and is now on a priority queue (or running/done). Handle
+        // through the priority-queue cancel path below.
+    }
+
+    //
+    // Try to cancel: CAS must be done UNDER the queue lock to prevent
+    // a race with AwqpDequeue. Without the lock, Dequeue could remove
+    // the item from the list between our CAS and RemoveEntryList,
+    // causing double-remove list corruption.
+    //
+    {
+        PAWQ_PQUEUE Q = &Mgr->Queues[Item->Priority];
+        AWQ_LOCK_EXCLUSIVE(&Q->Lock);
+        if (InterlockedCompareExchange(&Item->State,
+                (LONG)AwqItemState_Cancelled,
+                (LONG)AwqItemState_Queued) == (LONG)AwqItemState_Queued) {
+            RemoveEntryList(&Item->QueueLink);
+            InitializeListHead(&Item->QueueLink);
+            InterlockedDecrement(&Q->ItemCount);
+            Removed = TRUE;
+        }
+        AWQ_UNLOCK_EXCLUSIVE(&Q->Lock);
+    }
+
+    if (Removed) {
+        //
+        // Cancel chained successors BEFORE completing this item: completion
+        // releases the existence reference and may free the item, after
+        // which Item->NextInChain would be a dangling read.
+        //
+        AwqpCancelChainSuccessors(Mgr, Item);
+
+        AwqpCompleteItem(Mgr, Item, STATUS_CANCELLED);
+        InterlockedIncrement64(&Mgr->Stats.TotalCancelled);
+        // CompleteItem releases existence + tracking refs; release FindItem ref
+        AwqpDerefItem(Mgr, Item);
+        ExReleaseRundownProtection(&Mgr->RundownRef);
+        return STATUS_SUCCESS;
+    }
+
+    //
+    // Item is Running or already completed
+    //
+    LONG CurState = Item->State;
+    AwqpDerefItem(Mgr, Item);
+    ExReleaseRundownProtection(&Mgr->RundownRef);
+
+    return (CurState == (LONG)AwqItemState_Running) ? STATUS_PENDING : STATUS_SUCCESS;
+}
+
+// ============================================================================
+//  AwqCancelByKey
+// ============================================================================
+
+_IRQL_requires_max_(APC_LEVEL)
+_Must_inspect_result_
+NTSTATUS
+AwqCancelByKey(
+    _In_ HAWQ_MANAGER Handle,
+    _In_ ULONG64 SerializationKey
+    )
+{
+    PAWQ_MANAGER_I Mgr;
+    ULONG i;
+    ULONG CancelledCount = 0;
+
+    Mgr = AwqpFromHandle(Handle);
+    if (Mgr == NULL) return STATUS_INVALID_PARAMETER;
+    if (!ExAcquireRundownProtection(&Mgr->RundownRef)) return STATUS_DELETE_PENDING;
+
+    for (i = 0; i < AwqPriority_Count; i++) {
+        PAWQ_PQUEUE Q = &Mgr->Queues[i];
+        LIST_ENTRY ToCancel;
+        PLIST_ENTRY Entry, Next;
+
+        InitializeListHead(&ToCancel);
+
+        AWQ_LOCK_EXCLUSIVE(&Q->Lock);
+        for (Entry = Q->ItemList.Flink; Entry != &Q->ItemList; Entry = Next) {
+            Next = Entry->Flink;
+            PAWQ_WORK_ITEM_I Item = CONTAINING_RECORD(Entry, AWQ_WORK_ITEM_I, QueueLink);
+
+            if (Item->SerializationKey == SerializationKey &&
+                (Item->Flags & AwqFlag_CanCancel)) {
+
+                if (InterlockedCompareExchange(&Item->State,
+                        (LONG)AwqItemState_Cancelled,
+                        (LONG)AwqItemState_Queued) == (LONG)AwqItemState_Queued) {
+                    RemoveEntryList(Entry);
+                    InterlockedDecrement(&Q->ItemCount);
+                    InsertTailList(&ToCancel, Entry);
+                }
+            }
+        }
+        AWQ_UNLOCK_EXCLUSIVE(&Q->Lock);
+
+        //
+        // Complete cancelled items outside the lock. Walk each item's
+        // chain so successors do not leak in the hash/ActiveItems list.
+        //
+        while (!IsListEmpty(&ToCancel)) {
+            Entry = RemoveHeadList(&ToCancel);
+            PAWQ_WORK_ITEM_I Item = CONTAINING_RECORD(Entry, AWQ_WORK_ITEM_I, QueueLink);
+            AwqpCancelChainSuccessors(Mgr, Item);
+            AwqpCompleteItem(Mgr, Item, STATUS_CANCELLED);
+            CancelledCount++;
+        }
+    }
+
+    InterlockedAdd64(&Mgr->Stats.TotalCancelled, CancelledCount);
+
+    //
+    // Also walk the serialization-key pending list for this key. Items
+    // parked there are NOT on any priority queue, so the loop above never
+    // sees them â€” without this pass, AwqCancelByKey would silently leak
+    // every deferred submission for the key.
+    //
+    {
+        PLIST_ENTRY Entry;
+        PAWQ_SKEY SK = NULL;
+        LIST_ENTRY ToCancel;
+        InitializeListHead(&ToCancel);
+
+        AWQ_LOCK_EXCLUSIVE(&Mgr->Serialization.Lock);
+        for (Entry = Mgr->Serialization.KeyList.Flink;
+             Entry != &Mgr->Serialization.KeyList;
+             Entry = Entry->Flink) {
+            PAWQ_SKEY Cur = CONTAINING_RECORD(Entry, AWQ_SKEY, ListEntry);
+            if (Cur->Key == SerializationKey) {
+                SK = Cur;
+                break;
+            }
+        }
+        if (SK != NULL) {
+            PLIST_ENTRY PE, Next;
+            for (PE = SK->PendingItems.Flink;
+                 PE != &SK->PendingItems;
+                 PE = Next) {
+                Next = PE->Flink;
+                PAWQ_WORK_ITEM_I PI = CONTAINING_RECORD(PE, AWQ_WORK_ITEM_I, QueueLink);
+
+                if (!(PI->Flags & AwqFlag_CanCancel)) continue;
+
+                if (InterlockedCompareExchange(&PI->State,
+                        (LONG)AwqItemState_Cancelled,
+                        (LONG)AwqItemState_Queued) == (LONG)AwqItemState_Queued) {
+                    RemoveEntryList(PE);
+                    InterlockedExchange(&PI->OnSerialPending, 0);
+                    InsertTailList(&ToCancel, PE);
+                }
+            }
+        }
+        AWQ_UNLOCK_EXCLUSIVE(&Mgr->Serialization.Lock);
+
+        while (!IsListEmpty(&ToCancel)) {
+            PLIST_ENTRY PE = RemoveHeadList(&ToCancel);
+            PAWQ_WORK_ITEM_I PI = CONTAINING_RECORD(PE, AWQ_WORK_ITEM_I, QueueLink);
+            AwqpCancelChainSuccessors(Mgr, PI);
+            AwqpCompleteItem(Mgr, PI, STATUS_CANCELLED);
+            InterlockedIncrement64(&Mgr->Stats.TotalCancelled);
+        }
+    }
+
+    ExReleaseRundownProtection(&Mgr->RundownRef);
+    return STATUS_SUCCESS;
+}
+
+// ============================================================================
+//  AwqWaitForItem
+// ============================================================================
+
+_IRQL_requires_(PASSIVE_LEVEL)
+_Must_inspect_result_
+NTSTATUS
+AwqWaitForItem(
+    _In_ HAWQ_MANAGER Handle,
+    _In_ ULONG64 ItemId,
+    _In_ ULONG TimeoutMs,
+    _Out_opt_ PNTSTATUS ItemStatus
+    )
+{
+    PAWQ_MANAGER_I Mgr;
+    PAWQ_WORK_ITEM_I Item;
+    LARGE_INTEGER Timeout;
+    NTSTATUS WaitResult;
+
+    PAGED_CODE();
+
+    if (ItemStatus != NULL) *ItemStatus = STATUS_UNSUCCESSFUL;
+
+    Mgr = AwqpFromHandle(Handle);
+    if (Mgr == NULL) return STATUS_INVALID_PARAMETER;
+    if (ItemId == 0) return STATUS_INVALID_PARAMETER;
+    if (!ExAcquireRundownProtection(&Mgr->RundownRef)) return STATUS_DELETE_PENDING;
+
+    //
+    // Find item (ref-counted â€” safe even if item completes concurrently)
+    //
+    Item = AwqpFindItem(Mgr, ItemId);
+    if (Item == NULL) {
+        ExReleaseRundownProtection(&Mgr->RundownRef);
+        return STATUS_NOT_FOUND;
+    }
+
+    //
+    // Check if already done
+    //
+    {
+        LONG S = Item->State;
+        if (S == (LONG)AwqItemState_Completed ||
+            S == (LONG)AwqItemState_Cancelled ||
+            S == (LONG)AwqItemState_Failed) {
+
+            if (ItemStatus != NULL) *ItemStatus = Item->CompletionStatus;
+            AwqpDerefItem(Mgr, Item);
+            ExReleaseRundownProtection(&Mgr->RundownRef);
+            return STATUS_SUCCESS;
+        }
+    }
+
+    //
+    // Wait on the embedded completion event
+    //
+    if (TimeoutMs == 0) TimeoutMs = AWQ_SHUTDOWN_TIMEOUT_MS;
+    Timeout.QuadPart = -((LONGLONG)TimeoutMs * 10000);
+
+    WaitResult = KeWaitForSingleObject(
+        &Item->CompletionEvent, Executive, KernelMode, FALSE, &Timeout);
+
+    if (WaitResult == STATUS_TIMEOUT) {
+        AwqpDerefItem(Mgr, Item);
+        ExReleaseRundownProtection(&Mgr->RundownRef);
+        return STATUS_TIMEOUT;
+    }
+
+    if (ItemStatus != NULL) *ItemStatus = Item->CompletionStatus;
+
+    AwqpDerefItem(Mgr, Item);
+    ExReleaseRundownProtection(&Mgr->RundownRef);
+    return STATUS_SUCCESS;
+}
+
+// ============================================================================
+//  AwqGetItemStatus
+// ============================================================================
+
+_IRQL_requires_max_(APC_LEVEL)
+_Must_inspect_result_
+NTSTATUS
+AwqGetItemStatus(
+    _In_ HAWQ_MANAGER Handle,
+    _In_ ULONG64 ItemId,
+    _Out_ AWQ_ITEM_STATE *State,
+    _Out_opt_ PNTSTATUS CompletionStatus
+    )
+{
+    PAWQ_MANAGER_I Mgr;
+    PAWQ_WORK_ITEM_I Item;
+
+    if (State == NULL) return STATUS_INVALID_PARAMETER;
+    *State = AwqItemState_Unknown;
+    if (CompletionStatus != NULL) *CompletionStatus = STATUS_UNSUCCESSFUL;
+
+    Mgr = AwqpFromHandle(Handle);
+    if (Mgr == NULL) return STATUS_INVALID_PARAMETER;
+    if (ItemId == 0) return STATUS_INVALID_PARAMETER;
+    if (!ExAcquireRundownProtection(&Mgr->RundownRef)) return STATUS_DELETE_PENDING;
+
+    Item = AwqpFindItem(Mgr, ItemId);
+    if (Item == NULL) {
+        ExReleaseRundownProtection(&Mgr->RundownRef);
+        return STATUS_NOT_FOUND;
+    }
+
+    *State = (AWQ_ITEM_STATE)Item->State;
+    if (CompletionStatus != NULL) *CompletionStatus = Item->CompletionStatus;
+
+    AwqpDerefItem(Mgr, Item);
+    ExReleaseRundownProtection(&Mgr->RundownRef);
+    return STATUS_SUCCESS;
+}
+
+// ============================================================================
+//  AwqSetThreadCount
+// ============================================================================
+
+_IRQL_requires_(PASSIVE_LEVEL)
+_Must_inspect_result_
+NTSTATUS
+AwqSetThreadCount(
+    _In_ HAWQ_MANAGER Handle,
+    _In_ ULONG MinThreads,
+    _In_ ULONG MaxThreads
+    )
+{
+    PAWQ_MANAGER_I Mgr;
+    ULONG i;
+    NTSTATUS Status = STATUS_SUCCESS;
+
+    PAGED_CODE();
+
+    Mgr = AwqpFromHandle(Handle);
+    if (Mgr == NULL) return STATUS_INVALID_PARAMETER;
+    if (MinThreads > MaxThreads) return STATUS_INVALID_PARAMETER;
+    if (!ExAcquireRundownProtection(&Mgr->RundownRef)) return STATUS_DELETE_PENDING;
+
+    if (MaxThreads > AWQ_MAX_THREADS) MaxThreads = AWQ_MAX_THREADS;
+    if (MinThreads < AWQ_MIN_THREADS) MinThreads = AWQ_MIN_THREADS;
+
+    Mgr->MinWorkers = MinThreads;
+    Mgr->MaxWorkers = MaxThreads;
+
+    //
+    // Scale up if needed
+    //
+    for (i = (ULONG)Mgr->WorkerCount; i < MinThreads; i++) {
+        PAWQ_WORKER_I W = NULL;
+        Status = AwqpCreateWorker(Mgr, &W);
+        if (!NT_SUCCESS(Status)) break;
+    }
+
+    ExReleaseRundownProtection(&Mgr->RundownRef);
+    return Status;
+}
+
+// ============================================================================
+//  AwqGetStatistics
+// ============================================================================
+
+_IRQL_requires_max_(APC_LEVEL)
+_Must_inspect_result_
+NTSTATUS
+AwqGetStatistics(
+    _In_ HAWQ_MANAGER Handle,
+    _Out_ PAWQ_STATISTICS Stats
+    )
+{
+    PAWQ_MANAGER_I Mgr;
+    LARGE_INTEGER Now;
+    ULONG i;
+
+    if (Stats == NULL) return STATUS_INVALID_PARAMETER;
+    RtlZeroMemory(Stats, sizeof(AWQ_STATISTICS));
+
+    Mgr = AwqpFromHandle(Handle);
+    if (Mgr == NULL) return STATUS_INVALID_PARAMETER;
+    if (!ExAcquireRundownProtection(&Mgr->RundownRef)) return STATUS_DELETE_PENDING;
+
+    Stats->State = (AWQ_QUEUE_STATE)Mgr->State;
+    Stats->TotalSubmitted = (ULONG64)Mgr->Stats.TotalSubmitted;
+    Stats->TotalCompleted = (ULONG64)Mgr->Stats.TotalCompleted;
+    Stats->TotalCancelled = (ULONG64)Mgr->Stats.TotalCancelled;
+    Stats->TotalFailed = (ULONG64)Mgr->Stats.TotalFailed;
+    Stats->TotalRetries = (ULONG64)Mgr->Stats.TotalRetries;
+
+    Stats->TotalPending = 0;
+    for (i = 0; i < AwqPriority_Count; i++) {
+        Stats->PendingItems[i] = (ULONG)Mgr->Queues[i].ItemCount;
+        Stats->TotalPending += Stats->PendingItems[i];
+
+        Stats->PerPriority[i].Enqueued = (ULONG64)Mgr->Queues[i].TotalEnqueued;
+        Stats->PerPriority[i].Dequeued = (ULONG64)Mgr->Queues[i].TotalDequeued;
+        Stats->PerPriority[i].Dropped = (ULONG64)Mgr->Queues[i].TotalDropped;
+        Stats->PerPriority[i].Pending = (ULONG)Mgr->Queues[i].ItemCount;
+    }
+
+    Stats->WorkerCount = (ULONG)Mgr->WorkerCount;
+    Stats->IdleWorkers = (ULONG)Mgr->IdleWorkerCount;
+    Stats->ActiveWorkers = (ULONG)Mgr->ActiveWorkerCount;
+    Stats->TotalTimeouts = (ULONG64)Mgr->Stats.TotalTimeouts;
+
+    //
+    // Query time once for both stuck-worker scan and uptime calculation.
+    //
+    KeQuerySystemTimePrecise(&Now);
+
+    //
+    // Walk active items under shared lock to count stuck workers.
+    // A stuck worker is one executing a callback beyond its configured
+    // timeout. This provides real-time observability for operators.
+    //
+    Stats->StuckWorkers = 0;
+    {
+        PLIST_ENTRY Entry;
+
+        KeEnterCriticalRegion();
+        AWQ_LOCK_SHARED(&Mgr->ActiveItems.Lock);
+
+        for (Entry = Mgr->ActiveItems.List.Flink;
+             Entry != &Mgr->ActiveItems.List;
+             Entry = Entry->Flink) {
+
+            PAWQ_WORK_ITEM_I Item = CONTAINING_RECORD(
+                Entry, AWQ_WORK_ITEM_I, TrackLink);
+
+            if (Item->State == (LONG)AwqItemState_Running &&
+                Item->TimeoutMs > 0 &&
+                Item->ExecutionStartTime.QuadPart != 0) {
+
+                LONG64 ElapsedMs = (Now.QuadPart -
+                                    Item->ExecutionStartTime.QuadPart) / 10000;
+                if (ElapsedMs > (LONG64)Item->TimeoutMs) {
+                    Stats->StuckWorkers++;
+                }
+            }
+        }
+
+        AWQ_UNLOCK_SHARED(&Mgr->ActiveItems.Lock);
+        KeLeaveCriticalRegion();
+    }
+
+    Stats->UpTime.QuadPart = Now.QuadPart - Mgr->Stats.StartTime.QuadPart;
+    {
+        LONG64 Sec = Stats->UpTime.QuadPart / 10000000;
+        if (Sec > 0) {
+            Stats->ItemsPerSecond = Stats->TotalCompleted / (ULONG64)Sec;
+        }
+    }
+
+    ExReleaseRundownProtection(&Mgr->RundownRef);
+    return STATUS_SUCCESS;
+}
+
+// ============================================================================
+//  AwqResetStatistics
+// ============================================================================
+
+_IRQL_requires_max_(APC_LEVEL)
+VOID
+AwqResetStatistics(
+    _In_ HAWQ_MANAGER Handle
+    )
+{
+    PAWQ_MANAGER_I Mgr;
+    ULONG i;
+
+    Mgr = AwqpFromHandle(Handle);
+    if (Mgr == NULL) return;
+    if (!ExAcquireRundownProtection(&Mgr->RundownRef)) return;
+
+    InterlockedExchange64(&Mgr->Stats.TotalSubmitted, 0);
+    InterlockedExchange64(&Mgr->Stats.TotalCompleted, 0);
+    InterlockedExchange64(&Mgr->Stats.TotalCancelled, 0);
+    InterlockedExchange64(&Mgr->Stats.TotalFailed, 0);
+    InterlockedExchange64(&Mgr->Stats.TotalRetries, 0);
+    InterlockedExchange64(&Mgr->Stats.TotalTimeouts, 0);
+    KeQuerySystemTimePrecise(&Mgr->Stats.StartTime);
+
+    for (i = 0; i < AwqPriority_Count; i++) {
+        InterlockedExchange64(&Mgr->Queues[i].TotalEnqueued, 0);
+        InterlockedExchange64(&Mgr->Queues[i].TotalDequeued, 0);
+        InterlockedExchange64(&Mgr->Queues[i].TotalDropped, 0);
+    }
+
+    ExReleaseRundownProtection(&Mgr->RundownRef);
+}
+
+// ============================================================================
+//  AwqSetDefaultTimeout
+// ============================================================================
+
+_IRQL_requires_(PASSIVE_LEVEL)
+_Must_inspect_result_
+NTSTATUS
+AwqSetDefaultTimeout(
+    _In_ HAWQ_MANAGER Handle,
+    _In_ ULONG TimeoutMs
+    )
+{
+    PAWQ_MANAGER_I Mgr;
+
+    PAGED_CODE();
+
+    Mgr = AwqpFromHandle(Handle);
+    if (Mgr == NULL) return STATUS_INVALID_PARAMETER;
+    if (!ExAcquireRundownProtection(&Mgr->RundownRef)) return STATUS_DELETE_PENDING;
+
+    Mgr->Config.DefaultTimeoutMs = TimeoutMs;
+
+    ExReleaseRundownProtection(&Mgr->RundownRef);
+    return STATUS_SUCCESS;
+}
+
+// ============================================================================
+//  AwqSetDynamicThreads
+// ============================================================================
+
+_IRQL_requires_(PASSIVE_LEVEL)
+_Must_inspect_result_
+NTSTATUS
+AwqSetDynamicThreads(
+    _In_ HAWQ_MANAGER Handle,
+    _In_ BOOLEAN Enable
+    )
+{
+    PAWQ_MANAGER_I Mgr;
+
+    PAGED_CODE();
+
+    Mgr = AwqpFromHandle(Handle);
+    if (Mgr == NULL) return STATUS_INVALID_PARAMETER;
+    if (!ExAcquireRundownProtection(&Mgr->RundownRef)) return STATUS_DELETE_PENDING;
+
+    InterlockedExchange(&Mgr->Config.EnableDynamicThreads, Enable ? 1 : 0);
+
+    ExReleaseRundownProtection(&Mgr->RundownRef);
+    return STATUS_SUCCESS;
+}
+
+// ============================================================================
+// Internal: Item allocation / cache
+// ============================================================================
+
+static PAWQ_WORK_ITEM_I
+AwqpAllocItem(
+    _In_ PAWQ_MANAGER_I Mgr
+    )
+{
+    PAWQ_WORK_ITEM_I Item = NULL;
+
+    //
+    // Try cache first
+    //
+    AWQ_LOCK_EXCLUSIVE(&Mgr->Cache.Lock);
+    if (!IsListEmpty(&Mgr->Cache.FreeList)) {
+        PLIST_ENTRY E = RemoveHeadList(&Mgr->Cache.FreeList);
+        Item = CONTAINING_RECORD(E, AWQ_WORK_ITEM_I, QueueLink);
+        InterlockedDecrement(&Mgr->Cache.FreeCount);
+    }
+    AWQ_UNLOCK_EXCLUSIVE(&Mgr->Cache.Lock);
+
+    if (Item != NULL) {
+        ULONG SavedMagic = Item->Magic;
+        RtlZeroMemory(Item, sizeof(AWQ_WORK_ITEM_I));
+        Item->Magic = SavedMagic;
+        Item->RefCount = 1;
+        return Item;
+    }
+
+    //
+    // Fresh allocation
+    //
+    Item = (PAWQ_WORK_ITEM_I)ExAllocatePool2(
+        POOL_FLAG_NON_PAGED, sizeof(AWQ_WORK_ITEM_I), AWQ_POOL_TAG_ITEM);
+    if (Item != NULL) {
+        Item->Magic = AWQ_ITEM_MAGIC;
+        Item->RefCount = 1;
+    }
+    return Item;
+}
+
+static VOID
+AwqpFreeItem(
+    _In_ PAWQ_MANAGER_I Mgr,
+    _In_ PAWQ_WORK_ITEM_I Item
+    )
+{
+    BOOLEAN Cached = FALSE;
+
+    if (Item == NULL || Item->Magic != AWQ_ITEM_MAGIC) return;
+
+    //
+    // Free allocated context
+    //
+    if (Item->AllocatedContext != NULL) {
+        ExFreePoolWithTag(Item->AllocatedContext, AWQ_POOL_TAG_CTX);
+        Item->AllocatedContext = NULL;
+    }
+
+    //
+    // Try to return to cache
+    //
+    AWQ_LOCK_EXCLUSIVE(&Mgr->Cache.Lock);
+    if ((ULONG)Mgr->Cache.FreeCount < Mgr->Cache.MaxFree) {
+        RtlZeroMemory(Item, sizeof(AWQ_WORK_ITEM_I));
+        Item->Magic = AWQ_ITEM_MAGIC;
+        InsertTailList(&Mgr->Cache.FreeList, &Item->QueueLink);
+        InterlockedIncrement(&Mgr->Cache.FreeCount);
+        Cached = TRUE;
+    }
+    AWQ_UNLOCK_EXCLUSIVE(&Mgr->Cache.Lock);
+
+    if (!Cached) {
+        Item->Magic = 0;
+        ExFreePoolWithTag(Item, AWQ_POOL_TAG_ITEM);
+    }
+}
+
+// ============================================================================
+// Internal: Reference counting
+// ============================================================================
+
+static VOID
+AwqpRefItem(
+    _In_ PAWQ_WORK_ITEM_I Item
+    )
+{
+    InterlockedIncrement(&Item->RefCount);
+}
+
+static VOID
+AwqpDerefItem(
+    _In_ PAWQ_MANAGER_I Mgr,
+    _In_ PAWQ_WORK_ITEM_I Item
+    )
+{
+    if (InterlockedDecrement(&Item->RefCount) == 0) {
+        AwqpFreeItem(Mgr, Item);
+    }
+}
+
+// ============================================================================
+// Internal: Hash table (chained, for O(1) item lookup by ID)
+// ============================================================================
+
+static __forceinline ULONG
+AwqpHashId(
+    _In_ ULONG64 Id,
+    _In_ ULONG BucketCount
+    )
+{
+    // Mix bits for better distribution
+    ULONG64 h = Id;
+    h ^= (h >> 16);
+    h *= 0x45d9f3b;
+    h ^= (h >> 16);
+    return (ULONG)(h % BucketCount);
+}
+
+static VOID
+AwqpRegisterItem(
+    _In_ PAWQ_MANAGER_I Mgr,
+    _In_ PAWQ_WORK_ITEM_I Item
+    )
+{
+    ULONG Bucket;
+
+    //
+    // Add to hash table
+    //
+    Item->HashEntry.Item = Item;
+    Bucket = AwqpHashId(Item->ItemId, Mgr->Hash.BucketCount);
+
+    AWQ_LOCK_EXCLUSIVE(&Mgr->Hash.Lock);
+    InsertTailList(&Mgr->Hash.Buckets[Bucket], &Item->HashEntry.HashLink);
+    AWQ_UNLOCK_EXCLUSIVE(&Mgr->Hash.Lock);
+
+    //
+    // Add to active items list (take an extra ref for tracking)
+    //
+    AwqpRefItem(Item);
+
+    AWQ_LOCK_EXCLUSIVE(&Mgr->ActiveItems.Lock);
+    InsertTailList(&Mgr->ActiveItems.List, &Item->TrackLink);
+    InterlockedIncrement(&Mgr->ActiveItems.Count);
+    AWQ_UNLOCK_EXCLUSIVE(&Mgr->ActiveItems.Lock);
+}
+
+static VOID
+AwqpUnregisterItem(
+    _In_ PAWQ_MANAGER_I Mgr,
+    _In_ PAWQ_WORK_ITEM_I Item
+    )
+{
+    ULONG Bucket;
+
+    //
+    // Remove from hash table
+    //
+    Bucket = AwqpHashId(Item->ItemId, Mgr->Hash.BucketCount);
+
+    AWQ_LOCK_EXCLUSIVE(&Mgr->Hash.Lock);
+    RemoveEntryList(&Item->HashEntry.HashLink);
+    InitializeListHead(&Item->HashEntry.HashLink);  // make safe to re-remove
+    AWQ_UNLOCK_EXCLUSIVE(&Mgr->Hash.Lock);
+
+    //
+    // Remove from active list
+    //
+    AWQ_LOCK_EXCLUSIVE(&Mgr->ActiveItems.Lock);
+    RemoveEntryList(&Item->TrackLink);
+    InitializeListHead(&Item->TrackLink);
+    InterlockedDecrement(&Mgr->ActiveItems.Count);
+    AWQ_UNLOCK_EXCLUSIVE(&Mgr->ActiveItems.Lock);
+
+    //
+    // Release tracking ref
+    //
+    AwqpDerefItem(Mgr, Item);
+}
+
+//
+// FindItem: returns item with an ADDED reference. Caller must DerefItem.
+//
+static PAWQ_WORK_ITEM_I
+AwqpFindItem(
+    _In_ PAWQ_MANAGER_I Mgr,
+    _In_ ULONG64 Id
+    )
+{
+    ULONG Bucket;
+    PLIST_ENTRY Entry;
+    PAWQ_WORK_ITEM_I Found = NULL;
+
+    Bucket = AwqpHashId(Id, Mgr->Hash.BucketCount);
+
+    AWQ_LOCK_SHARED(&Mgr->Hash.Lock);
+    for (Entry = Mgr->Hash.Buckets[Bucket].Flink;
+         Entry != &Mgr->Hash.Buckets[Bucket];
+         Entry = Entry->Flink) {
+
+        PAWQ_HASH_ENTRY HE = CONTAINING_RECORD(Entry, AWQ_HASH_ENTRY, HashLink);
+        if (HE->Item != NULL && HE->Item->ItemId == Id) {
+            Found = HE->Item;
+            AwqpRefItem(Found);
+            break;
+        }
+    }
+    AWQ_UNLOCK_SHARED(&Mgr->Hash.Lock);
+
+    return Found;
+}
+
+// ============================================================================
+// Internal: Cancel chained successors of a head item.
+//
+// Successors of a chain head live in the hash + ActiveItems list but are
+// never placed on a priority queue (only the head is enqueued, and each
+// completing item enqueues its NextInChain). When the head is cancelled
+// or fails, the successors must be cancelled and completed, otherwise
+// they leak forever and stall drain/shutdown.
+//
+// Caller must hold no AWQ locks. The chain pointer of the head is cleared
+// so that a concurrent path cannot re-walk the same chain.
+// ============================================================================
+
+static VOID
+AwqpCancelChainSuccessors(
+    _In_ PAWQ_MANAGER_I Mgr,
+    _In_ PAWQ_WORK_ITEM_I Item
+    )
+{
+    PAWQ_WORK_ITEM_I Successor = Item->NextInChain;
+    Item->NextInChain = NULL;
+
+    while (Successor != NULL) {
+        PAWQ_WORK_ITEM_I Next = Successor->NextInChain;
+        Successor->NextInChain = NULL;
+        InterlockedExchange(&Successor->State, (LONG)AwqItemState_Cancelled);
+        InterlockedIncrement64(&Mgr->Stats.TotalCancelled);
+        AwqpCompleteItem(Mgr, Successor, STATUS_CANCELLED);
+        Successor = Next;
+    }
+}
+
+// ============================================================================
+// Internal: Enqueue / Dequeue
+// ============================================================================
+
+static NTSTATUS
+AwqpEnqueue(
+    _In_ PAWQ_MANAGER_I Mgr,
+    _In_ PAWQ_WORK_ITEM_I Item
+    )
+{
+    PAWQ_PQUEUE Q = &Mgr->Queues[Item->Priority];
+
+    AWQ_LOCK_EXCLUSIVE(&Q->Lock);
+
+    if ((ULONG)Q->ItemCount >= Q->MaxItems) {
+        AWQ_UNLOCK_EXCLUSIVE(&Q->Lock);
+        return STATUS_QUOTA_EXCEEDED;
+    }
+
+    InsertTailList(&Q->ItemList, &Item->QueueLink);
+    InterlockedIncrement(&Q->ItemCount);
+    InterlockedIncrement64(&Q->TotalEnqueued);
+
+    AWQ_UNLOCK_EXCLUSIVE(&Q->Lock);
+
+    //
+    // Wake a worker
+    //
+    KeSetEvent(&Mgr->NewWorkEvent, IO_NO_INCREMENT, FALSE);
+
+    return STATUS_SUCCESS;
+}
+
+static PAWQ_WORK_ITEM_I
+AwqpDequeue(
+    _In_ PAWQ_MANAGER_I Mgr
+    )
+{
+    LONG p;
+
+    //
+    // Highest priority first.
+    // We CAS item state from Queuedâ†’Running UNDER the queue lock
+    // to prevent a race with AwqCancel. If Cancel won the CAS first
+    // (state is Cancelled), we skip the item â€” Cancel will remove it.
+    //
+    for (p = AwqPriority_Count - 1; p >= 0; p--) {
+        PAWQ_PQUEUE Q = &Mgr->Queues[p];
+        PLIST_ENTRY Entry, Next;
+
+        if (Q->ItemCount == 0) continue;
+
+        AWQ_LOCK_EXCLUSIVE(&Q->Lock);
+        for (Entry = Q->ItemList.Flink; Entry != &Q->ItemList; Entry = Next) {
+            PAWQ_WORK_ITEM_I Item = CONTAINING_RECORD(Entry, AWQ_WORK_ITEM_I, QueueLink);
+            Next = Entry->Flink;
+
+            if (InterlockedCompareExchange(&Item->State,
+                    (LONG)AwqItemState_Running,
+                    (LONG)AwqItemState_Queued) == (LONG)AwqItemState_Queued) {
+                RemoveEntryList(Entry);
+                InitializeListHead(&Item->QueueLink);
+                InterlockedDecrement(&Q->ItemCount);
+                InterlockedIncrement64(&Q->TotalDequeued);
+                AWQ_UNLOCK_EXCLUSIVE(&Q->Lock);
+                return Item;
+            }
+            // Item was concurrently cancelled â€” skip, Cancel will clean it up
+        }
+        AWQ_UNLOCK_EXCLUSIVE(&Q->Lock);
+    }
+
+    return NULL;
+}
+
+// ============================================================================
+// Internal: Serialization
+//
+// If an item has AwqFlag_Serialized and SerializationKey != 0:
+//   - On submit: check if key has active items. If yes, defer to pending list.
+//   - On completion: release key, enqueue next pending item if any.
+// ============================================================================
+
+static NTSTATUS
+AwqpSerializationCheck(
+    _In_ PAWQ_MANAGER_I Mgr,
+    _In_ PAWQ_WORK_ITEM_I Item
+    )
+{
+    PLIST_ENTRY Entry;
+    PAWQ_SKEY SK = NULL;
+    BOOLEAN Found = FALSE;
+
+    AWQ_LOCK_EXCLUSIVE(&Mgr->Serialization.Lock);
+
+    //
+    // Find or create key entry
+    //
+    for (Entry = Mgr->Serialization.KeyList.Flink;
+         Entry != &Mgr->Serialization.KeyList;
+         Entry = Entry->Flink) {
+        PAWQ_SKEY Cur = CONTAINING_RECORD(Entry, AWQ_SKEY, ListEntry);
+        if (Cur->Key == Item->SerializationKey) {
+            SK = Cur;
+            Found = TRUE;
+            break;
+        }
+    }
+
+    if (!Found) {
+        //
+        // First item for this key â€” create entry and allow execution
+        //
+        SK = (PAWQ_SKEY)ExAllocatePool2(
+            POOL_FLAG_NON_PAGED, sizeof(AWQ_SKEY), AWQ_POOL_TAG_SKEY);
+        if (SK == NULL) {
+            AWQ_UNLOCK_EXCLUSIVE(&Mgr->Serialization.Lock);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        }
+        SK->Key = Item->SerializationKey;
+        SK->ActiveCount = 1;
+        InitializeListHead(&SK->PendingItems);
+        InsertTailList(&Mgr->Serialization.KeyList, &SK->ListEntry);
+        AWQ_UNLOCK_EXCLUSIVE(&Mgr->Serialization.Lock);
+        return STATUS_SUCCESS;   // proceed to enqueue
+    }
+
+    if (SK->ActiveCount == 0) {
+        //
+        // Key exists but no active items â€” allow
+        //
+        InterlockedIncrement(&SK->ActiveCount);
+        AWQ_UNLOCK_EXCLUSIVE(&Mgr->Serialization.Lock);
+        return STATUS_SUCCESS;
+    }
+
+    //
+    // Key is busy â€” defer item to pending list. Mark BEFORE inserting so
+    // a concurrent AwqCancel (which finds via hash) sees the marker before
+    // racing the link manipulation.
+    //
+    InterlockedExchange(&Item->OnSerialPending, 1);
+    InsertTailList(&SK->PendingItems, &Item->QueueLink);
+    AWQ_UNLOCK_EXCLUSIVE(&Mgr->Serialization.Lock);
+
+    return STATUS_PENDING;  // caller should NOT enqueue
+}
+
+static VOID
+AwqpSerializationRelease(
+    _In_ PAWQ_MANAGER_I Mgr,
+    _In_ ULONG64 Key
+    )
+{
+    //
+    // Iterate: each loop iteration releases one active count. If the next
+    // pending item's enqueue fails, fail that item and re-release for the
+    // following pending item. Looping (vs. recursion) bounds stack use even
+    // when a transient queue-full condition rejects many pending items.
+    //
+    for (;;) {
+        PLIST_ENTRY Entry;
+        PAWQ_SKEY SK = NULL;
+        PAWQ_WORK_ITEM_I NextItem = NULL;
+        NTSTATUS EnqStatus;
+
+        AWQ_LOCK_EXCLUSIVE(&Mgr->Serialization.Lock);
+
+        for (Entry = Mgr->Serialization.KeyList.Flink;
+             Entry != &Mgr->Serialization.KeyList;
+             Entry = Entry->Flink) {
+            PAWQ_SKEY Cur = CONTAINING_RECORD(Entry, AWQ_SKEY, ListEntry);
+            if (Cur->Key == Key) {
+                SK = Cur;
+                break;
+            }
+        }
+
+        if (SK == NULL) {
+            AWQ_UNLOCK_EXCLUSIVE(&Mgr->Serialization.Lock);
+            return;
+        }
+
+        InterlockedDecrement(&SK->ActiveCount);
+
+        if (SK->ActiveCount == 0 && !IsListEmpty(&SK->PendingItems)) {
+            //
+            // Dequeue next pending item for this key.
+            //
+            PLIST_ENTRY PE = RemoveHeadList(&SK->PendingItems);
+            InitializeListHead(PE);  // safe re-link in AwqpEnqueue
+            NextItem = CONTAINING_RECORD(PE, AWQ_WORK_ITEM_I, QueueLink);
+            InterlockedExchange(&NextItem->OnSerialPending, 0);
+            InterlockedIncrement(&SK->ActiveCount);
+        } else if (SK->ActiveCount == 0 && IsListEmpty(&SK->PendingItems)) {
+            //
+            // No more items â€” remove key entry.
+            //
+            RemoveEntryList(&SK->ListEntry);
+            AWQ_UNLOCK_EXCLUSIVE(&Mgr->Serialization.Lock);
+            ExFreePoolWithTag(SK, AWQ_POOL_TAG_SKEY);
+            return;
+        }
+
+        AWQ_UNLOCK_EXCLUSIVE(&Mgr->Serialization.Lock);
+
+        if (NextItem == NULL) {
+            return;
+        }
+
+        EnqStatus = AwqpEnqueue(Mgr, NextItem);
+        if (NT_SUCCESS(EnqStatus)) {
+            return;
+        }
+
+        //
+        // Enqueue failed (queue full / shutting down). The pending item is
+        // already registered in the hash + ActiveItems list and we own the
+        // serialization slot for it. Fail the item, then loop to release
+        // its slot and try the next pending item â€” otherwise the chain of
+        // pending items would be permanently stuck behind one failure.
+        //
+        InterlockedExchange(&NextItem->State, (LONG)AwqItemState_Failed);
+        InterlockedIncrement64(&Mgr->Stats.TotalFailed);
+        AwqpCompleteItem(Mgr, NextItem, EnqStatus);
+        AwqpCheckDrainComplete(Mgr);
+        // Loop continues â€” we still hold one ActiveCount for NextItem to
+        // release on this key.
+    }
+}
+
+// ============================================================================
+// Internal: Execute item
+// ============================================================================
+
+static VOID
+AwqpExecuteItem(
+    _In_ PAWQ_MANAGER_I Mgr,
+    _In_ PAWQ_WORKER_I Worker,
+    _In_ PAWQ_WORK_ITEM_I Item
+    )
+{
+    NTSTATUS Status = STATUS_SUCCESS;
+    PAWQ_WORK_ITEM_I NextChainItem = NULL;
+
+    InterlockedExchange(&Item->State, (LONG)AwqItemState_Running);
+
+    //
+    // Track worker activity
+    //
+    InterlockedExchange(&Worker->Idle, 0);
+    InterlockedIncrement(&Mgr->ActiveWorkerCount);
+    InterlockedDecrement(&Mgr->IdleWorkerCount);
+
+    //
+    // Execute callback (SEH-protected)
+    //
+    KeQuerySystemTimePrecise(&Item->ExecutionStartTime);
+
+    __try {
+        Status = Item->WorkCallback(Item->Context, Item->ContextSize);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        Status = GetExceptionCode();
+#if DBG
+        DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
+            "[ShadowStrike] AWQ: Callback exception 0x%08X for item %llu\n",
+            Status, Item->ItemId);
+#endif
+    }
+
+    //
+    // Timeout enforcement: if callback exceeded its timeout, override
+    // the result to STATUS_TIMEOUT. This provides observability for
+    // runaway callbacks on millions of endpoints â€” operators see
+    // TotalTimeouts climbing and can identify which callbacks are slow.
+    //
+    if (Item->TimeoutMs > 0) {
+        LARGE_INTEGER EndTime;
+        KeQuerySystemTimePrecise(&EndTime);
+        LONG64 ElapsedMs = (EndTime.QuadPart - Item->ExecutionStartTime.QuadPart) / 10000;
+
+        if (ElapsedMs > (LONG64)Item->TimeoutMs) {
+            InterlockedIncrement64(&Mgr->Stats.TotalTimeouts);
+#if DBG
+            DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
+                "[ShadowStrike] AWQ: Item %llu exceeded timeout (%lldms > %ums)\n",
+                Item->ItemId, ElapsedMs, Item->TimeoutMs);
+#endif
+            {
+                PSSPM_MONITOR pm = ShadowStrikeGetPerformanceMonitor();
+                if (pm != NULL) {
+                    ULONG64 LatencyUs;
+                    if (ElapsedMs > (LONG64)(MAXULONG64 / 1000)) {
+                        LatencyUs = MAXULONG64;
+                    } else {
+                        LatencyUs = (ULONG64)ElapsedMs * 1000;
+                    }
+                    SsPmRecordSample(pm, SsPmMetric_CallbackLatencyUs, LatencyUs);
+                }
+            }
+
+            //
+            // Only override to timeout if callback reported success.
+            // If callback already failed, preserve the original failure code.
+            //
+            if (NT_SUCCESS(Status)) {
+                Status = STATUS_TIMEOUT;
+            }
+        }
+    }
+
+    //
+    // Restore worker state
+    //
+    InterlockedDecrement(&Mgr->ActiveWorkerCount);
+    InterlockedIncrement(&Mgr->IdleWorkerCount);
+    InterlockedExchange(&Worker->Idle, 1);
+    InterlockedIncrement64(&Worker->ItemsProcessed);
+
+    //
+    // Handle retry. If re-enqueue fails (e.g. the queue is full or shutting
+    // down), the item must NOT be left dangling: it is still registered in
+    // the hash + ActiveItems list, so a leak here would block drain/shutdown
+    // forever and leave AwqWaitForItem callers waiting on an event that
+    // never signals.
+    //
+    if (!NT_SUCCESS(Status) &&
+        (Item->Flags & AwqFlag_RetryOnFailure) &&
+        Item->RetryCount < Item->MaxRetries) {
+
+        NTSTATUS RetryStatus;
+
+        Item->RetryCount++;
+        InterlockedExchange(&Item->State, (LONG)AwqItemState_Queued);
+        InterlockedIncrement64(&Mgr->Stats.TotalRetries);
+
+        RetryStatus = AwqpEnqueue(Mgr, Item);
+        if (NT_SUCCESS(RetryStatus)) {
+            return;
+        }
+
+        //
+        // Enqueue failed â€” fall through and complete the item with the
+        // re-enqueue failure code so all bookkeeping is released.
+        //
+        InterlockedExchange(&Item->State, (LONG)AwqItemState_Failed);
+        Status = RetryStatus;
+        // Do not "return" â€” fall through to chain/complete handling below.
+    }
+
+    //
+    // Save chain info BEFORE completing (which may free the item).
+    // FIX AWQ-H1: On failure, cancel+complete all successors to prevent orphaned
+    // items (permanent pool leak + rundown ref leak â†’ shutdown hang).
+    //
+    if (Item->NextInChain != NULL) {
+        if (NT_SUCCESS(Status)) {
+            NextChainItem = Item->NextInChain;
+            Item->NextInChain = NULL;
+        } else {
+            AwqpCancelChainSuccessors(Mgr, Item);
+        }
+    }
+
+    //
+    // Final state
+    //
+    if (NT_SUCCESS(Status)) {
+        InterlockedExchange(&Item->State, (LONG)AwqItemState_Completed);
+        InterlockedIncrement64(&Mgr->Stats.TotalCompleted);
+        {
+            PSSPM_MONITOR pm = ShadowStrikeGetPerformanceMonitor();
+            if (pm != NULL) {
+                SsPmRecordSample(pm, SsPmMetric_EventsPerSecond, 1);
+            }
+        }
+    } else {
+        InterlockedExchange(&Item->State, (LONG)AwqItemState_Failed);
+        InterlockedIncrement64(&Mgr->Stats.TotalFailed);
+    }
+
+    //
+    // Release serialization key (before complete, so next serialized item
+    // can be enqueued while our callbacks run)
+    //
+    if ((Item->Flags & AwqFlag_Serialized) && Item->SerializationKey != 0) {
+        AwqpSerializationRelease(Mgr, Item->SerializationKey);
+    }
+
+    //
+    // Complete (calls callbacks, signals event, unrefs)
+    //
+    AwqpCompleteItem(Mgr, Item, Status);
+
+    //
+    // Chain continuation: enqueue next item
+    //
+    if (NextChainItem != NULL) {
+        AwqpEnqueue(Mgr, NextChainItem);
+    }
+
+    //
+    // Check if drain is complete
+    //
+    AwqpCheckDrainComplete(Mgr);
+}
+
+// ============================================================================
+// Internal: Complete item
+//
+// All callbacks are called at PASSIVE_LEVEL outside any lock.
+// This function releases one reference on the item.
+// ============================================================================
+
+static VOID
+AwqpCompleteItem(
+    _In_ PAWQ_MANAGER_I Mgr,
+    _In_ PAWQ_WORK_ITEM_I Item,
+    _In_ NTSTATUS Status
+    )
+{
+    Item->CompletionStatus = Status;
+
+    //
+    // Completion callback
+    //
+    if (Item->CompletionCallback != NULL) {
+        Item->CompletionCallback(Status, Item->Context, Item->CompletionContext);
+    }
+
+    //
+    // Cleanup callback (always called if set, before context is freed)
+    //
+    if (Item->CleanupCallback != NULL) {
+        Item->CleanupCallback(Item->Context);
+    }
+
+    //
+    // Signal completion event (waiters can see CompletionStatus)
+    //
+    KeSetEvent(&Item->CompletionEvent, IO_NO_INCREMENT, FALSE);
+
+    //
+    // Unregister from hash + active list
+    //
+    AwqpUnregisterItem(Mgr, Item);
+
+    //
+    // Release the "existence" reference.
+    // If nobody else holds a ref (from FindItem), this frees the item.
+    // If a waiter holds a ref, the item lives until they DerefItem.
+    //
+    AwqpDerefItem(Mgr, Item);
+}
+
+// ============================================================================
+// Internal: Check drain completion
+// ============================================================================
+
+static VOID
+AwqpCheckDrainComplete(
+    _In_ PAWQ_MANAGER_I Mgr
+    )
+{
+    if (Mgr->State != (LONG)AwqQueueState_Draining) return;
+
+    //
+    // Use the same authoritative in-flight gauge as AwqDrain. Counting
+    // queues + ActiveWorkerCount is racy because the dequeue/execute
+    // boundary briefly observes both as zero.
+    //
+    if (Mgr->ActiveItems.Count == 0) {
+        KeSetEvent(&Mgr->DrainCompleteEvent, IO_NO_INCREMENT, FALSE);
+    }
+}
+
+// ============================================================================
+// Internal: Worker thread creation
+// ============================================================================
+
+static NTSTATUS
+AwqpCreateWorker(
+    _In_ PAWQ_MANAGER_I Mgr,
+    _Out_ PAWQ_WORKER_I *Out
+    )
+{
+    PAWQ_WORKER_I W = NULL;
+    OBJECT_ATTRIBUTES ObjAttr;
+    HANDLE ThreadHandle = NULL;
+    NTSTATUS Status;
+
+    *Out = NULL;
+
+    W = (PAWQ_WORKER_I)ExAllocatePool2(
+        POOL_FLAG_NON_PAGED, sizeof(AWQ_WORKER_I), AWQ_POOL_TAG_THREAD);
+    if (W == NULL) return STATUS_INSUFFICIENT_RESOURCES;
+
+    W->Manager = Mgr;  // direct pointer â€” no CONTAINING_RECORD hack
+    InterlockedExchange(&W->Running, 1);
+    InterlockedExchange(&W->Idle, 1);
+    W->ThreadId = (ULONG)InterlockedIncrement(&Mgr->WorkerCount);
+
+    InitializeObjectAttributes(&ObjAttr, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
+
+    Status = PsCreateSystemThread(
+        &ThreadHandle,
+        THREAD_ALL_ACCESS,
+        &ObjAttr,
+        NULL, NULL,
+        AwqpWorkerThread,
+        W);
+
+    if (!NT_SUCCESS(Status)) {
+        InterlockedDecrement(&Mgr->WorkerCount);
+        ExFreePoolWithTag(W, AWQ_POOL_TAG_THREAD);
+        return Status;
+    }
+
+    //
+    // Get thread object (referenced).
+    // FIX AWQ-H2: Must keep handle open until ObRef check so we can wait for
+    // thread on failure (known pattern: wait before freeing context).
+    //
+    Status = ObReferenceObjectByHandle(
+        ThreadHandle,
+        THREAD_ALL_ACCESS,
+        *PsThreadType,
+        KernelMode,
+        (PVOID *)&W->ThreadObject,
+        NULL);
+
+    if (!NT_SUCCESS(Status)) {
+        //
+        // Thread was created but we can't reference it.
+        // Signal it to stop, wait for termination, then cleanup.
+        //
+        InterlockedExchange(&W->Running, 0);
+        ZwWaitForSingleObject(ThreadHandle, FALSE, NULL);
+        ZwClose(ThreadHandle);
+        InterlockedDecrement(&Mgr->WorkerCount);
+        return Status;
+    }
+
+    ZwClose(ThreadHandle);
+    // Do NOT store the now-invalid handle
+
+    //
+    // Add to worker list
+    //
+    AWQ_LOCK_EXCLUSIVE(&Mgr->WorkerLock);
+    InsertTailList(&Mgr->WorkerList, &W->ListEntry);
+    InterlockedIncrement(&Mgr->IdleWorkerCount);
+    AWQ_UNLOCK_EXCLUSIVE(&Mgr->WorkerLock);
+
+    *Out = W;
+    return STATUS_SUCCESS;
+}
+
+// ============================================================================
+// Internal: Worker thread routine
+// ============================================================================
+
+static VOID
+AwqpWorkerThread(
+    _In_ PVOID Ctx
+    )
+{
+    PAWQ_WORKER_I Worker = (PAWQ_WORKER_I)Ctx;
+    PAWQ_MANAGER_I Mgr = Worker->Manager;
+    PVOID WaitObjects[2];
+    LARGE_INTEGER Timeout;
+    NTSTATUS WaitStatus;
+
+    KeQuerySystemTimePrecise(&Worker->LastActivityTime);
+    Worker->IdleStartTime = Worker->LastActivityTime;
+
+    WaitObjects[0] = &Mgr->NewWorkEvent;
+    WaitObjects[1] = &Mgr->ShutdownEvent;
+
+    while (Worker->Running != 0) {
+        PAWQ_WORK_ITEM_I Item;
+
+        //
+        // Check shutdown
+        //
+        if (Mgr->State == (LONG)AwqQueueState_ShuttingDown) {
+            break;
+        }
+
+        //
+        // Paused â€” wait for resume
+        //
+        if (Mgr->State == (LONG)AwqQueueState_Paused) {
+            LARGE_INTEGER PauseDelay;
+            PauseDelay.QuadPart = -10 * 1000 * 100; // 100ms
+            KeDelayExecutionThread(KernelMode, FALSE, &PauseDelay);
+            continue;
+        }
+
+        //
+        // Try to dequeue work
+        //
+        Item = AwqpDequeue(Mgr);
+
+        if (Item != NULL) {
+            KeQuerySystemTimePrecise(&Worker->LastActivityTime);
+            AwqpExecuteItem(Mgr, Worker, Item);
+            KeQuerySystemTimePrecise(&Worker->LastActivityTime);
+            Worker->IdleStartTime = Worker->LastActivityTime;
+        } else {
+            //
+            // No work â€” wait for signal or timeout
+            //
+            Timeout.QuadPart = -((LONGLONG)1000 * 10000); // 1 second
+
+            WaitStatus = KeWaitForMultipleObjects(
+                2, WaitObjects, WaitAny,
+                Executive, KernelMode, FALSE,
+                &Timeout, NULL);
+
+            if (WaitStatus == STATUS_WAIT_1) {
+                // Shutdown signaled
+                break;
+            }
+
+            //
+            // Dynamic scaling: exit if idle too long and above minimum.
+            // CRITICAL: The MinWorkers check MUST be under the WorkerLock
+            // to prevent a TOCTOU where multiple idle workers all see
+            // WorkerCount > MinWorkers and all exit, leaving zero workers.
+            //
+            if (Mgr->Config.EnableDynamicThreads) {
+
+                LARGE_INTEGER Now;
+                KeQuerySystemTimePrecise(&Now);
+                LONG64 IdleMs = (Now.QuadPart - Worker->IdleStartTime.QuadPart) / 10000;
+
+                if (IdleMs > AWQ_IDLE_TIMEOUT_MS) {
+                    BOOLEAN ShouldExit = FALSE;
+
+                    AWQ_LOCK_EXCLUSIVE(&Mgr->WorkerLock);
+                    //
+                    // Re-validate state UNDER the lock. If shutdown has begun,
+                    // it has already moved this worker to a stack-local list
+                    // (or is about to). Self-removing here would corrupt that
+                    // list. Let the outer loop observe ShuttingDown and exit
+                    // through the normal path; shutdown will join us.
+                    //
+                    if (Mgr->State == (LONG)AwqQueueState_Running &&
+                        (ULONG)Mgr->WorkerCount > Mgr->MinWorkers) {
+                        RemoveEntryList(&Worker->ListEntry);
+                        InitializeListHead(&Worker->ListEntry);
+                        InterlockedDecrement(&Mgr->WorkerCount);
+                        InterlockedDecrement(&Mgr->IdleWorkerCount);
+                        ShouldExit = TRUE;
+                    }
+                    AWQ_UNLOCK_EXCLUSIVE(&Mgr->WorkerLock);
+
+                    if (ShouldExit) {
+                        if (Worker->ThreadObject != NULL) {
+                            ObDereferenceObject(Worker->ThreadObject);
+                        }
+                        ExFreePoolWithTag(Worker, AWQ_POOL_TAG_THREAD);
+
+                        PsTerminateSystemThread(STATUS_SUCCESS);
+                        // No return
+                    } else {
+                        //
+                        // Reset idle window so we do not spin in this branch
+                        // every wait cycle while shutdown is in progress.
+                        //
+                        Worker->IdleStartTime = Now;
+                    }
+                }
+            }
+        }
+    }
+
+    //
+    // If this worker was never added to WorkerList (ObRef failed
+    // during creation), free ourselves before exiting to avoid leak.
+    // Workers on the list are freed by shutdown or dynamic scaling.
+    //
+    if (Worker->ThreadObject == NULL) {
+        ExFreePoolWithTag(Worker, AWQ_POOL_TAG_THREAD);
+    }
+
+    PsTerminateSystemThread(STATUS_SUCCESS);
+}

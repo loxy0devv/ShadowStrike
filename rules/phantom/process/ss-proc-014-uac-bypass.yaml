@@ -1,0 +1,45 @@
+id: ss-proc-014
+detection_name: "Win32/Elevation.UACBypass"
+description: "Known UAC bypass technique: auto-elevated COM object or image hijacking invoked by non-elevated process."
+scope: process
+severity: high
+status: stable
+source: native
+confidence: 0.78
+weight: 2.5
+version: 1
+attack:
+  - tactic: TA0004
+    technique: T1548
+    sub_technique: T1548.002
+    name: "Abuse Elevation Control Mechanism: Bypass User Account Control"
+logic:
+  or:
+    - and:
+        - field_in:
+            field: process.name
+            values: [fodhelper.exe, eventvwr.exe, sdclt.exe, computerdefaults.exe, wsreset.exe]
+            case_insensitive: true
+        - or:
+            - field_contains:
+                field: process.command_line
+                value: "cmd.exe"
+            - field_contains:
+                field: process.command_line
+                value: "powershell"
+    - and:
+        - field_equals:
+            field: process.parent.name
+            value: "dllhost.exe"
+            case_insensitive: true
+        - field_equals:
+            field: process.integrity_level
+            value: "High"
+        - field_not_in:
+            field: process.name
+            values: [MsiExec.exe, msiexec.exe]
+            case_insensitive: true
+fp_guard:
+  notes:
+    - "fodhelper.exe legitimately handles accessibility feature toggles."
+    - "Flag only when the auto-elevated binary spawns a shell."

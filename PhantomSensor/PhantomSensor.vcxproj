@@ -1,0 +1,415 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="12.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|ARM64">
+      <Configuration>Debug</Configuration>
+      <Platform>ARM64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|ARM64">
+      <Configuration>Release</Configuration>
+      <Platform>ARM64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{78370031-C4FE-967D-E0AF-6159EAC744CC}</ProjectGuid>
+    <TemplateGuid>{1bc93793-694f-48fe-9372-81e2b05556fd}</TemplateGuid>
+    <TargetFrameworkVersion>v4.5</TargetFrameworkVersion>
+    <MinimumVisualStudioVersion>12.0</MinimumVisualStudioVersion>
+    <Configuration>Debug</Configuration>
+    <Platform Condition="'$(Platform)' == ''">x64</Platform>
+    <RootNamespace>PhantomSensor</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <TargetVersion>Windows10</TargetVersion>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <ConfigurationType>Driver</ConfigurationType>
+    <DriverType>WDM</DriverType>
+    <DriverTargetPlatform>Universal</DriverTargetPlatform>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <TargetVersion>Windows10</TargetVersion>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <ConfigurationType>Driver</ConfigurationType>
+    <DriverType>WDM</DriverType>
+    <DriverTargetPlatform>Universal</DriverTargetPlatform>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'" Label="Configuration">
+    <TargetVersion>Windows10</TargetVersion>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <ConfigurationType>Driver</ConfigurationType>
+    <DriverType>WDM</DriverType>
+    <DriverTargetPlatform>Universal</DriverTargetPlatform>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'" Label="Configuration">
+    <TargetVersion>Windows10</TargetVersion>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <ConfigurationType>Driver</ConfigurationType>
+    <DriverType>WDM</DriverType>
+    <DriverTargetPlatform>Universal</DriverTargetPlatform>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>
+    <!--
+      Post-build: stage driver artifacts to the installer staging directory.
+      The .cat copy is best-effort (inf2cat runs after the build, not during it;
+      the file will be present if signing was already performed).
+    -->
+    <PostBuildEvent>
+      if not exist "$(SolutionDir)build\installer\staging\drivers" mkdir "$(SolutionDir)build\installer\staging\drivers"
+      copy /Y "$(OutDir)PhantomSensor.sys" "$(SolutionDir)build\installer\staging\drivers\"
+      copy /Y "$(ProjectDir)PhantomSensor.inf" "$(SolutionDir)build\installer\staging\drivers\"
+      if exist "$(OutDir)PhantomSensor\phantomsensor.cat" copy /Y "$(OutDir)PhantomSensor\phantomsensor.cat" "$(SolutionDir)build\installer\staging\drivers\PhantomSensor.cat"
+      echo [OK] PhantomSensor artifacts staged to $(SolutionDir)build\installer\staging\drivers\
+    </PostBuildEvent>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
+    <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
+    <DebuggerFlavor>DbgengKernelDebugger</DebuggerFlavor>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <DriverSign>
+      <FileDigestAlgorithm>sha256</FileDigestAlgorithm>
+    </DriverSign>
+    <ClCompile>
+      <LanguageStandard>stdcpp23</LanguageStandard>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
+      <AdditionalIncludeDirectories>.;PhantomSensor;PhantomSensor\Utilities;PhantomSensorELAM;PhantomSensor\Network;PhantomSensor\Core;PhantomSensor\Memory;PhantomSensor\Callbacks;PhantomSensor\Callbacks\Process;PhantomSensor\Callbacks\FileSystem;PhantomSensor\Callbacks\Registry;PhantomSensor\Callbacks\Object;PhantomSensor\Sync;PhantomSensor\Performance;PhantomSensor\Power;PhantomSensor\Behavioral;PhantomSensor\Telemetry;Shared;PhantomSensor\SelfProtection;PhantomSensor\Communication;PhantomSensor\Cache;PhantomSensor\Exclusions;PhantomSensor\Context;PhantomSensor\ETW;PhantomSensor\Transactions;PhantomSensor\Syscall;PhantomSensor\Objects;PhantomSensor\ALPC;PhantomSensor\Tracing;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <WarningLevel>Level4</WarningLevel>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>%(AdditionalDependencies);fltMgr.lib;cng.lib;fwpkclnt.lib;ndis.lib;ntstrsafe.lib;aux_klib.lib</AdditionalDependencies>
+      <AdditionalOptions>/INTEGRITYCHECK %(AdditionalOptions)</AdditionalOptions>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <DriverSign>
+      <FileDigestAlgorithm>sha256</FileDigestAlgorithm>
+    </DriverSign>
+    <ClCompile>
+      <LanguageStandard>stdcpp23</LanguageStandard>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
+      <AdditionalIncludeDirectories>.;PhantomSensor;PhantomSensor\Utilities;PhantomSensorELAM;PhantomSensor\Network;PhantomSensor\Core;PhantomSensor\Memory;PhantomSensor\Callbacks;PhantomSensor\Callbacks\Process;PhantomSensor\Callbacks\FileSystem;PhantomSensor\Callbacks\Registry;PhantomSensor\Callbacks\Object;PhantomSensor\Sync;PhantomSensor\Performance;PhantomSensor\Power;PhantomSensor\Behavioral;PhantomSensor\Telemetry;Shared;PhantomSensor\SelfProtection;PhantomSensor\Communication;PhantomSensor\Cache;PhantomSensor\Exclusions;PhantomSensor\Context;PhantomSensor\ETW;PhantomSensor\Transactions;PhantomSensor\Syscall;PhantomSensor\Objects;PhantomSensor\ALPC;PhantomSensor\Tracing;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <WarningLevel>Level4</WarningLevel>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>%(AdditionalDependencies);fltMgr.lib;cng.lib;fwpkclnt.lib;ndis.lib;ntstrsafe.lib;aux_klib.lib</AdditionalDependencies>
+      <AdditionalOptions>/INTEGRITYCHECK %(AdditionalOptions)</AdditionalOptions>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">
+    <DriverSign>
+      <FileDigestAlgorithm>sha256</FileDigestAlgorithm>
+    </DriverSign>
+    <ClCompile>
+      <LanguageStandard>stdcpp23</LanguageStandard>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
+      <AdditionalIncludeDirectories>.;PhantomSensor;PhantomSensor\Utilities;PhantomSensorELAM;PhantomSensor\Network;PhantomSensor\Core;PhantomSensor\Memory;PhantomSensor\Callbacks;PhantomSensor\Callbacks\Process;PhantomSensor\Callbacks\FileSystem;PhantomSensor\Callbacks\Registry;PhantomSensor\Callbacks\Object;PhantomSensor\Sync;PhantomSensor\Performance;PhantomSensor\Power;PhantomSensor\Behavioral;PhantomSensor\Telemetry;Shared;PhantomSensor\SelfProtection;PhantomSensor\Communication;PhantomSensor\Cache;PhantomSensor\Exclusions;PhantomSensor\Context;PhantomSensor\ETW;PhantomSensor\Transactions;PhantomSensor\Syscall;PhantomSensor\Objects;PhantomSensor\ALPC;PhantomSensor\Tracing;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <WarningLevel>Level4</WarningLevel>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>%(AdditionalDependencies);fltMgr.lib;cng.lib;fwpkclnt.lib;ndis.lib;ntstrsafe.lib;aux_klib.lib</AdditionalDependencies>
+      <AdditionalOptions>/INTEGRITYCHECK %(AdditionalOptions)</AdditionalOptions>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">
+    <DriverSign>
+      <FileDigestAlgorithm>sha256</FileDigestAlgorithm>
+    </DriverSign>
+    <ClCompile>
+      <LanguageStandard>stdcpp23</LanguageStandard>
+      <LanguageStandard_C>stdc17</LanguageStandard_C>
+      <AdditionalIncludeDirectories>.;PhantomSensor;PhantomSensor\Utilities;PhantomSensorELAM;PhantomSensor\Network;PhantomSensor\Core;PhantomSensor\Memory;PhantomSensor\Callbacks;PhantomSensor\Callbacks\Process;PhantomSensor\Callbacks\FileSystem;PhantomSensor\Callbacks\Registry;PhantomSensor\Callbacks\Object;PhantomSensor\Sync;PhantomSensor\Performance;PhantomSensor\Power;PhantomSensor\Behavioral;PhantomSensor\Telemetry;Shared;PhantomSensor\SelfProtection;PhantomSensor\Communication;PhantomSensor\Cache;PhantomSensor\Exclusions;PhantomSensor\Context;PhantomSensor\ETW;PhantomSensor\Transactions;PhantomSensor\Syscall;PhantomSensor\Objects;PhantomSensor\ALPC;PhantomSensor\Tracing;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <WarningLevel>Level4</WarningLevel>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>%(AdditionalDependencies);fltMgr.lib;cng.lib;fwpkclnt.lib;ndis.lib;ntstrsafe.lib;aux_klib.lib</AdditionalDependencies>
+      <AdditionalOptions>/INTEGRITYCHECK %(AdditionalOptions)</AdditionalOptions>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <Inf Include="PhantomSensor.inf" />
+  </ItemGroup>
+  <ItemGroup>
+    <FilesToPackage Include="$(TargetPath)" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="PhantomSensorELAM\BootDriverVerify.c" />
+    <ClCompile Include="PhantomSensorELAM\BootThreatDetector.c" />
+    <ClCompile Include="PhantomSensorELAM\ELAMCallbacks.c" />
+    <ClCompile Include="PhantomSensorELAM\ELAMDriver.c" />
+    <ClCompile Include="PhantomSensor\ALPC\AlpcPortMonitor.c" />
+    <ClCompile Include="PhantomSensor\Cache\ScanCache.c" />
+    <ClCompile Include="PhantomSensor\Behavioral\AnomalyDetector.c" />
+    <ClCompile Include="PhantomSensor\Behavioral\AttackChainTracker.c" />
+    <ClCompile Include="PhantomSensor\Behavioral\BehaviorEngine.c" />
+    <ClCompile Include="PhantomSensor\Behavioral\IOCMatcher.c" />
+    <ClCompile Include="PhantomSensor\Behavioral\MITREMapper.c" />
+    <ClCompile Include="PhantomSensor\Behavioral\PatternMatcher.c" />
+    <ClCompile Include="PhantomSensor\Behavioral\RuleEngine.c" />
+    <ClCompile Include="PhantomSensor\Behavioral\ThreatScoring.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\FileSystem\FileBackupEngine.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\FileSystem\FileSystemCallbacks.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\FileSystem\NamedPipeMonitor.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\FileSystem\PostCreate.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\FileSystem\PostWrite.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\FileSystem\PreAcquireSection.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\FileSystem\PreCreate.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\FileSystem\PreSetInfo.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\FileSystem\PreWrite.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\FileSystem\USBDeviceControl.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\Object\ObjectCallback.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\Object\ProcessProtection.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\Object\ThreadProtection.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\Process\AmsiBypassDetector.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\Process\AppControl.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\Process\ClipboardMonitor.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\Process\CommandLineParser.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\Process\EnvironmentMonitor.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\Process\HandleTracker.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\Process\ImageNotify.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\Process\ParentChainTracker.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\Process\PrivilegeMonitor.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\Process\ProcessAnalyzer.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\Process\ProcessNotify.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\Process\ProcessRelationship.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\Process\ThreadNotify.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\Process\TokenAnalyzer.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\Process\WSLMonitor.c" />
+    <ClCompile Include="PhantomSensor\Callbacks\Registry\RegistryCallback.c" />
+    <ClCompile Include="PhantomSensor\Communication\CommPort.c" />
+    <ClCompile Include="PhantomSensor\Communication\Compression.c" />
+    <ClCompile Include="PhantomSensor\Communication\Encryption.c" />
+    <ClCompile Include="PhantomSensor\Communication\MessageHandler.c" />
+    <ClCompile Include="PhantomSensor\Communication\MessageQueue.c" />
+    <ClCompile Include="PhantomSensor\Communication\ScanBridge.c" />
+    <ClCompile Include="PhantomSensor\Communication\TelemetryBuffer.c" />
+    <ClCompile Include="PhantomSensor\Context\InstanceContext.c" />
+    <ClCompile Include="PhantomSensor\Context\StreamContext.c">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Core\DriverEntry.c" />
+    <ClCompile Include="PhantomSensor\Core\FilterRegistration.c" />
+    <ClCompile Include="PhantomSensor\ETW\ETWConsumer.c" />
+    <ClCompile Include="PhantomSensor\ETW\ETWProvider.c" />
+    <ClCompile Include="PhantomSensor\ETW\EventSchema.c" />
+    <ClCompile Include="PhantomSensor\ETW\ManifestGenerator.c" />
+    <ClCompile Include="PhantomSensor\ETW\TelemetryEvents.c" />
+    <ClCompile Include="PhantomSensor\Exclusions\ExclusionManager.c" />
+    <ClCompile Include="PhantomSensor\Exclusions\PathExclusion.c" />
+    <ClCompile Include="PhantomSensor\Exclusions\ProcessExclusion.c" />
+    <ClCompile Include="PhantomSensor\Memory\HeapSpray.c" />
+    <ClCompile Include="PhantomSensor\Memory\HollowingDetector.c" />
+    <ClCompile Include="PhantomSensor\Memory\InjectionDetector.c" />
+    <ClCompile Include="PhantomSensor\Memory\MemoryMonitor.c" />
+    <ClCompile Include="PhantomSensor\Memory\MemoryScanner.c" />
+    <ClCompile Include="PhantomSensor\Memory\ROPDetector.c" />
+    <ClCompile Include="PhantomSensor\Memory\SectionTracker.c" />
+    <ClCompile Include="PhantomSensor\Memory\ShellcodeDetector.c" />
+    <ClCompile Include="PhantomSensor\Memory\VadTracker.c" />
+    <ClCompile Include="PhantomSensor\Network\C2Detection.c" />
+    <ClCompile Include="PhantomSensor\Network\ConnectionTracker.c" />
+    <ClCompile Include="PhantomSensor\Network\DataExfiltration.c" />
+    <ClCompile Include="PhantomSensor\Network\DnsMonitor.c" />
+    <ClCompile Include="PhantomSensor\Network\NetworkFilter.c" />
+    <ClCompile Include="PhantomSensor\Network\NetworkReputation.c" />
+    <ClCompile Include="PhantomSensor\Network\PortScanner.c" />
+    <ClCompile Include="PhantomSensor\Network\ProtocolParser.c" />
+    <ClCompile Include="PhantomSensor\Network\SSLInspection.c" />
+    <ClCompile Include="PhantomSensor\Objects\ObjectNamespace.c" />
+    <ClCompile Include="PhantomSensor\Performance\BatchProcessing.c" />
+    <ClCompile Include="PhantomSensor\Performance\CacheOptimization.c" />
+    <ClCompile Include="PhantomSensor\Performance\LookasideLists.c" />
+    <ClCompile Include="PhantomSensor\Performance\PerformanceMonitor.c" />
+    <ClCompile Include="PhantomSensor\Performance\ResourceThrottling.c" />
+    <ClCompile Include="PhantomSensor\Power\PowerCallback.c" />
+    <ClCompile Include="PhantomSensor\SelfProtection\AntiDebug.c" />
+    <ClCompile Include="PhantomSensor\SelfProtection\AntiUnload.c" />
+    <ClCompile Include="PhantomSensor\SelfProtection\CallbackProtection.c" />
+    <ClCompile Include="PhantomSensor\SelfProtection\FileProtection.c" />
+    <ClCompile Include="PhantomSensor\SelfProtection\FirmwareIntegrity.c" />
+    <ClCompile Include="PhantomSensor\SelfProtection\HandleProtection.c" />
+    <ClCompile Include="PhantomSensor\SelfProtection\IntegrityMonitor.c" />
+    <ClCompile Include="PhantomSensor\SelfProtection\SelfProtect.c" />
+    <ClCompile Include="PhantomSensor\Sync\AsyncWorkQueue.c" />
+    <ClCompile Include="PhantomSensor\Sync\DeferredProcedure.c" />
+    <ClCompile Include="PhantomSensor\Sync\SpinLock.c" />
+    <ClCompile Include="PhantomSensor\Sync\ThreadPool.c" />
+    <ClCompile Include="PhantomSensor\Sync\TimerManager.c" />
+    <ClCompile Include="PhantomSensor\Sync\WorkQueue.c" />
+    <ClCompile Include="PhantomSensor\Syscall\CallstackAnalyzer.c" />
+    <ClCompile Include="PhantomSensor\Syscall\DirectSyscallDetector.c" />
+    <ClCompile Include="PhantomSensor\Syscall\HeavensGateDetector.c" />
+    <ClCompile Include="PhantomSensor\Syscall\NtdllIntegrity.c" />
+    <ClCompile Include="PhantomSensor\Syscall\SyscallHooks.c" />
+    <ClCompile Include="PhantomSensor\Syscall\SyscallMonitor.c" />
+    <ClCompile Include="PhantomSensor\Syscall\SyscallTable.c" />
+    <ClCompile Include="PhantomSensor\Tracing\Trace.c" />
+    <ClCompile Include="PhantomSensor\Transactions\KtmMonitor.c" />
+    <ClCompile Include="PhantomSensor\Utilities\FileUtils.c" />
+    <ClCompile Include="PhantomSensor\Utilities\HashUtils.c" />
+    <ClCompile Include="PhantomSensor\Utilities\MemoryUtils.c" />
+    <ClCompile Include="PhantomSensor\Utilities\ProcessUtils.c" />
+    <ClCompile Include="PhantomSensor\Utilities\StringUtils.c" />
+
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="PhantomSensorELAM\BootDriverVerify.h" />
+    <ClInclude Include="PhantomSensorELAM\BootThreatDetector.h" />
+    <ClInclude Include="PhantomSensorELAM\ELAMCallbacks.h" />
+    <ClInclude Include="PhantomSensorELAM\ELAMDriver.h" />
+    <ClInclude Include="PhantomSensor\ALPC\AlpcPortMonitor.h" />
+    <ClInclude Include="PhantomSensor\ALPC\AlpcTypes.h" />
+    <ClInclude Include="PhantomSensor\Behavioral\AnomalyDetector.h" />
+    <ClInclude Include="PhantomSensor\Behavioral\AttackChainTracker.h" />
+    <ClInclude Include="PhantomSensor\Behavioral\BehaviorEngine.h" />
+    <ClInclude Include="PhantomSensor\Behavioral\IOCMatcher.h" />
+    <ClInclude Include="PhantomSensor\Behavioral\MITREMapper.h" />
+    <ClInclude Include="PhantomSensor\Behavioral\PatternMatcher.h" />
+    <ClInclude Include="PhantomSensor\Behavioral\RuleEngine.h" />
+    <ClInclude Include="PhantomSensor\Behavioral\ThreatScoring.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\FileSystem\FileBackupEngine.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\FileSystem\FileSystemCallbacks.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\FileSystem\NamedPipeMonitor.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\FileSystem\PostCreate.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\FileSystem\PreCreate.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\FileSystem\PreSetInfo.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\FileSystem\USBDeviceControl.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\Object\ObjectCallback.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\Object\ProcessProtection.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\Object\ThreadProtection.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\Process\AmsiBypassDetector.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\Process\AppControl.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\Process\ClipboardMonitor.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\Process\CommandLineParser.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\Process\EnvironmentMonitor.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\Process\HandleTracker.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\Process\ImageNotify.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\Process\ParentChainTracker.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\Process\PrivilegeMonitor.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\Process\ProcessAnalyzer.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\Process\ProcessNotify.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\Process\ProcessRelationship.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\Process\ThreadNotify.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\Process\TokenAnalyzer.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\Process\WSLMonitor.h" />
+    <ClInclude Include="PhantomSensor\Callbacks\Registry\RegistryCallback.h" />
+    <ClInclude Include="PhantomSensor\Communication\CommPort.h" />
+    <ClInclude Include="PhantomSensor\Communication\Compression.h" />
+    <ClInclude Include="PhantomSensor\Communication\Encryption.h" />
+    <ClInclude Include="PhantomSensor\Communication\MessageHandler.h" />
+    <ClInclude Include="PhantomSensor\Communication\MessageQueue.h" />
+    <ClInclude Include="PhantomSensor\Communication\ScanBridge.h" />
+    <ClInclude Include="PhantomSensor\Communication\TelemetryBuffer.h" />
+    <ClInclude Include="PhantomSensor\Context\InstanceContext.h" />
+    <ClInclude Include="PhantomSensor\Context\StreamContext.h" />
+    <ClInclude Include="PhantomSensor\Core\DriverEntry.h" />
+    <ClInclude Include="PhantomSensor\Core\FilterRegistration.h" />
+    <ClInclude Include="PhantomSensor\Core\Globals.h" />
+    <ClInclude Include="PhantomSensor\ETW\ETWConsumer.h" />
+    <ClInclude Include="PhantomSensor\ETW\ETWProvider.h" />
+    <ClInclude Include="PhantomSensor\ETW\EventSchema.h" />
+    <ClInclude Include="PhantomSensor\ETW\ManifestGenerator.h" />
+    <ClInclude Include="PhantomSensor\ETW\TelemetryEvents.h" />
+    <ClInclude Include="PhantomSensor\Exclusions\ExclusionManager.h" />
+    <ClInclude Include="PhantomSensor\Memory\HeapSpray.h" />
+    <ClInclude Include="PhantomSensor\Memory\HollowingDetector.h" />
+    <ClInclude Include="PhantomSensor\Memory\InjectionDetector.h" />
+    <ClInclude Include="PhantomSensor\Memory\MemoryMonitor.h" />
+    <ClInclude Include="PhantomSensor\Memory\MemoryScanner.h" />
+    <ClInclude Include="PhantomSensor\Memory\ROPDetector.h" />
+    <ClInclude Include="PhantomSensor\Memory\SectionTracker.h" />
+    <ClInclude Include="PhantomSensor\Memory\ShellcodeDetector.h" />
+    <ClInclude Include="PhantomSensor\Memory\VadTracker.h" />
+    <ClInclude Include="PhantomSensor\Network\C2Detection.h" />
+    <ClInclude Include="PhantomSensor\Network\ConnectionTracker.h" />
+    <ClInclude Include="PhantomSensor\Network\DataExfiltration.h" />
+    <ClInclude Include="PhantomSensor\Network\DnsMonitor.h" />
+    <ClInclude Include="PhantomSensor\Network\NetworkFilter.h" />
+    <ClInclude Include="PhantomSensor\Network\NetworkReputation.h" />
+    <ClInclude Include="PhantomSensor\Network\PortScanner.h" />
+    <ClInclude Include="PhantomSensor\Network\ProtocolParser.h" />
+    <ClInclude Include="PhantomSensor\Network\SSLInspection.h" />
+    <ClInclude Include="PhantomSensor\Objects\ObjectNamespace.h" />
+    <ClInclude Include="PhantomSensor\Performance\BatchProcessing.h" />
+    <ClInclude Include="PhantomSensor\Performance\CacheOptimization.h" />
+    <ClInclude Include="PhantomSensor\Performance\LookasideLists.h" />
+    <ClInclude Include="PhantomSensor\Performance\PerformanceMonitor.h" />
+    <ClInclude Include="PhantomSensor\Performance\ResourceThrottling.h" />
+    <ClInclude Include="PhantomSensor\Power\PowerCallback.h" />
+    <ClInclude Include="PhantomSensor\SelfProtection\AntiDebug.h" />
+    <ClInclude Include="PhantomSensor\SelfProtection\AntiUnload.h" />
+    <ClInclude Include="PhantomSensor\SelfProtection\CallbackProtection.h" />
+    <ClInclude Include="PhantomSensor\SelfProtection\FileProtection.h" />
+    <ClInclude Include="PhantomSensor\SelfProtection\FirmwareIntegrity.h" />
+    <ClInclude Include="PhantomSensor\SelfProtection\HandleProtection.h" />
+    <ClInclude Include="PhantomSensor\SelfProtection\IntegrityMonitor.h" />
+    <ClInclude Include="PhantomSensor\SelfProtection\SelfProtect.h" />
+    <ClInclude Include="PhantomSensor\Sync\AsyncWorkQueue.h" />
+    <ClInclude Include="PhantomSensor\Sync\DeferredProcedure.h" />
+    <ClInclude Include="PhantomSensor\Sync\SpinLock.h" />
+    <ClInclude Include="PhantomSensor\Sync\ThreadPool.h" />
+    <ClInclude Include="PhantomSensor\Sync\TimerManager.h" />
+    <ClInclude Include="PhantomSensor\Sync\WorkQueue.h" />
+    <ClInclude Include="PhantomSensor\Syscall\CallstackAnalyzer.h" />
+    <ClInclude Include="PhantomSensor\Syscall\DirectSyscallDetector.h" />
+    <ClInclude Include="PhantomSensor\Syscall\HeavensGateDetector.h" />
+    <ClInclude Include="PhantomSensor\Syscall\NtdllIntegrity.h" />
+    <ClInclude Include="PhantomSensor\Syscall\SyscallHooks.h" />
+    <ClInclude Include="PhantomSensor\Syscall\SyscallMonitor.h" />
+    <ClInclude Include="PhantomSensor\Syscall\SyscallTable.h" />
+    <ClInclude Include="PhantomSensor\Tracing\Trace.h" />
+    <ClInclude Include="PhantomSensor\Tracing\WppConfig.h" />
+    <ClInclude Include="PhantomSensor\Transactions\KtmMonitor.h" />
+    <ClInclude Include="PhantomSensor\Utilities\FileUtils.h" />
+    <ClInclude Include="PhantomSensor\Utilities\HashUtils.h" />
+    <ClInclude Include="PhantomSensor\Utilities\MemoryUtils.h" />
+    <ClInclude Include="PhantomSensor\Utilities\ProcessUtils.h" />
+    <ClInclude Include="PhantomSensor\Utilities\StringUtils.h" />
+    <ClInclude Include="Shared\AttackPatterns.h" />
+    <ClInclude Include="Shared\BehaviorTypes.h" />
+    <ClInclude Include="Shared\ErrorCodes.h" />
+    <ClInclude Include="Shared\MemoryTypes.h" />
+    <ClInclude Include="Shared\MessageProtocol.h" />
+    <ClInclude Include="Shared\MessageTypes.h" />
+    <ClInclude Include="Shared\NetworkTypes.h" />
+    <ClInclude Include="Shared\PortName.h" />
+    <ClInclude Include="Shared\SharedDefs.h" />
+    <ClInclude Include="Shared\TelemetryTypes.h" />
+    <ClInclude Include="Shared\VerdictTypes.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

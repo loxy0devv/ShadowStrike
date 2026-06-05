@@ -1,0 +1,40 @@
+id: ss-reg-003
+detection_name: "Win32/Evasion.DefenderDisable"
+description: "Windows Defender real-time protection or behavior monitoring disabled via registry."
+scope: registry
+severity: critical
+status: stable
+source: native
+confidence: 0.90
+weight: 3.5
+version: 1
+attack:
+  - tactic: TA0005
+    technique: T1562
+    sub_technique: T1562.001
+    name: "Impair Defenses: Disable or Modify Tools"
+logic:
+  and:
+    - field_contains:
+        field: registry.key
+        value: "\\Windows Defender"
+    - or:
+        - field_in:
+            field: registry.value
+            values:
+              - DisableRealtimeMonitoring
+              - DisableBehaviorMonitoring
+              - DisableOnAccessProtection
+              - DisableScanOnRealtimeEnable
+              - DisableIOAVProtection
+              - DisableAntiSpyware
+              - DisableAntiVirus
+fp_guard:
+  notes:
+    - "Enterprise Group Policy legitimately manages Defender via these keys."
+    - "Suppress when change source is Group Policy engine (GPSvc.dll, gpsvc.exe) or trusted management tool."
+  suppress:
+    - field: process.name
+      values:
+        - MsMpEng.exe
+        - TrustedInstaller.exe

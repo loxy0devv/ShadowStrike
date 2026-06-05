@@ -1,0 +1,53 @@
+id: ss-net-014
+detection_name: "Win32/WinRM.LateralMovement.WorkstationOutbound"
+description: "Detects outbound WinRM connections (TCP 5985 HTTP or 5986 HTTPS) originating from workstation-class systems to other internal hosts. WinRM is a common lateral movement vector when combined with valid credentials; workstations should not initiate WinRM sessions to other machines in normal operations."
+scope: network
+severity: high
+status: stable
+source: native
+confidence: 0.83
+weight: 2.5
+version: 1
+
+attack:
+  - tactic: TA0008
+    technique: T1021.006
+    name: "Remote Services: Windows Remote Management"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1021/006/"
+    title: "ATT&CK T1021.006"
+
+logic:
+  and:
+    - or:
+        - field_eq:
+            field: network.destination_port
+            value: 5985
+        - field_eq:
+            field: network.destination_port
+            value: 5986
+    - field_eq:
+        field: network.direction
+        value: "outbound"
+    - field_eq:
+        field: host.type
+        value: "workstation"
+    - not:
+        field_regex:
+          field: network.destination_ip
+          pattern: "^(10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)(0|1|2)\\."
+
+fp_guard:
+  notes:
+    - "IT administrators using WinRM from their workstations for remote management are a common FP source. Correlate with admin account context."
+    - "Ansible and other automation platforms that push changes from a workstation will trigger this."
+  suppress:
+    - field: network.process.name
+      values:
+        - ansible.exe
+        - wsmprovhost.exe
+    - field: network.process.user
+      values:
+        - "DOMAIN\\sysadmin"
+        - "DOMAIN\\itops"

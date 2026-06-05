@@ -1,0 +1,50 @@
+id: ss-reg-006
+detection_name: "Win32/Registry.AppInitDLLs.Persistence"
+description: "Detects writes to the AppInit_DLLs registry key, which causes Windows to load specified DLLs into every process that loads user32.dll. Attackers abuse this mechanism for stealthy persistence and privilege escalation since the loaded DLLs run in the context of every GUI application, including high-privilege processes."
+scope: registry
+severity: critical
+status: stable
+source: native
+confidence: 0.90
+weight: 3.0
+version: 1
+
+attack:
+  - tactic: TA0003
+    technique: T1546.010
+    name: "Event Triggered Execution: AppInit DLLs"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1546/010/"
+    title: "ATT&CK T1546.010"
+
+logic:
+  and:
+    - field_in:
+        field: registry.key_path
+        values:
+          - "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Windows\\AppInit_DLLs"
+          - "HKLM\\SOFTWARE\\Wow6432Node\\Microsoft\\Windows NT\\CurrentVersion\\Windows\\AppInit_DLLs"
+          - "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Windows\\LoadAppInit_DLLs"
+        case_insensitive: true
+    - field_in:
+        field: registry.operation
+        values:
+          - set_value
+          - create_key
+    - not:
+        field_in:
+          field: registry.process.name
+          values:
+            - msiexec.exe
+            - trustedinstaller.exe
+          case_insensitive: true
+
+fp_guard:
+  notes:
+    - "Legitimate software rarely uses AppInit_DLLs in modern Windows versions. Any write to this key outside of installation should be treated as high confidence."
+    - "Some accessibility software and legacy applications may use AppInit_DLLs for hooking."
+  suppress:
+    - field: registry.process.name
+      values:
+        - msiexec.exe

@@ -1,0 +1,36 @@
+id: ss-proc-009
+detection_name: "Win32/Elevation.TokenImpersonation"
+description: "Unsupervised process impersonated or manipulated a privileged token — common privilege escalation technique."
+scope: process
+severity: high
+status: stable
+source: native
+confidence: 0.70
+weight: 2.0
+version: 1
+attack:
+  - tactic: TA0004
+    technique: T1134
+    name: "Access Token Manipulation"
+logic:
+  and:
+    - or:
+        - field_contains:
+            field: process.command_line
+            value: "ImpersonateLoggedOnUser"
+        - field_contains:
+            field: process.command_line
+            value: "DuplicateTokenEx"
+        - field_contains:
+            field: deep.detail
+            value: "token"
+    - field_not_in:
+        field: process.name
+        values: [lsass.exe, winlogon.exe, services.exe, svchost.exe]
+        case_insensitive: true
+    - field_equals:
+        field: process.integrity_level
+        value: "Medium"
+fp_guard:
+  notes:
+    - "Remote desktop utilities and some enterprise SSO tools use token impersonation legitimately."

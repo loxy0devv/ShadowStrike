@@ -1,0 +1,4044 @@
+/*
+ * ShadowStrike - Enterprise NGAV/EDR Platform
+ * Copyright (C) 2026 ShadowStrike Security
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+/**
+ * @file SandboxEvasionDetector.cpp
+ * @brief Behavioral detection of anti-sandbox evasion in target processes
+ *
+ * DESIGN PHILOSOPHY — DEFENDER PERSPECTIVE:
+ *
+ * This module detects MALWARE that attempts to evade sandbox analysis by
+ * probing the host environment. The detector does NOT check if the host
+ * IS a sandbox — that would be acting like malware.
+ *
+ * PRIMARY DETECTION: per-process behavioral analysis (PE imports, embedded
+ * strings, code patterns indicating sandbox detection).
+ *
+ * HOST CONTEXT: hardware/timing/artifact checks provide scoring calibration
+ * data — on a real sandbox, anti-sandbox probing is LESS suspicious.
+ *
+ * @note Thread-safe implementation using shared_mutex.
+ * @note Follows PIMPL pattern for ABI stability.
+ *
+ * @author ShadowStrike Security Team
+ * @copyright (c) 2026 ShadowStrike Security Suite. All rights reserved.
+ */
+
+#include "pch.h"
+#pragma warning(disable : 4834)
+#include "SandboxEvasionDetector.hpp"
+#include "../Utils/Logger.hpp"
+#include "../Utils/ProcessUtils.hpp"
+#include "../Utils/SystemUtils.hpp"
+#include "../Utils/RegistryUtils.hpp"
+#include "../Utils/FileUtils.hpp"
+#include "../Utils/StringUtils.hpp"
+#include "../Utils/ThreadPool.hpp"
+#include "../Utils/MemoryUtils.hpp"
+#include "../PEParser/PEParser.hpp"
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <bitset>
+#include <future>
+#include <mutex>
+#include <numeric>
+#include <shared_mutex>
+#include <unordered_map>
+#include <unordered_set>
+
+// PhantomDisassembler for advanced hook detection and code analysis
+#include <PhantomDisassembler/PhantomDisasm.hpp>
+
+#ifdef _WIN32
+#  include <intrin.h>
+#  include <emmintrin.h>  // SSE2 intrinsics for fallback functions
+#  include <TlHelp32.h>
+#  include <Psapi.h>
+#  include <ShlObj.h>
+#  include <WbemIdl.h>
+#  include <comdef.h>
+#  include <SetupAPI.h>
+#  include <devguid.h>
+#  include <iphlpapi.h>
+#  include <mmsystem.h>   // For waveOutGetNumDevs
+#  pragma comment(lib, "wbemuuid.lib")
+#  pragma comment(lib, "Setupapi.lib")
+#  pragma comment(lib, "iphlpapi.lib")
+#  pragma comment(lib, "winmm.lib")  // For multimedia functions
+#endif
+
+// Define M_PI if not defined (not guaranteed in C++20)
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+// =============================================================================
+// ASSEMBLY FUNCTION FALLBACKS
+// =============================================================================
+// These fallback implementations are used when the assembly module is not
+// linked (e.g., on non-Windows platforms or during testing). They provide
+// equivalent functionality using C++ and compiler intrinsics where possible.
+//
+// MSVC linker directive /ALTERNATENAME automatically falls back to these
+// if the primary assembly symbols are not found.
+// =============================================================================
+
+#ifdef _MSC_VER
+#pragma comment(linker, "/ALTERNATENAME:GetPreciseRDTSC=Fallback_GetPreciseRDTSC")
+#pragma comment(linker, "/ALTERNATENAME:GetPreciseRDTSCP=Fallback_GetPreciseRDTSCP")
+#pragma comment(linker, "/ALTERNATENAME:MeasureRDTSCOverhead=Fallback_MeasureRDTSCOverhead")
+#pragma comment(linker, "/ALTERNATENAME:MeasureCPUIDOverhead=Fallback_MeasureCPUIDOverhead")
+#pragma comment(linker, "/ALTERNATENAME:MeasureSleepAcceleration=Fallback_MeasureSleepAcceleration")
+#pragma comment(linker, "/ALTERNATENAME:CheckCuckooBackdoor=Fallback_CheckCuckooBackdoor")
+#pragma comment(linker, "/ALTERNATENAME:MeasureTimingPrecision=Fallback_MeasureTimingPrecision")
+#pragma comment(linker, "/ALTERNATENAME:DetectSingleStepTiming=Fallback_DetectSingleStepTiming")
+#pragma comment(linker, "/ALTERNATENAME:MeasureVMExitOverhead=Fallback_MeasureVMExitOverhead")
+#pragma comment(linker, "/ALTERNATENAME:CalibrateTimingBaseline=Fallback_CalibrateTimingBaseline")
+#pragma comment(linker, "/ALTERNATENAME:DetectTimingHook=Fallback_DetectTimingHook")
+#pragma comment(linker, "/ALTERNATENAME:MeasureMemoryLatency=Fallback_MeasureMemoryLatency")
+#pragma comment(linker, "/ALTERNATENAME:CheckHypervisorBit=Fallback_CheckHypervisorBit")
+#pragma comment(linker, "/ALTERNATENAME:MeasureIntOverhead=Fallback_MeasureIntOverhead")
+#pragma comment(linker, "/ALTERNATENAME:SandboxRDTSCDifference=Fallback_SandboxRDTSCDifference")
+#pragma comment(linker, "/ALTERNATENAME:GetRDTSCFrequency=Fallback_GetRDTSCFrequency")
+#pragma comment(linker, "/ALTERNATENAME:DetectRDTSCEmulation=Fallback_DetectRDTSCEmulation")
+#endif
+
+extern "C" {
+
+/// Fallback: GetPreciseRDTSC using intrinsics
+uint64_t Fallback_GetPreciseRDTSC(void) {
+#ifdef _WIN32
+    int cpuInfo[4];
+    __cpuid(cpuInfo, 0);  // Serialize
+    return __rdtsc();
+#else
+    return 0;
+#endif
+}
+
+/// Fallback: GetPreciseRDTSCP using intrinsics
+uint64_t Fallback_GetPreciseRDTSCP(uint32_t* processorId) {
+#ifdef _WIN32
+    unsigned int aux = 0;
+    uint64_t tsc = __rdtscp(&aux);
+    if (processorId) {
+        *processorId = aux;
+    }
+    return tsc;
+#else
+    if (processorId) *processorId = 0;
+    return 0;
+#endif
+}
+
+/// Fallback: MeasureRDTSCOverhead
+uint64_t Fallback_MeasureRDTSCOverhead(void) {
+#ifdef _WIN32
+    int cpuInfo[4];
+    __cpuid(cpuInfo, 0);
+    uint64_t start = __rdtsc();
+    
+    // Execute 100 RDTSC calls
+    for (int i = 0; i < 100; ++i) {
+        (void)__rdtsc();
+        (void)__rdtsc();
+        (void)__rdtsc();
+        (void)__rdtsc();
+        (void)__rdtsc();
+        (void)__rdtsc();
+        (void)__rdtsc();
+        (void)__rdtsc();
+        (void)__rdtsc();
+        (void)__rdtsc();
+    }
+    
+    __cpuid(cpuInfo, 0);
+    uint64_t end = __rdtsc();
+    return (end - start) / 1000;  // Average per call
+#else
+    return 0;
+#endif
+}
+
+/// Fallback: MeasureCPUIDOverhead
+uint64_t Fallback_MeasureCPUIDOverhead(void) {
+#ifdef _WIN32
+    int cpuInfo[4];
+    uint64_t start = __rdtsc();
+    
+    // Execute 100 CPUID calls
+    for (int i = 0; i < 100; ++i) {
+        __cpuid(cpuInfo, 0);
+        __cpuid(cpuInfo, 0);
+        __cpuid(cpuInfo, 0);
+        __cpuid(cpuInfo, 0);
+        __cpuid(cpuInfo, 0);
+        __cpuid(cpuInfo, 0);
+        __cpuid(cpuInfo, 0);
+        __cpuid(cpuInfo, 0);
+        __cpuid(cpuInfo, 0);
+        __cpuid(cpuInfo, 0);
+    }
+    
+    uint64_t end = __rdtsc();
+    return (end - start) / 1000;  // Average per call
+#else
+    return 0;
+#endif
+}
+
+/// Fallback: MeasureSleepAcceleration
+uint64_t Fallback_MeasureSleepAcceleration(uint32_t sleepMs) {
+#ifdef _WIN32
+    // SECURITY FIX: Explicit division-by-zero guard at point of use
+    // Even though sleepMs < 100 is rejected, we add defense-in-depth
+    if (sleepMs < 100 || sleepMs == 0) return 0;
+    
+    ULONGLONG startTicks = GetTickCount64();
+    Sleep(sleepMs);
+    ULONGLONG endTicks = GetTickCount64();
+    
+    ULONGLONG actualMs = endTicks - startTicks;
+    
+    // Calculate deviation percentage
+    if (actualMs >= sleepMs) {
+        return 0;  // No acceleration
+    }
+    
+    // Division is safe: sleepMs guaranteed > 0 by guard above
+    return ((sleepMs - actualMs) * 100) / sleepMs;
+#else
+    (void)sleepMs;
+    return 0;
+#endif
+}
+
+/// Fallback: CheckCuckooBackdoor
+/// Note: Actual Cuckoo detection requires network socket operations
+uint32_t Fallback_CheckCuckooBackdoor(void) {
+    // This is a stub - real Cuckoo detection is done in C++ code
+    return 0;
+}
+
+/// Fallback: MeasureTimingPrecision
+uint64_t Fallback_MeasureTimingPrecision(void) {
+#ifdef _WIN32
+    uint64_t minDelta = UINT64_MAX;
+    
+    for (int i = 0; i < 100; ++i) {
+        uint64_t t1 = __rdtsc();
+        uint64_t t2 = __rdtsc();
+        uint64_t delta = t2 - t1;
+        if (delta < minDelta) {
+            minDelta = delta;
+        }
+    }
+    
+    return minDelta;
+#else
+    return 0;
+#endif
+}
+
+// NOTE: Fallback_DetectSingleStepTiming is provided by DebuggerEvasionDetector.cpp
+// to avoid duplicate symbol errors when both TUs are linked together.
+
+/// Fallback: MeasureVMExitOverhead
+uint64_t Fallback_MeasureVMExitOverhead(void) {
+#ifdef _WIN32
+    uint64_t total = 0;
+    int cpuInfo[4];
+    
+    // Test 1: CPUID overhead (causes VM exit)
+    uint64_t start = __rdtsc();
+    __cpuid(cpuInfo, 1);  // Leaf 1
+    uint64_t end = __rdtsc();
+    total += (end - start);
+    
+    // Test 2: Another CPUID
+    start = __rdtsc();
+    __cpuid(cpuInfo, 0);
+    end = __rdtsc();
+    total += (end - start);
+    
+    // Test 3: Memory fence instructions
+    start = __rdtsc();
+    _mm_sfence();
+    _mm_lfence();
+    _mm_mfence();
+    end = __rdtsc();
+    total += (end - start);
+    
+    return total;
+#else
+    return 0;
+#endif
+}
+
+/// Fallback: CalibrateTimingBaseline
+static uint64_t g_baselineRDTSC_fallback = 0;
+static uint64_t g_baselineCPUID_fallback = 0;
+static std::once_flag g_calibrationOnce_fallback;
+
+void Fallback_CalibrateTimingBaseline(void) {
+#ifdef _WIN32
+    std::call_once(g_calibrationOnce_fallback, []() {
+        // Measure RDTSC baseline
+        uint64_t sum = 0;
+        for (int i = 0; i < 10; ++i) {
+            uint64_t start = __rdtsc();
+            uint64_t end = __rdtsc();
+            sum += (end - start);
+        }
+        g_baselineRDTSC_fallback = sum / 10;
+
+        // Measure CPUID baseline
+        int cpuInfo[4];
+        sum = 0;
+        for (int i = 0; i < 10; ++i) {
+            uint64_t start = __rdtsc();
+            __cpuid(cpuInfo, 0);
+            uint64_t end = __rdtsc();
+            sum += (end - start);
+        }
+        g_baselineCPUID_fallback = sum / 10;
+    });
+#endif
+}
+
+/// Fallback: DetectTimingHook
+uint32_t Fallback_DetectTimingHook(void) {
+#ifdef _WIN32
+    uint64_t rdtsc1 = __rdtsc();
+    
+    unsigned int aux;
+    uint64_t rdtscp = __rdtscp(&aux);
+    
+    // If difference is very large, timing may be hooked
+    int64_t diff = static_cast<int64_t>(rdtscp) - static_cast<int64_t>(rdtsc1);
+    if (diff < 0) diff = -diff;
+    
+    return (diff > 10000) ? 1 : 0;
+#else
+    return 0;
+#endif
+}
+
+/// Fallback: MeasureMemoryLatency
+uint64_t Fallback_MeasureMemoryLatency(void) {
+#ifdef _WIN32
+    // Allocate and flush memory - use alignas for proper alignment
+    // THREAD-SAFETY: a single static buffer would be cache-line shared across
+    // every concurrent caller (the system-wide scan calls this from worker
+    // threads), serializing flushes and corrupting the latency measurement.
+    // thread_local gives each thread an independent, aligned cache line.
+    alignas(64) static thread_local volatile char buffer[4096];
+    
+    // Flush cache line
+    _mm_clflush(const_cast<char*>(&buffer[0]));
+    _mm_mfence();
+    
+    // Measure uncached access
+    uint64_t start = __rdtsc();
+    volatile char x = buffer[0];
+    (void)x;
+    _mm_lfence();
+    uint64_t end = __rdtsc();
+    
+    return end - start;
+#else
+    return 0;
+#endif
+}
+
+/// Fallback: CheckHypervisorBit
+uint32_t Fallback_CheckHypervisorBit(void) {
+#ifdef _WIN32
+    int cpuInfo[4];
+    __cpuid(cpuInfo, 1);
+    
+    // Check hypervisor bit (ECX bit 31)
+    return (cpuInfo[2] & (1 << 31)) ? 1 : 0;
+#else
+    return 0;
+#endif
+}
+
+/// Fallback: MeasureIntOverhead
+uint64_t Fallback_MeasureIntOverhead(void) {
+#ifdef _WIN32
+    int cpuInfo[4];
+    
+    // Measure hypervisor CPUID leaf (may cause VM exit)
+    __cpuid(cpuInfo, 0);
+    uint64_t start = __rdtsc();
+    __cpuid(cpuInfo, 0x40000000);  // Hypervisor leaf
+    uint64_t end = __rdtsc();
+    
+    return end - start;
+#else
+    return 0;
+#endif
+}
+
+/// Fallback: SandboxRDTSCDifference
+uint64_t Fallback_SandboxRDTSCDifference(uint32_t iterations) {
+#ifdef _WIN32
+    if (iterations == 0) return 0;
+    
+    int cpuInfo[4];
+    __cpuid(cpuInfo, 0);
+    uint64_t start = __rdtsc();
+    
+    // Busy loop
+    for (uint32_t i = 0; i < iterations; ++i) {
+        _mm_pause();
+    }
+    
+    uint64_t end = __rdtsc();
+    return end - start;
+#else
+    (void)iterations;
+    return 0;
+#endif
+}
+
+/// Fallback: GetRDTSCFrequency
+uint64_t Fallback_GetRDTSCFrequency(void) {
+#ifdef _WIN32
+    int cpuInfo[4];
+    
+    // Try CPUID leaf 0x15 (TSC/Core Crystal Clock info)
+    __cpuid(cpuInfo, 0x15);
+    
+    uint32_t denominator = cpuInfo[0];  // EAX
+    uint32_t numerator = cpuInfo[1];    // EBX
+    uint32_t frequency = cpuInfo[2];    // ECX
+    
+    if (numerator == 0 || denominator == 0) {
+        return 0;  // Info not available
+    }
+    
+    // TSC frequency = (ECX * EBX) / EAX
+    if (frequency != 0) {
+        return (static_cast<uint64_t>(frequency) * numerator) / denominator;
+    }
+    
+    return 0;
+#else
+    return 0;
+#endif
+}
+
+/// Fallback: DetectRDTSCEmulation
+uint32_t Fallback_DetectRDTSCEmulation(void) {
+#ifdef _WIN32
+    // Take 3 consecutive RDTSC readings
+    uint64_t t1 = __rdtsc();
+    uint64_t t2 = __rdtsc();
+    uint64_t t3 = __rdtsc();
+    
+    // Check for constant values (clear emulation sign)
+    if (t1 == t2 || t2 == t3) {
+        return 1;  // Emulation detected
+    }
+    
+    // Check for suspicious constant increment
+    uint64_t delta1 = t2 - t1;
+    uint64_t delta2 = t3 - t2;
+    
+    // If deltas are exactly equal, suspicious (but not definitive)
+    // Real CPUs have some jitter
+    if (delta1 == delta2 && delta1 > 0) {
+        // Additional check - very suspicious if this pattern repeats
+        uint64_t t4 = __rdtsc();
+        uint64_t delta3 = t4 - t3;
+        if (delta3 == delta2) {
+            return 1;  // Emulation very likely
+        }
+    }
+    
+    return 0;
+#else
+    return 0;
+#endif
+}
+
+} // extern "C"
+
+namespace ShadowStrike {
+    namespace AntiEvasion {
+
+        // ============================================================================
+        // LOGGING CATEGORY
+        // ============================================================================
+
+        static constexpr const wchar_t* LOG_CATEGORY = L"SandboxEvasionDetector";
+
+        // ============================================================================
+        // INTERNAL CONSTANTS
+        // ============================================================================
+
+        namespace {
+            // Known VM/Sandbox BIOS strings
+            // CRITICAL FIX (Issue #2): Removed cloud providers to prevent false positives
+            // AWS EC2, Azure, GCP are LEGITIMATE enterprise environments, not sandboxes
+            // Only include strings that definitively indicate analysis sandbox environments
+            constexpr std::wstring_view VM_BIOS_STRINGS[] = {
+                L"VBOX",        // VirtualBox (often used for sandboxing)
+                L"QEMU",        // QEMU (common in Cuckoo/CAPE)
+                L"BOCHS",       // Bochs emulator (analysis tool)
+                L"INNOTEK"      // Old VirtualBox identifier
+                // REMOVED: L"VMWARE" - Used legitimately in enterprise (vSphere, Workstation)
+                // REMOVED: L"VIRTUAL" - Too generic, matches legitimate VMs
+                // REMOVED: L"PARALLELS" - Legitimate macOS virtualization
+                // REMOVED: L"XEN" - Used by AWS, legitimate hypervisor
+                // REMOVED: L"ORACLE" - OCI cloud is legitimate
+                // REMOVED: L"AMAZON EC2" - AWS is legitimate enterprise cloud
+                // REMOVED: L"MICROSOFT CORPORATION" - Azure is legitimate enterprise cloud
+            };
+
+            // Known DEFINITIVE sandbox/analysis environment strings
+            // These indicate actual malware analysis sandboxes, not legitimate VMs
+            constexpr std::wstring_view DEFINITIVE_SANDBOX_STRINGS[] = {
+                L"CUCKOO",      // Cuckoo Sandbox
+                L"CAPE",        // CAPE Sandbox
+                L"JOEBOX",      // Joe Sandbox
+                L"ANYRUN",      // ANY.RUN
+                L"VMRAY",       // VMRay
+                L"TRIA.GE",     // Triage sandbox
+                L"HYBRID",      // Hybrid Analysis
+                L"SANDBOX"      // Generic sandbox identifier
+            };
+
+            // Known VM/Sandbox MAC OUI prefixes (first 3 bytes)
+            constexpr uint8_t VM_MAC_PREFIXES[][3] = {
+                {0x00, 0x05, 0x69},  // VMware
+                {0x00, 0x0C, 0x29},  // VMware
+                {0x00, 0x1C, 0x14},  // VMware
+                {0x00, 0x50, 0x56},  // VMware
+                {0x08, 0x00, 0x27},  // VirtualBox
+                {0x52, 0x54, 0x00},  // QEMU/KVM
+                {0x00, 0x16, 0x3E},  // Xen
+                {0x00, 0x1C, 0x42},  // Parallels
+                {0x00, 0x03, 0xFF},  // Microsoft Hyper-V
+                {0x00, 0x15, 0x5D},  // Microsoft Hyper-V
+            };
+
+            // Sandbox-specific usernames
+            constexpr std::wstring_view SANDBOX_USERNAMES[] = {
+                L"sandbox", L"virus", L"malware", L"maltest", L"test", L"sample",
+                L"vboxuser", L"vmware", L"user", L"admin", L"administrator",
+                L"currentuser", L"cuckoo", L"wilbert", L"analysis", L"analyst"
+            };
+
+            // Sandbox-specific computer names
+            constexpr std::wstring_view SANDBOX_COMPUTERNAMES[] = {
+                L"SANDBOX", L"VIRUS", L"MALWARE", L"MALTEST", L"TEST", L"SAMPLE",
+                L"TEQUILABOOMBOOM", L"PC", L"DESKTOP", L"JOHN-PC", L"ANALYSIS",
+                L"WIN7-PC", L"WIN10-PC", L"CUCKOO", L"VMWARE", L"VBOX"
+            };
+
+            // Suspicious driver names
+            constexpr std::wstring_view SANDBOX_DRIVERS[] = {
+                L"VBoxGuest", L"VBoxMouse", L"VBoxSF", L"VBoxVideo",
+                L"vmci", L"vmhgfs", L"vmmouse", L"vmrawdsk", L"vmusbmouse",
+                L"vmx_svga", L"vmxnet", L"vmware_vga",
+                L"Hgfs", L"Vmhgfs", L"prl_boot", L"prl_fs", L"prl_memdev",
+                L"xenevtchn", L"xennet", L"xensvc", L"xenvdb"
+            };
+
+            // Analysis tool window class names
+            constexpr std::wstring_view ANALYSIS_WINDOW_CLASSES[] = {
+                L"OLLYDBG", L"GBDYLLO", L"pediy06", L"IDA", L"WinDbgFrameClass",
+                L"Zeta Debugger", L"Rock Debugger", L"ObsidianGUI", L"ID"
+            };
+
+            // Sleep acceleration detection threshold (>5% deviation)
+            constexpr double TIMING_DEVIATION_THRESHOLD = 0.05;
+
+            // Minimum expected timing for 100ms sleep (in 100ns units)
+            constexpr int64_t EXPECTED_100MS_SLEEP = 100 * 10000;  // 100ms in 100ns
+
+            // Callback ID counter
+            static std::atomic<uint64_t> s_callbackIdCounter{ 1 };
+
+            // -------------------------------------------------------------------------
+            // Helper: Count files in a directory (non-recursive)
+            // Used for system wear and tear analysis
+            // -------------------------------------------------------------------------
+            [[nodiscard]] size_t CountFilesInDirectory(std::wstring_view dirPath) noexcept {
+                size_t count = 0;
+#ifdef _WIN32
+                if (dirPath.empty()) return 0;
+                
+                std::wstring searchPath(dirPath);
+                if (searchPath.back() != L'\\' && searchPath.back() != L'/') {
+                    searchPath += L'\\';
+                }
+                searchPath += L'*';
+                
+                WIN32_FIND_DATAW findData{};
+                HANDLE hFind = FindFirstFileW(searchPath.c_str(), &findData);
+                if (hFind == INVALID_HANDLE_VALUE) {
+                    return 0;
+                }
+                
+                // Limit iteration to prevent denial of service on huge directories
+                constexpr size_t MAX_FILE_COUNT = 100000;
+                
+                do {
+                    // Skip . and ..
+                    if (findData.cFileName[0] == L'.' && 
+                        (findData.cFileName[1] == L'\0' || 
+                         (findData.cFileName[1] == L'.' && findData.cFileName[2] == L'\0'))) {
+                        continue;
+                    }
+                    
+                    // Only count files, not directories
+                    if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                        ++count;
+                    }
+                    
+                    if (count >= MAX_FILE_COUNT) break;
+                    
+                } while (FindNextFileW(hFind, &findData));
+                
+                FindClose(hFind);
+#else
+                (void)dirPath;
+#endif
+                return count;
+            }
+        }
+
+        // ============================================================================
+        // PIMPL IMPLEMENTATION
+        // ============================================================================
+
+        struct SandboxEvasionDetector::Impl {
+            // -------------------------------------------------------------------------
+            // State
+            // -------------------------------------------------------------------------
+            std::atomic<bool> initialized{ false };
+            std::atomic<bool> shutdownRequested{ false };
+
+            // -------------------------------------------------------------------------
+            // Configuration
+            // -------------------------------------------------------------------------
+            SandboxDetectorConfig config;
+            mutable std::shared_mutex configMutex;
+
+            // -------------------------------------------------------------------------
+            // Thread Pool
+            // -------------------------------------------------------------------------
+            // DESIGN: writes (Initialize/Shutdown) and reads (ScanSystemAsync workers)
+            // race on the shared_ptr instance itself, which is UB. Guard with a
+            // dedicated shared_mutex and always return a *copy* to callers so they
+            // hold their own strong reference for the duration of the work.
+            std::shared_ptr<Utils::ThreadPool> threadPool;
+            mutable std::shared_mutex threadPoolMutex;
+
+            [[nodiscard]] std::shared_ptr<Utils::ThreadPool> GetThreadPool() const {
+                std::shared_lock lock(threadPoolMutex);
+                return threadPool;
+            }
+
+            void SetThreadPool(std::shared_ptr<Utils::ThreadPool> pool) {
+                std::unique_lock lock(threadPoolMutex);
+                threadPool = std::move(pool);
+            }
+
+            void ResetThreadPool() {
+                std::shared_ptr<Utils::ThreadPool> doomed;
+                {
+                    std::unique_lock lock(threadPoolMutex);
+                    doomed.swap(threadPool);
+                }
+                // Last reference released outside the lock so destructor side-effects
+                // (worker join) cannot deadlock against another caller waiting on us.
+            }
+
+            // -------------------------------------------------------------------------
+            // Cache
+            // -------------------------------------------------------------------------
+            std::optional<SandboxEvasionResult> cachedResult;
+            std::chrono::system_clock::time_point cacheTimestamp;
+            mutable std::shared_mutex cacheMutex;
+
+            // -------------------------------------------------------------------------
+            // Hardware Profile Cache
+            // -------------------------------------------------------------------------
+            std::optional<HardwareProfile> cachedHardwareProfile;
+            std::chrono::system_clock::time_point hardwareProfileTimestamp;
+            mutable std::shared_mutex hardwareProfileMutex;
+
+            // -------------------------------------------------------------------------
+            // Callbacks
+            // -------------------------------------------------------------------------
+            std::unordered_map<uint64_t, SandboxDetectionCallback> callbacks;
+            mutable std::shared_mutex callbacksMutex;
+
+            // -------------------------------------------------------------------------
+            // TYPE B Process Analysis Callback
+            // -------------------------------------------------------------------------
+            SandboxEvasionDetector::ProcessSandboxCallback processDetectionCallback;
+
+            // -------------------------------------------------------------------------
+            // Statistics
+            // -------------------------------------------------------------------------
+            SandboxDetectorStats stats;
+
+            // -------------------------------------------------------------------------
+            // PhantomDisassembler Contexts
+            // -------------------------------------------------------------------------
+            Phantom::Disasm::Decoder decoder32{};
+            Phantom::Disasm::Decoder decoder64{};
+            Phantom::Disasm::Formatter formatter{};
+            bool disasmInitialized{ false };
+
+            // -------------------------------------------------------------------------
+            // COM Initialization State
+            // -------------------------------------------------------------------------
+            // DESIGN: This TU does not currently call any IWbem/CoCreateInstance APIs,
+            // but the helper is preserved for parity with sister evasion detectors and
+            // so that follow-on WMI-backed checks integrate cleanly. CoUninitialize must
+            // run on the same thread that called CoInitializeEx, so we pin the thread
+            // ID at initialize time and refuse to tear COM down from another thread.
+            bool comInitialized{ false };
+            DWORD comInitThreadId{ 0 };
+            mutable std::mutex comMutex;  // Protects COM init/uninit operations
+
+            // -------------------------------------------------------------------------
+            // Utility Methods
+            // -------------------------------------------------------------------------
+
+            void InitializeDisasm() noexcept {
+                if (disasmInitialized) return;
+
+                // Initialize 64-bit decoder (primary - our target platform)
+                decoder64.Init(Phantom::Disasm::MachineMode::Long64);
+
+                // Initialize 32-bit decoder (for analyzing 32-bit malware/WoW64 processes)
+                decoder32.Init(Phantom::Disasm::MachineMode::Legacy32);
+
+                // Initialize formatter for disassembly output
+                formatter.Init(Phantom::Disasm::FormatterStyle::Intel);
+
+                disasmInitialized = true;
+                SS_LOG_DEBUG(LOG_CATEGORY, L"PhantomDisassembler initialized");
+            }
+
+            [[nodiscard]] Phantom::Disasm::Decoder* GetDecoder(bool is64Bit) noexcept {
+                return is64Bit ? &decoder64 : &decoder32;
+            }
+
+            [[nodiscard]] bool IsCacheValid() const {
+                std::shared_lock lock(cacheMutex);
+                if (!cachedResult.has_value()) return false;
+
+                auto now = std::chrono::system_clock::now();
+                auto age = std::chrono::duration_cast<std::chrono::minutes>(now - cacheTimestamp);
+
+                std::shared_lock cfgLock(configMutex);
+                return age < config.cacheTTL;
+            }
+
+            void InitializeCOM() {
+#ifdef _WIN32
+                // THREAD-SAFETY FIX: Protect COM initialization with mutex
+                // COM apartment model requires careful thread management.
+                std::lock_guard<std::mutex> lock(comMutex);
+                if (!comInitialized) {
+                    HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+                    // Only S_OK / S_FALSE bump the apartment refcount that we own.
+                    // RPC_E_CHANGED_MODE means another component already initialized
+                    // COM in a different mode WITHOUT incrementing our reference, so
+                    // calling CoUninitialize would tear down somebody else's apartment.
+                    if (SUCCEEDED(hr)) {
+                        comInitialized = true;
+                        comInitThreadId = ::GetCurrentThreadId();
+                        SS_LOG_DEBUG(LOG_CATEGORY,
+                            L"COM initialized for sandbox detection on thread %lu",
+                            static_cast<unsigned long>(comInitThreadId));
+                    } else if (hr == RPC_E_CHANGED_MODE) {
+                        SS_LOG_DEBUG(LOG_CATEGORY,
+                            L"COM already initialized in different mode; not pairing CoUninitialize");
+                    } else {
+                        SS_LOG_WARN(LOG_CATEGORY, L"COM initialization failed: 0x%08lX",
+                            static_cast<unsigned long>(hr));
+                    }
+                }
+#endif
+            }
+
+            void UninitializeCOM() {
+#ifdef _WIN32
+                // THREAD-SAFETY FIX: Protect COM uninitialization with mutex.
+                // CoUninitialize only affects its own thread's apartment. If invoked
+                // from any other thread, it is a silent no-op and would leak our
+                // apartment reference on the original thread. Refuse the call in
+                // that case rather than corrupt state.
+                std::lock_guard<std::mutex> lock(comMutex);
+                if (comInitialized) {
+                    const DWORD currentTid = ::GetCurrentThreadId();
+                    if (currentTid != comInitThreadId) {
+                        SS_LOG_WARN(LOG_CATEGORY,
+                            L"Skipping CoUninitialize: caller thread %lu != init thread %lu",
+                            static_cast<unsigned long>(currentTid),
+                            static_cast<unsigned long>(comInitThreadId));
+                        return;
+                    }
+                    CoUninitialize();
+                    comInitialized = false;
+                    comInitThreadId = 0;
+                    SS_LOG_DEBUG(LOG_CATEGORY, L"COM uninitialized");
+                }
+#endif
+            }
+        };
+
+        // ============================================================================
+        // SINGLETON INSTANCE
+        // ============================================================================
+
+        SandboxEvasionDetector& SandboxEvasionDetector::Instance() {
+            static SandboxEvasionDetector instance;
+            return instance;
+        }
+
+        // ============================================================================
+        // CONSTRUCTOR / DESTRUCTOR
+        // ============================================================================
+
+        SandboxEvasionDetector::SandboxEvasionDetector()
+            : m_impl(std::make_unique<Impl>()) {
+            SS_LOG_DEBUG(LOG_CATEGORY, L"SandboxEvasionDetector instance created");
+        }
+
+        SandboxEvasionDetector::~SandboxEvasionDetector() {
+            Shutdown();
+            SS_LOG_DEBUG(LOG_CATEGORY, L"SandboxEvasionDetector instance destroyed");
+        }
+
+        // ============================================================================
+        // LIFECYCLE MANAGEMENT
+        // ============================================================================
+
+        bool SandboxEvasionDetector::Initialize(std::shared_ptr<Utils::ThreadPool> threadPool) {
+            return Initialize(std::move(threadPool), SandboxDetectorConfig::CreateDefault());
+        }
+
+        bool SandboxEvasionDetector::Initialize(
+            std::shared_ptr<Utils::ThreadPool> threadPool,
+            const SandboxDetectorConfig& config
+        ) {
+            if (m_impl->initialized.load(std::memory_order_acquire)) {
+                SS_LOG_WARN(LOG_CATEGORY, L"SandboxEvasionDetector already initialized");
+                return true;
+            }
+
+            if (!threadPool) {
+                SS_LOG_ERROR(LOG_CATEGORY, L"ThreadPool is null, cannot initialize");
+                return false;
+            }
+
+            m_impl->SetThreadPool(std::move(threadPool));
+
+            {
+                std::unique_lock lock(m_impl->configMutex);
+                m_impl->config = config;
+            }
+
+            // Initialize COM for WMI queries
+            m_impl->InitializeCOM();
+
+            // Initialize PhantomDisassembler for advanced hook detection
+            m_impl->InitializeDisasm();
+
+            m_impl->shutdownRequested.store(false, std::memory_order_release);
+            m_impl->initialized.store(true, std::memory_order_release);
+
+            SS_LOG_INFO(LOG_CATEGORY, L"SandboxEvasionDetector initialized successfully");
+            return true;
+        }
+
+        void SandboxEvasionDetector::Shutdown() {
+            if (!m_impl->initialized.load(std::memory_order_acquire)) {
+                return;
+            }
+
+            m_impl->shutdownRequested.store(true, std::memory_order_release);
+
+            // Clear callbacks
+            {
+                std::unique_lock lock(m_impl->callbacksMutex);
+                m_impl->callbacks.clear();
+            }
+
+            // Clear caches
+            {
+                std::unique_lock lock(m_impl->cacheMutex);
+                m_impl->cachedResult.reset();
+            }
+
+            {
+                std::unique_lock lock(m_impl->hardwareProfileMutex);
+                m_impl->cachedHardwareProfile.reset();
+            }
+
+            m_impl->UninitializeCOM();
+            m_impl->ResetThreadPool();
+            m_impl->initialized.store(false, std::memory_order_release);
+
+            SS_LOG_INFO(LOG_CATEGORY, L"SandboxEvasionDetector shutdown complete");
+        }
+
+        bool SandboxEvasionDetector::IsInitialized() const noexcept {
+            return m_impl->initialized.load(std::memory_order_acquire);
+        }
+
+        void SandboxEvasionDetector::UpdateConfig(const SandboxDetectorConfig& config) {
+            std::unique_lock lock(m_impl->configMutex);
+            m_impl->config = config;
+            SS_LOG_DEBUG(LOG_CATEGORY, L"Configuration updated");
+        }
+
+        SandboxDetectorConfig SandboxEvasionDetector::GetConfig() const {
+            std::shared_lock lock(m_impl->configMutex);
+            return m_impl->config;
+        }
+
+        // ============================================================================
+        // FULL SYSTEM SCAN
+        // ============================================================================
+
+        SandboxEvasionResult SandboxEvasionDetector::ScanSystem() {
+            if (!m_impl->initialized.load(std::memory_order_acquire)) {
+                SS_LOG_ERROR(LOG_CATEGORY, L"Detector not initialized");
+                SandboxEvasionResult result;
+                result.errorMessage = L"Detector not initialized";
+                return result;
+            }
+
+            // Check cache first
+            SandboxDetectorConfig currentConfig;
+            {
+                std::shared_lock lock(m_impl->configMutex);
+                currentConfig = m_impl->config;
+            }
+
+            if (currentConfig.enableCache && m_impl->IsCacheValid()) {
+                m_impl->stats.cacheHits.fetch_add(1, std::memory_order_relaxed);
+                std::shared_lock lock(m_impl->cacheMutex);
+                SS_LOG_DEBUG(LOG_CATEGORY, L"Returning cached result");
+                return *m_impl->cachedResult;
+            }
+
+            m_impl->stats.cacheMisses.fetch_add(1, std::memory_order_relaxed);
+
+            // ================================================================
+            // SYSTEM-WIDE SCAN — TWO PHASES:
+            //
+            // Phase 1: Collect HOST CONTEXT for behavioral score calibration.
+            //   These Check* methods tell us if the host IS a sandbox so we
+            //   can adjust per-process behavioral scores. They are NOT primary
+            //   detection sources — an EDR on a sandbox/VM is legitimate.
+            //
+            // Phase 2: BEHAVIORAL SCAN of all running processes.
+            //   This is the PRIMARY detection: scan each process for embedded
+            //   sandbox detection imports, sandbox-checking strings in PE data
+            //   sections, and timing-evasion code patterns.
+            // ================================================================
+
+            SandboxEvasionResult result;
+            result.analysisStartTime = std::chrono::system_clock::now();
+
+            SS_LOG_INFO(LOG_CATEGORY, L"Starting system-wide behavioral sandbox evasion scan");
+
+            auto startTime = std::chrono::steady_clock::now();
+
+            // --- Phase 1: Host context collection (for score calibration) ---
+            if (currentConfig.checkHardware) {
+                CheckHardwareSpecs(result);
+            }
+
+            if (currentConfig.checkTiming) {
+                CheckUptime(result);
+            }
+
+            if (currentConfig.checkArtifacts) {
+                CheckLoadedModules(result);
+                CheckNamedObjects(result);
+            }
+
+            ArtifactAnalysis scannedArtifacts;
+            if (currentConfig.checkArtifacts || currentConfig.checkFileSystem) {
+                scannedArtifacts = ScanArtifacts();
+            }
+
+            if (currentConfig.checkArtifacts) {
+                CheckProcesses(result, scannedArtifacts);
+                CheckServices(result);
+                CheckAPIHooks(result);
+            }
+
+            if (currentConfig.checkWearAndTear) {
+                CheckSystemWearAndTear(result);
+            }
+
+            if (currentConfig.checkEnvironment) {
+                CheckScreenResolution(result);
+                CheckRegistry(result);
+            }
+
+            if (currentConfig.checkFileSystem) {
+                CheckFileSystem(result, scannedArtifacts);
+            }
+
+            if (currentConfig.checkNetwork) {
+                CheckNetworkCharacteristics(result);
+            }
+
+            if (currentConfig.checkHumanInteraction) {
+                auto interactionAnalysis = AnalyzeHumanInteraction(currentConfig.humanInteractionMonitorMs);
+                result.humanInteraction = interactionAnalysis;
+                result.humanInteractionScore = interactionAnalysis.humanConfidence;
+            }
+
+            // --- Phase 2: Behavioral scan of all running processes ---
+            // Enumerate all processes and analyze each for anti-sandbox behavior.
+            // CALIBRATION FIX: Phase 1 results have not yet been fed through
+            // CalculateProbability(), so result.isSandboxLikely is still its default
+            // value (false) here. Derive a preliminary host-context flag from the
+            // already-populated category scores and conclusive artifact evidence so
+            // that the documented "less suspicious on a sandbox host" calibration
+            // actually fires.
+            const bool hostIsSandbox =
+                result.artifacts.definitiveDetection ||
+                result.artifactScore     >= 60.0f ||
+                result.timingScore       >= 60.0f ||
+                result.environment.suspicionScore >= 60.0f ||
+                result.hardware.suspicionScore    >= 70.0f;
+            {
+                HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+                if (hSnapshot != INVALID_HANDLE_VALUE) {
+                    PROCESSENTRY32W pe = {};
+                    pe.dwSize = sizeof(pe);
+
+                    if (Process32FirstW(hSnapshot, &pe)) {
+                        // PERF: the per-process Type-B analyzer is invoked synchronously
+                        // for every PID on the host. The default ProcessSandboxConfig
+                        // would request up to 64 MiB of ReadProcessMemory per process,
+                        // which on a busy workstation (~200 procs) can stall ScanSystem
+                        // for minutes. Cap the system-wide sweep aggressively here;
+                        // explicit on-demand AnalyzeProcess() callers retain the full
+                        // budget via their own ProcessSandboxConfig.
+                        ProcessSandboxConfig procConfig;
+                        procConfig.maxMemoryScanBytes = 4ULL * 1024 * 1024;  // 4 MiB
+                        procConfig.maxCodeScanBytes   = 1ULL * 1024 * 1024;  // 1 MiB
+
+                        do {
+                            if (pe.th32ProcessID == 0 || pe.th32ProcessID == 4) {
+                                // Skip System Idle / System processes; they are not
+                                // openable for VM_READ and would just produce noise.
+                                continue;
+                            }
+
+                            // TOCTOU FIX: re-OpenProcess by PID alone is unsafe — between
+                            // snapshot iteration and OpenProcess the kernel can recycle
+                            // the PID and we'd attribute a result to the wrong image.
+                            // Open the handle here, capture creation time + image path,
+                            // and verify they still match the snapshot entry.
+                            HANDLE hTarget = OpenProcess(
+                                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+                                FALSE, pe.th32ProcessID);
+                            if (!hTarget) {
+                                continue;  // protected, exited, or insufficient rights
+                            }
+
+                            wchar_t verifyPath[MAX_PATH] = {};
+                            DWORD verifyLen = MAX_PATH;
+                            if (!QueryFullProcessImageNameW(hTarget, 0, verifyPath, &verifyLen)) {
+                                CloseHandle(hTarget);
+                                continue;
+                            }
+
+                            // Compare basename (case-insensitive) to snapshot's szExeFile.
+                            // szExeFile is bounded and NUL-terminated by Toolhelp32.
+                            std::wstring_view full(verifyPath, verifyLen);
+                            size_t sep = full.find_last_of(L"\\/");
+                            std::wstring_view base = (sep == std::wstring_view::npos)
+                                ? full : full.substr(sep + 1);
+                            if (_wcsicmp(std::wstring(base).c_str(), pe.szExeFile) != 0) {
+                                // PID was recycled between snapshot and OpenProcess.
+                                SS_LOG_DEBUG(LOG_CATEGORY,
+                                    L"Skipping PID %lu: image mismatch (snapshot=%ls now=%ls)",
+                                    pe.th32ProcessID, pe.szExeFile, verifyPath);
+                                CloseHandle(hTarget);
+                                continue;
+                            }
+
+                            ProcessSandboxResult procResult;
+                            const bool ok = AnalyzeProcess(
+                                hTarget, pe.th32ProcessID, procResult, procConfig);
+                            CloseHandle(hTarget);
+
+                            if (ok && procResult.hasEvasionCapability) {
+                                // Calibrate: on a real sandbox, anti-sandbox checks
+                                // are less suspicious (artifacts genuinely exist).
+                                float calibratedScore = procResult.evasionScore;
+                                if (hostIsSandbox && calibratedScore > 20.0f) {
+                                    calibratedScore *= 0.6f;
+                                }
+
+                                AddIndicator(result,
+                                    SandboxCheckType::SandboxProcesses,
+                                    SandboxIndicatorCategory::Artifact,
+                                    calibratedScore >= 80.0f ? SandboxIndicatorSeverity::Critical :
+                                    calibratedScore >= 50.0f ? SandboxIndicatorSeverity::High :
+                                    SandboxIndicatorSeverity::Medium,
+                                    calibratedScore / 25.0f,
+                                    calibratedScore,
+                                    L"Process exhibits anti-sandbox evasion behavior",
+                                    L"PID " + std::to_wstring(pe.th32ProcessID) +
+                                        L" (" + std::wstring(pe.szExeFile) + L")",
+                                    L"Score: " + std::to_wstring(static_cast<int>(calibratedScore)),
+                                    L"None");
+                            }
+                        } while (Process32NextW(hSnapshot, &pe));
+                    }
+                    CloseHandle(hSnapshot);
+                }
+            }
+
+            // Calculate final probability and identify sandbox
+            CalculateProbability(result);
+            IdentifySandboxProduct(result);
+            AddMitreMappings(result);
+
+            auto endTime = std::chrono::steady_clock::now();
+            result.analysisEndTime = std::chrono::system_clock::now();
+            result.analysisDurationMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                endTime - startTime).count();
+            result.analysisComplete = true;
+
+            // Update statistics
+            m_impl->stats.totalScans.fetch_add(1, std::memory_order_relaxed);
+            // STATS FIX: maintain an exponentially-weighted moving average of scan
+            // duration so callers can observe regression. Done with a CAS loop on
+            // the underlying atomic to avoid torn updates under concurrent scans.
+            {
+                const uint64_t durationUs = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        endTime - startTime).count());
+                uint64_t prev = m_impl->stats.avgAnalysisDurationUs.load(std::memory_order_relaxed);
+                for (;;) {
+                    // alpha = 1/8: smooth but responsive.
+                    const uint64_t next = (prev == 0)
+                        ? durationUs
+                        : prev - (prev >> 3) + (durationUs >> 3);
+                    if (m_impl->stats.avgAnalysisDurationUs.compare_exchange_weak(
+                            prev, next, std::memory_order_relaxed)) {
+                        break;
+                    }
+                }
+            }
+            if (result.isSandboxLikely) {
+                m_impl->stats.sandboxesDetected.fetch_add(1, std::memory_order_relaxed);
+                if (result.isDefinitive) {
+                    m_impl->stats.definitiveDetections.fetch_add(1, std::memory_order_relaxed);
+                }
+                if (result.identifiedSandbox != SandboxProduct::Unknown) {
+                    size_t productIndex = static_cast<size_t>(result.identifiedSandbox);
+                    if (productIndex < 256) {
+                        m_impl->stats.detectionsByProduct[productIndex].fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+            }
+
+            // Update cache
+            UpdateCache(result);
+
+            // Invoke callbacks
+            InvokeCallbacks(result);
+
+            SS_LOG_INFO(LOG_CATEGORY,
+                L"Sandbox scan complete: Probability=%.1f%%, IsSandbox=%ls, Duration=%llums",
+                result.probability,
+                result.isSandboxLikely ? L"true" : L"false",
+                result.analysisDurationMs);
+
+            return result;
+        }
+
+        bool SandboxEvasionDetector::ScanSystemAsync(std::function<void(SandboxEvasionResult)> callback) {
+            if (!m_impl->initialized.load(std::memory_order_acquire)) {
+                SS_LOG_ERROR(LOG_CATEGORY, L"Detector not initialized");
+                return false;
+            }
+
+            // CONCURRENCY FIX: take a strong reference to the thread pool under the
+            // dedicated mutex so a concurrent Shutdown() cannot tear the shared_ptr
+            // control block out from under us between the null-check and Submit().
+            auto pool = m_impl->GetThreadPool();
+            if (!pool) {
+                SS_LOG_ERROR(LOG_CATEGORY, L"ThreadPool not available");
+                return false;
+            }
+
+            // Capture callback and queue async scan using proper ThreadPool::Submit API.
+            // Discard return value - we don't need to wait for completion.
+            (void)pool->Submit(
+                [this, cb = std::move(callback)](const Utils::TaskContext&) {
+                    auto result = ScanSystem();
+                    if (cb) {
+                        cb(std::move(result));
+                    }
+                },
+                Utils::TaskPriority::Normal,
+                "SandboxEvasionDetector::ScanSystemAsync"
+            );
+
+            SS_LOG_DEBUG(LOG_CATEGORY, L"Async sandbox scan queued");
+            return true;
+        }
+
+        bool SandboxEvasionDetector::QuickScan() {
+            if (!m_impl->initialized.load(std::memory_order_acquire)) {
+                return false;
+            }
+
+            SS_LOG_DEBUG(LOG_CATEGORY, L"Performing quick sandbox scan");
+
+            // Quick checks - only the most reliable indicators
+            // 1. Check for sandbox DLLs
+            if (IsSandboxDLLLoaded(KnownSandboxDLLs::SBIEDLL) ||
+                IsSandboxDLLLoaded(KnownSandboxDLLs::CUCKOOMON) ||
+                IsSandboxDLLLoaded(KnownSandboxDLLs::SNXHK) ||
+                IsSandboxDLLLoaded(KnownSandboxDLLs::VMRAY) ||
+                IsSandboxDLLLoaded(KnownSandboxDLLs::JOEBOX)) {
+                SS_LOG_INFO(LOG_CATEGORY, L"Quick scan: Sandbox DLL detected");
+                return true;
+            }
+
+            // 2. Check for sandbox mutexes
+            if (DoesMutexExist(KnownSandboxMutexes::SANDBOXIE) ||
+                DoesMutexExist(KnownSandboxMutexes::CUCKOO) ||
+                DoesMutexExist(KnownSandboxMutexes::JOEBOX) ||
+                DoesMutexExist(KnownSandboxMutexes::VMRAY)) {
+                SS_LOG_INFO(LOG_CATEGORY, L"Quick scan: Sandbox mutex detected");
+                return true;
+            }
+
+            // 3. Check for sandbox processes
+            if (IsSandboxProcessRunning(KnownSandboxProcesses::SANDBOXIE_CONTROL) ||
+                IsSandboxProcessRunning(KnownSandboxProcesses::JOEBOX_SERVER) ||
+                IsSandboxProcessRunning(KnownSandboxProcesses::WINDOWS_SANDBOX)) {
+                SS_LOG_INFO(LOG_CATEGORY, L"Quick scan: Sandbox process detected");
+                return true;
+            }
+
+            // 4. Quick hardware check
+#ifdef _WIN32
+            MEMORYSTATUSEX memStatus{};
+            memStatus.dwLength = sizeof(memStatus);
+            if (GlobalMemoryStatusEx(&memStatus)) {
+                if (memStatus.ullTotalPhys < SandboxConstants::SUSPICIOUS_RAM_BYTES) {
+                    SS_LOG_INFO(LOG_CATEGORY, L"Quick scan: Suspicious RAM size detected");
+                    return true;
+                }
+            }
+
+            SYSTEM_INFO sysInfo{};
+            GetSystemInfo(&sysInfo);
+            if (sysInfo.dwNumberOfProcessors <= SandboxConstants::SUSPICIOUS_CPU_CORES) {
+                SS_LOG_INFO(LOG_CATEGORY, L"Quick scan: Suspicious CPU core count detected");
+                return true;
+            }
+
+            // 5. Quick uptime check
+            uint64_t uptime = GetSystemUptime();
+            if (uptime < SandboxConstants::VERY_SUSPICIOUS_UPTIME_MS) {
+                SS_LOG_INFO(LOG_CATEGORY, L"Quick scan: Very short uptime detected");
+                return true;
+            }
+#endif
+
+            SS_LOG_DEBUG(LOG_CATEGORY, L"Quick scan: No sandbox indicators detected");
+            return false;
+        }
+
+        // ============================================================================
+        // INDIVIDUAL ANALYSIS METHODS
+        // ============================================================================
+
+        HardwareProfile SandboxEvasionDetector::AnalyzeHardware() {
+            HardwareProfile profile;
+
+#ifdef _WIN32
+            // -------------------------------------------------------------------------
+            // Memory Information
+            // -------------------------------------------------------------------------
+            MEMORYSTATUSEX memStatus{};
+            memStatus.dwLength = sizeof(memStatus);
+            if (GlobalMemoryStatusEx(&memStatus)) {
+                profile.totalRAM = memStatus.ullTotalPhys;
+                profile.availableRAM = memStatus.ullAvailPhys;
+                profile.virtualMemoryLimit = memStatus.ullTotalVirtual;
+            }
+
+            // -------------------------------------------------------------------------
+            // CPU Information
+            // -------------------------------------------------------------------------
+            SYSTEM_INFO sysInfo{};
+            GetSystemInfo(&sysInfo);
+            profile.logicalProcessors = sysInfo.dwNumberOfProcessors;
+
+            // Get physical core count via GetLogicalProcessorInformation
+            DWORD bufferLen = 0;
+            GetLogicalProcessorInformation(nullptr, &bufferLen);
+            if (GetLastError() == ERROR_INSUFFICIENT_BUFFER && bufferLen > 0) {
+                std::vector<SYSTEM_LOGICAL_PROCESSOR_INFORMATION> buffer(
+                    bufferLen / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION));
+                if (GetLogicalProcessorInformation(buffer.data(), &bufferLen)) {
+                    uint32_t physicalCores = 0;
+                    for (const auto& info : buffer) {
+                        if (info.Relationship == RelationProcessorCore) {
+                            ++physicalCores;
+                        }
+                    }
+                    profile.physicalCores = physicalCores;
+                }
+            }
+
+            // CPU model string via CPUID
+            // STRICT-ALIASING: read into an int[4] register set, then memcpy into
+            // the char buffer. Casting char* through int* and dereferencing is UB.
+            std::array<int, 4> cpuInfo{};
+            char cpuBrand[49] = {};
+            __cpuid(cpuInfo.data(), 0x80000000);
+            if (static_cast<unsigned int>(cpuInfo[0]) >= 0x80000004) {
+                int regs[4] = {};
+                __cpuid(regs, 0x80000002);
+                std::memcpy(cpuBrand,      regs, sizeof(regs));
+                __cpuid(regs, 0x80000003);
+                std::memcpy(cpuBrand + 16, regs, sizeof(regs));
+                __cpuid(regs, 0x80000004);
+                std::memcpy(cpuBrand + 32, regs, sizeof(regs));
+                cpuBrand[48] = '\0';
+                profile.cpuModel = Utils::StringUtils::ToWide(cpuBrand);
+            }
+
+            // CPU vendor
+            __cpuid(cpuInfo.data(), 0);
+            char vendor[13] = {};
+            // [EBX][EDX][ECX] is the canonical vendor string layout.
+            std::memcpy(vendor,     &cpuInfo[1], 4);
+            std::memcpy(vendor + 4, &cpuInfo[3], 4);
+            std::memcpy(vendor + 8, &cpuInfo[2], 4);
+            vendor[12] = '\0';
+            profile.cpuVendor = Utils::StringUtils::ToWide(vendor);
+
+            // -------------------------------------------------------------------------
+            // Storage Information
+            // -------------------------------------------------------------------------
+            wchar_t systemDrive[MAX_PATH];
+            if (GetWindowsDirectoryW(systemDrive, MAX_PATH)) {
+                systemDrive[3] = L'\0';  // "C:\"
+                ULARGE_INTEGER freeBytesAvailable{}, totalBytes{}, freeBytes{};
+                if (GetDiskFreeSpaceExW(systemDrive, &freeBytesAvailable, &totalBytes, &freeBytes)) {
+                    profile.totalDiskSpace = totalBytes.QuadPart;
+                    profile.freeDiskSpace = freeBytes.QuadPart;
+                }
+            }
+
+            // Disk count via DeviceIoControl (simplified)
+            profile.diskCount = 1;  // Assume at least one
+
+            // -------------------------------------------------------------------------
+            // Graphics Information
+            // -------------------------------------------------------------------------
+            DISPLAY_DEVICEW displayDevice{};
+            displayDevice.cb = sizeof(displayDevice);
+            if (EnumDisplayDevicesW(nullptr, 0, &displayDevice, 0)) {
+                profile.gpuPresent = true;
+                profile.gpuModel = displayDevice.DeviceString;
+            }
+
+            // -------------------------------------------------------------------------
+            // Network Adapters
+            // -------------------------------------------------------------------------
+            ULONG adaptersSize = 0;
+            GetAdaptersInfo(nullptr, &adaptersSize);
+            if (adaptersSize > 0) {
+                std::vector<uint8_t> buffer(adaptersSize);
+                PIP_ADAPTER_INFO adapters = reinterpret_cast<PIP_ADAPTER_INFO>(buffer.data());
+                if (GetAdaptersInfo(adapters, &adaptersSize) == ERROR_SUCCESS) {
+                    uint32_t adapterCount = 0;
+                    for (PIP_ADAPTER_INFO adapter = adapters; adapter; adapter = adapter->Next) {
+                        ++adapterCount;
+                        if (adapter->Type == MIB_IF_TYPE_ETHERNET) {
+                            profile.physicalNICPresent = true;
+                        }
+                        if (adapter->Type == IF_TYPE_IEEE80211) {
+                            profile.wifiPresent = true;
+                        }
+                    }
+                    profile.networkAdapterCount = adapterCount;
+                }
+            }
+
+            // -------------------------------------------------------------------------
+            // USB Device History (from registry)
+            // -------------------------------------------------------------------------
+            // Sentinel UINT32_MAX means "lookup failed; do not score"; treat 0 as a
+            // genuine zero only when RegQueryInfoKeyW reported success.
+            profile.usbHistoryCount = UINT32_MAX;
+            HKEY usbKey;
+            if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                L"SYSTEM\\CurrentControlSet\\Enum\\USBSTOR",
+                0, KEY_READ, &usbKey) == ERROR_SUCCESS) {
+                DWORD subkeyCount = 0;
+                LSTATUS qstat = RegQueryInfoKeyW(usbKey, nullptr, nullptr, nullptr,
+                    &subkeyCount, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+                if (qstat == ERROR_SUCCESS) {
+                    profile.usbHistoryCount = subkeyCount;
+                }
+                RegCloseKey(usbKey);
+            }
+
+            // -------------------------------------------------------------------------
+            // BIOS Information (from registry)
+            // -------------------------------------------------------------------------
+            // SECURITY: RegQueryValueExW only NUL-terminates strings if the source
+            // already had a terminator on disk, and it does not validate that the
+            // returned data is actually REG_SZ/REG_EXPAND_SZ. A hostile or corrupted
+            // hive could deliver REG_BINARY of arbitrary content into a wchar_t[].
+            // Wrap the read in a lambda that enforces both invariants and clamps
+            // the byte count to leave room for an explicit terminator.
+            auto readRegSz = [](HKEY hKey, LPCWSTR name, std::wstring& out) -> bool {
+                wchar_t buffer[512] = {};
+                DWORD bufferSize = sizeof(buffer) - sizeof(wchar_t);  // reserve NUL
+                DWORD valueType = 0;
+                LSTATUS s = RegQueryValueExW(hKey, name, nullptr, &valueType,
+                    reinterpret_cast<LPBYTE>(buffer), &bufferSize);
+                if (s != ERROR_SUCCESS) {
+                    return false;
+                }
+                if (valueType != REG_SZ && valueType != REG_EXPAND_SZ) {
+                    return false;
+                }
+                // bufferSize is in BYTES; convert to wchar count and force terminator.
+                size_t wcount = bufferSize / sizeof(wchar_t);
+                if (wcount > (sizeof(buffer) / sizeof(wchar_t)) - 1) {
+                    wcount = (sizeof(buffer) / sizeof(wchar_t)) - 1;
+                }
+                buffer[wcount] = L'\0';
+                out.assign(buffer);
+                return true;
+            };
+
+            HKEY biosKey;
+            if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                L"HARDWARE\\DESCRIPTION\\System\\BIOS",
+                0, KEY_READ, &biosKey) == ERROR_SUCCESS) {
+
+                readRegSz(biosKey, L"SystemManufacturer", profile.systemManufacturer);
+                readRegSz(biosKey, L"SystemProductName",  profile.systemModel);
+                readRegSz(biosKey, L"BIOSVendor",         profile.biosVendor);
+                readRegSz(biosKey, L"BIOSVersion",        profile.biosVersion);
+
+                RegCloseKey(biosKey);
+            }
+
+            // -------------------------------------------------------------------------
+            // Audio Device Detection
+            // -------------------------------------------------------------------------
+            UINT waveOutDevs = waveOutGetNumDevs();
+            profile.audioDevicePresent = (waveOutDevs > 0);
+
+            // -------------------------------------------------------------------------
+            // Calculate Suspicion Score
+            // -------------------------------------------------------------------------
+            float suspicionScore = 0.0f;
+
+            if (profile.totalRAM < SandboxConstants::MIN_RAM_BYTES) {
+                suspicionScore += 15.0f;
+                profile.issues.push_back(L"Low RAM: " + std::to_wstring(profile.totalRAM / (1024 * 1024)) + L" MB");
+            }
+            if (profile.totalRAM < SandboxConstants::SUSPICIOUS_RAM_BYTES) {
+                suspicionScore += 10.0f;
+            }
+
+            if (profile.logicalProcessors <= SandboxConstants::SUSPICIOUS_CPU_CORES) {
+                suspicionScore += 15.0f;
+                profile.issues.push_back(L"Low CPU cores: " + std::to_wstring(profile.logicalProcessors));
+            }
+
+            if (profile.totalDiskSpace < SandboxConstants::MIN_DISK_BYTES) {
+                suspicionScore += 10.0f;
+                profile.issues.push_back(L"Small disk: " + std::to_wstring(profile.totalDiskSpace / (1024 * 1024 * 1024)) + L" GB");
+            }
+
+            if (profile.usbHistoryCount != UINT32_MAX && profile.usbHistoryCount < 3) {
+                suspicionScore += 10.0f;
+                profile.issues.push_back(L"Few USB devices in history: " + std::to_wstring(profile.usbHistoryCount));
+            }
+
+            if (!profile.audioDevicePresent) {
+                suspicionScore += 5.0f;
+                profile.issues.push_back(L"No audio device detected");
+            }
+
+            // Check BIOS strings for VM indicators
+            // FIX (Issue #2): Reduced suspicion score for generic VMs, high score only for definitive sandboxes
+            std::wstring biosCombo = profile.biosVendor + L" " + profile.systemManufacturer + L" " + profile.systemModel;
+            std::transform(biosCombo.begin(), biosCombo.end(), biosCombo.begin(), ::towupper);
+            
+            // First check for DEFINITIVE sandbox strings (high confidence)
+            bool definiteSandboxFound = false;
+            for (const auto& sandboxStr : DEFINITIVE_SANDBOX_STRINGS) {
+                if (biosCombo.find(sandboxStr) != std::wstring::npos) {
+                    suspicionScore += 40.0f;  // High confidence - definitive sandbox
+                    profile.issues.push_back(L"Known sandbox environment detected: " + std::wstring(sandboxStr));
+                    definiteSandboxFound = true;
+                    break;
+                }
+            }
+
+            // Only check generic VM strings if no definitive sandbox found
+            if (!definiteSandboxFound) {
+                for (const auto& vmStr : VM_BIOS_STRINGS) {
+                    if (biosCombo.find(vmStr) != std::wstring::npos) {
+                        // Lower score for generic VM detection - VMs are common in enterprise
+                        suspicionScore += 10.0f;  // Reduced from 20.0f
+                        profile.issues.push_back(L"VM BIOS string detected: " + std::wstring(vmStr));
+                        break;
+                    }
+                }
+            }
+
+            profile.suspicionScore = std::min(100.0f, suspicionScore);
+            profile.isSandboxLike = (suspicionScore >= 50.0f);  // Raised threshold from 40.0f
+#endif
+
+            // Cache the hardware profile
+            {
+                std::unique_lock lock(m_impl->hardwareProfileMutex);
+                m_impl->cachedHardwareProfile = profile;
+                m_impl->hardwareProfileTimestamp = std::chrono::system_clock::now();
+            }
+
+            return profile;
+        }
+
+        WearAndTearAnalysis SandboxEvasionDetector::AnalyzeWearAndTear() {
+            WearAndTearAnalysis analysis;
+
+#ifdef _WIN32
+            // -------------------------------------------------------------------------
+            // Recent Documents
+            // -------------------------------------------------------------------------
+            wchar_t recentPath[MAX_PATH];
+            if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_RECENT, nullptr, 0, recentPath))) {
+                analysis.recentDocumentsCount = CountFilesInDirectory(recentPath);
+            }
+
+            // -------------------------------------------------------------------------
+            // Desktop Files
+            // -------------------------------------------------------------------------
+            wchar_t desktopPath[MAX_PATH];
+            if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_DESKTOP, nullptr, 0, desktopPath))) {
+                analysis.desktopFileCount = CountFilesInDirectory(desktopPath);
+            }
+
+            // -------------------------------------------------------------------------
+            // Downloads Folder
+            // -------------------------------------------------------------------------
+            wchar_t profilePath[MAX_PATH];
+            if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_PROFILE, nullptr, 0, profilePath))) {
+                std::wstring downloadsPath = std::wstring(profilePath) + L"\\Downloads";
+                analysis.downloadsFileCount = CountFilesInDirectory(downloadsPath);
+            }
+
+            // -------------------------------------------------------------------------
+            // Documents Folder
+            // -------------------------------------------------------------------------
+            wchar_t documentsPath[MAX_PATH];
+            if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_PERSONAL, nullptr, 0, documentsPath))) {
+                analysis.documentsFileCount = CountFilesInDirectory(documentsPath);
+            }
+
+            // -------------------------------------------------------------------------
+            // Pictures Folder
+            // -------------------------------------------------------------------------
+            wchar_t picturesPath[MAX_PATH];
+            if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_MYPICTURES, nullptr, 0, picturesPath))) {
+                analysis.picturesFileCount = CountFilesInDirectory(picturesPath);
+            }
+
+            // -------------------------------------------------------------------------
+            // Installed Programs (from registry)
+            // -------------------------------------------------------------------------
+            // Sentinel UINT32_MAX => "lookup failed; do not feed scoring downstream".
+            // Any successful read flips this to a real count and accumulates the
+            // Wow6432 subtree on top.
+            analysis.installedProgramCount = UINT32_MAX;
+            HKEY uninstallKey;
+            if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+                0, KEY_READ, &uninstallKey) == ERROR_SUCCESS) {
+                DWORD subkeyCount = 0;
+                if (RegQueryInfoKeyW(uninstallKey, nullptr, nullptr, nullptr, &subkeyCount,
+                        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+                    analysis.installedProgramCount = subkeyCount;
+                }
+                RegCloseKey(uninstallKey);
+            }
+
+            // Also check Wow6432Node for 32-bit apps on 64-bit systems
+            if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                L"SOFTWARE\\Wow6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+                0, KEY_READ, &uninstallKey) == ERROR_SUCCESS) {
+                DWORD subkeyCount = 0;
+                if (RegQueryInfoKeyW(uninstallKey, nullptr, nullptr, nullptr, &subkeyCount,
+                        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+                    if (analysis.installedProgramCount == UINT32_MAX) {
+                        analysis.installedProgramCount = subkeyCount;
+                    } else {
+                        analysis.installedProgramCount += subkeyCount;
+                    }
+                }
+                RegCloseKey(uninstallKey);
+            }
+
+            // -------------------------------------------------------------------------
+            // Prefetch Files
+            // -------------------------------------------------------------------------
+            wchar_t windowsPath[MAX_PATH];
+            if (GetWindowsDirectoryW(windowsPath, MAX_PATH)) {
+                std::wstring prefetchPath = std::wstring(windowsPath) + L"\\Prefetch";
+                analysis.prefetchFileCount = CountFilesInDirectory(prefetchPath);
+            }
+
+            // -------------------------------------------------------------------------
+            // Temp Files
+            // -------------------------------------------------------------------------
+            wchar_t tempPath[MAX_PATH];
+            if (GetTempPathW(MAX_PATH, tempPath)) {
+                analysis.tempFileCount = CountFilesInDirectory(tempPath);
+            }
+
+            // -------------------------------------------------------------------------
+            // User Profile Count
+            // -------------------------------------------------------------------------
+            HKEY profileListKey;
+            if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList",
+                0, KEY_READ, &profileListKey) == ERROR_SUCCESS) {
+                DWORD subkeyCount = 0;
+                if (RegQueryInfoKeyW(profileListKey, nullptr, nullptr, nullptr, &subkeyCount,
+                        nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS) {
+                    // Subtract system profiles (typically 3-4: LocalService, NetworkService, etc.)
+                    analysis.userProfileCount = (subkeyCount > 4) ? (subkeyCount - 4) : 1;
+                }
+                RegCloseKey(profileListKey);
+            }
+
+            // -------------------------------------------------------------------------
+            // Font Count
+            // -------------------------------------------------------------------------
+            wchar_t fontsPath[MAX_PATH];
+            if (GetWindowsDirectoryW(fontsPath, MAX_PATH)) {
+                wcscat_s(fontsPath, L"\\Fonts");
+                analysis.fontCount = CountFilesInDirectory(fontsPath);
+            }
+
+            // -------------------------------------------------------------------------
+            // Custom Wallpaper Check
+            // -------------------------------------------------------------------------
+            wchar_t wallpaperPath[MAX_PATH] = {};
+            SystemParametersInfoW(SPI_GETDESKWALLPAPER, MAX_PATH, wallpaperPath, 0);
+            analysis.customWallpaper = (wcslen(wallpaperPath) > 0);
+
+            // -------------------------------------------------------------------------
+            // Calculate Usage Score
+            // -------------------------------------------------------------------------
+            float usageScore = 0.0f;
+
+            // Recent documents contribution
+            if (analysis.recentDocumentsCount >= 50) usageScore += 15.0f;
+            else if (analysis.recentDocumentsCount >= 20) usageScore += 10.0f;
+            else if (analysis.recentDocumentsCount >= 5) usageScore += 5.0f;
+
+            // Desktop files contribution
+            if (analysis.desktopFileCount >= 20) usageScore += 10.0f;
+            else if (analysis.desktopFileCount >= 5) usageScore += 5.0f;
+
+            // Installed programs contribution. Skip when sentinel: registry lookup
+            // failed and zeroing scoring would create a false low-usage signal.
+            if (analysis.installedProgramCount != UINT32_MAX) {
+                if (analysis.installedProgramCount >= 50) usageScore += 20.0f;
+                else if (analysis.installedProgramCount >= 30) usageScore += 15.0f;
+                else if (analysis.installedProgramCount >= 15) usageScore += 10.0f;
+            }
+
+            // Prefetch files contribution
+            if (analysis.prefetchFileCount >= 100) usageScore += 15.0f;
+            else if (analysis.prefetchFileCount >= 50) usageScore += 10.0f;
+            else if (analysis.prefetchFileCount >= 20) usageScore += 5.0f;
+
+            // Temp files contribution
+            if (analysis.tempFileCount >= 500) usageScore += 10.0f;
+            else if (analysis.tempFileCount >= 100) usageScore += 5.0f;
+
+            // Fonts contribution
+            if (analysis.fontCount >= 300) usageScore += 10.0f;
+            else if (analysis.fontCount >= 200) usageScore += 5.0f;
+
+            // Wallpaper contribution
+            if (analysis.customWallpaper) usageScore += 5.0f;
+
+            // User profiles contribution
+            if (analysis.userProfileCount >= 3) usageScore += 10.0f;
+            else if (analysis.userProfileCount >= 2) usageScore += 5.0f;
+
+            analysis.usageScore = std::min(100.0f, usageScore);
+            analysis.appearsFresh = (usageScore < 30.0f);
+
+            // Generate issues
+            if (analysis.recentDocumentsCount < SandboxConstants::MIN_RECENT_DOCUMENTS) {
+                analysis.issues.push_back(L"Few recent documents: " + std::to_wstring(analysis.recentDocumentsCount));
+            }
+            if (analysis.desktopFileCount < SandboxConstants::MIN_DESKTOP_FILES) {
+                analysis.issues.push_back(L"Empty desktop");
+            }
+            if (analysis.installedProgramCount != UINT32_MAX &&
+                analysis.installedProgramCount < SandboxConstants::MIN_INSTALLED_PROGRAMS) {
+                analysis.issues.push_back(L"Few installed programs: " + std::to_wstring(analysis.installedProgramCount));
+            }
+            if (analysis.prefetchFileCount < 20) {
+                analysis.issues.push_back(L"Few prefetch files: " + std::to_wstring(analysis.prefetchFileCount));
+            }
+#endif
+
+            return analysis;
+        }
+
+        EnvironmentAnalysis SandboxEvasionDetector::AnalyzeEnvironment() {
+            EnvironmentAnalysis analysis;
+
+#ifdef _WIN32
+            // -------------------------------------------------------------------------
+            // Screen Resolution
+            // -------------------------------------------------------------------------
+            auto [width, height] = GetScreenResolution();
+            analysis.screenWidth = width;
+            analysis.screenHeight = height;
+
+            // Check for typical sandbox resolutions
+            if ((width == 800 && height == 600) ||
+                (width == 1024 && height == 768) ||
+                (width == 1280 && height == 720)) {
+                analysis.isVMResolution = true;
+            }
+
+            // -------------------------------------------------------------------------
+            // Color Depth
+            // -------------------------------------------------------------------------
+            HDC hdc = GetDC(nullptr);
+            if (hdc) {
+                analysis.colorDepth = GetDeviceCaps(hdc, BITSPIXEL);
+                ReleaseDC(nullptr, hdc);
+            }
+
+            // -------------------------------------------------------------------------
+            // Monitor Count
+            // -------------------------------------------------------------------------
+            analysis.monitorCount = GetSystemMetrics(SM_CMONITORS);
+
+            // -------------------------------------------------------------------------
+            // DPI (reuse DC pattern from color depth above)
+            // -------------------------------------------------------------------------
+            {
+                HDC hdcDpi = GetDC(nullptr);
+                if (hdcDpi) {
+                    analysis.dpi = GetDeviceCaps(hdcDpi, LOGPIXELSX);
+                    ReleaseDC(nullptr, hdcDpi);
+                }
+            }
+
+            // -------------------------------------------------------------------------
+            // Timezone
+            // -------------------------------------------------------------------------
+            TIME_ZONE_INFORMATION tzInfo{};
+            GetTimeZoneInformation(&tzInfo);
+            analysis.timezone = tzInfo.StandardName;
+
+            // -------------------------------------------------------------------------
+            // Locale
+            // -------------------------------------------------------------------------
+            wchar_t localeName[LOCALE_NAME_MAX_LENGTH];
+            if (GetUserDefaultLocaleName(localeName, LOCALE_NAME_MAX_LENGTH)) {
+                analysis.locale = localeName;
+            }
+
+            // -------------------------------------------------------------------------
+            // Keyboard Layout
+            // -------------------------------------------------------------------------
+            HKL keyboardLayout = GetKeyboardLayout(0);
+            wchar_t layoutName[KL_NAMELENGTH];
+            if (GetKeyboardLayoutNameW(layoutName)) {
+                analysis.keyboardLayout = layoutName;
+            }
+
+            // -------------------------------------------------------------------------
+            // Computer Name
+            // -------------------------------------------------------------------------
+            wchar_t computerName[MAX_COMPUTERNAME_LENGTH + 1];
+            DWORD size = MAX_COMPUTERNAME_LENGTH + 1;
+            if (GetComputerNameW(computerName, &size)) {
+                analysis.computerName = computerName;
+            }
+
+            // -------------------------------------------------------------------------
+            // Username
+            // -------------------------------------------------------------------------
+            wchar_t userName[UNLEN + 1];
+            size = UNLEN + 1;
+            if (GetUserNameW(userName, &size)) {
+                analysis.userName = userName;
+            }
+
+            // -------------------------------------------------------------------------
+            // Windows Version
+            // -------------------------------------------------------------------------
+            HKEY ntKey;
+            if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion",
+                0, KEY_READ, &ntKey) == ERROR_SUCCESS) {
+
+                // RAII guard for registry key
+                auto regGuard = [](HKEY k) { if (k) RegCloseKey(k); };
+                std::unique_ptr<std::remove_pointer_t<HKEY>, decltype(regGuard)> keyGuard(ntKey, regGuard);
+
+                wchar_t productName[256] = {};
+                DWORD bufferSize = sizeof(productName) - sizeof(wchar_t);  // reserve NUL
+                DWORD productType = 0;
+                if (RegQueryValueExW(ntKey, L"ProductName", nullptr, &productType,
+                    reinterpret_cast<LPBYTE>(productName), &bufferSize) == ERROR_SUCCESS &&
+                    (productType == REG_SZ || productType == REG_EXPAND_SZ)) {
+                    productName[255] = L'\0';
+                    analysis.windowsVersion = productName;
+                }
+
+                // CRITICAL FIX (Issue #1): Buffer overflow vulnerability
+                // Previous code: bufferSize = sizeof(buildNumber) (4 bytes) but wrote to buildStr[32]
+                // Fixed: Use correct buffer size and validate REG_SZ.
+                wchar_t buildStr[32] = {};
+                bufferSize = sizeof(buildStr) - sizeof(wchar_t);  // reserve NUL
+                DWORD buildType = 0;
+                if (RegQueryValueExW(ntKey, L"CurrentBuildNumber", nullptr, &buildType,
+                    reinterpret_cast<LPBYTE>(buildStr), &bufferSize) == ERROR_SUCCESS &&
+                    (buildType == REG_SZ || buildType == REG_EXPAND_SZ)) {
+                    buildStr[31] = L'\0';
+                    analysis.windowsBuild = static_cast<uint32_t>(_wtoi(buildStr));
+                }
+
+                // Key automatically closed by RAII guard
+            }
+
+            // -------------------------------------------------------------------------
+            // Calculate Suspicion Score
+            // -------------------------------------------------------------------------
+            float suspicionScore = 0.0f;
+
+            if (analysis.isVMResolution) {
+                suspicionScore += 15.0f;
+                analysis.issues.push_back(L"Typical VM/sandbox resolution: " +
+                    std::to_wstring(width) + L"x" + std::to_wstring(height));
+            }
+
+            if (analysis.colorDepth < SandboxConstants::MIN_COLOR_DEPTH) {
+                suspicionScore += 10.0f;
+                analysis.issues.push_back(L"Low color depth: " + std::to_wstring(analysis.colorDepth) + L" bits");
+            }
+
+            if (analysis.monitorCount == 0) {
+                suspicionScore += 20.0f;
+                analysis.issues.push_back(L"No monitors detected");
+            }
+
+            // Check for suspicious usernames
+            std::wstring lowerUsername = analysis.userName;
+            std::transform(lowerUsername.begin(), lowerUsername.end(), lowerUsername.begin(), ::towlower);
+            for (const auto& suspiciousName : SANDBOX_USERNAMES) {
+                if (lowerUsername == suspiciousName) {
+                    suspicionScore += 25.0f;
+                    analysis.issues.push_back(L"Suspicious username: " + analysis.userName);
+                    break;
+                }
+            }
+
+            // Check for suspicious computer names
+            std::wstring upperComputerName = analysis.computerName;
+            std::transform(upperComputerName.begin(), upperComputerName.end(), upperComputerName.begin(), ::towupper);
+            for (const auto& suspiciousName : SANDBOX_COMPUTERNAMES) {
+                if (upperComputerName.find(suspiciousName) != std::wstring::npos) {
+                    suspicionScore += 20.0f;
+                    analysis.issues.push_back(L"Suspicious computer name: " + analysis.computerName);
+                    break;
+                }
+            }
+
+            analysis.suspicionScore = std::min(100.0f, suspicionScore);
+#endif
+
+            return analysis;
+        }
+
+        ArtifactAnalysis SandboxEvasionDetector::ScanArtifacts() {
+            ArtifactAnalysis analysis;
+
+#ifdef _WIN32
+            // -------------------------------------------------------------------------
+            // Check for Sandbox DLLs
+            // -------------------------------------------------------------------------
+            const std::wstring_view sandboxDLLs[] = {
+                KnownSandboxDLLs::SBIEDLL,
+                KnownSandboxDLLs::CUCKOOMON,
+                KnownSandboxDLLs::SNXHK,
+                KnownSandboxDLLs::VMRAY,
+                KnownSandboxDLLs::JOEBOX,
+                KnownSandboxDLLs::APIMON,
+                KnownSandboxDLLs::GUARD32,
+                KnownSandboxDLLs::GUARD64,
+                KnownSandboxDLLs::WPEPRO,
+                L"cmdvrt32.dll",     // Comodo
+                L"cmdvrt64.dll",     // Comodo
+                L"pstorec.dll",      // SunBelt Sandbox
+                L"dir_watch.dll",    // Unknown sandbox
+                L"wpespy.dll",       // WPE Pro
+                L"dbghelp.dll",      // Common in analysis
+            };
+
+            for (const auto& dll : sandboxDLLs) {
+                if (GetModuleHandleW(dll.data()) != nullptr) {
+                    analysis.sandboxDLLs.push_back(std::wstring(dll));
+                    ++analysis.suspiciousDLLCount;
+
+                    // Identify specific products
+                    if (dll == KnownSandboxDLLs::SBIEDLL) {
+                        analysis.identifiedProducts.push_back(SandboxProduct::Sandboxie);
+                    }
+                    else if (dll == KnownSandboxDLLs::CUCKOOMON) {
+                        analysis.identifiedProducts.push_back(SandboxProduct::Cuckoo);
+                    }
+                    else if (dll == KnownSandboxDLLs::SNXHK) {
+                        analysis.identifiedProducts.push_back(SandboxProduct::AvastDeepScreen);
+                    }
+                    else if (dll == KnownSandboxDLLs::VMRAY) {
+                        analysis.identifiedProducts.push_back(SandboxProduct::VMRay);
+                    }
+                    else if (dll == KnownSandboxDLLs::JOEBOX) {
+                        analysis.identifiedProducts.push_back(SandboxProduct::JoeSandbox);
+                    }
+                }
+            }
+
+            // -------------------------------------------------------------------------
+            // Check for Sandbox Processes
+            // -------------------------------------------------------------------------
+            HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if (snapshot != INVALID_HANDLE_VALUE) {
+                PROCESSENTRY32W pe{};
+                pe.dwSize = sizeof(pe);
+
+                const std::wstring_view sandboxProcesses[] = {
+                    KnownSandboxProcesses::JOEBOX_SERVER,
+                    KnownSandboxProcesses::JOEBOX_CONTROL,
+                    KnownSandboxProcesses::SANDBOXIE_CONTROL,
+                    KnownSandboxProcesses::SANDBOXIE_SVC,
+                    KnownSandboxProcesses::VMRAY_SVC,
+                    KnownSandboxProcesses::WINDOWS_SANDBOX,
+                    KnownSandboxProcesses::WIRESHARK,
+                    KnownSandboxProcesses::PROCMON,
+                    KnownSandboxProcesses::PROCMON64,
+                    KnownSandboxProcesses::FIDDLER,
+                    KnownSandboxProcesses::OLLYDBG,
+                    KnownSandboxProcesses::X64DBG,
+                    KnownSandboxProcesses::X32DBG,
+                    KnownSandboxProcesses::IDA,
+                    KnownSandboxProcesses::IDA64,
+                    L"regmon.exe",
+                    L"filemon.exe",
+                    L"autoruns.exe",
+                    L"tcpview.exe",
+                    L"idaq.exe",
+                    L"idaq64.exe",
+                    L"immunitydebugger.exe",
+                    L"windbg.exe",
+                    L"dumpcap.exe",
+                    L"hookexplorer.exe",
+                    L"importrec.exe",
+                    L"petools.exe",
+                    L"lordpe.exe",
+                    L"sysinspector.exe",
+                    L"proc_analyzer.exe",
+                    L"sysanalyzer.exe",
+                    L"sniff_hit.exe",
+                    L"joeboxserver.exe",
+                    L"joeboxcontrol.exe",
+                    L"ResourceHacker.exe",
+                };
+
+                if (Process32FirstW(snapshot, &pe)) {
+                    do {
+                        std::wstring processName = pe.szExeFile;
+                        std::transform(processName.begin(), processName.end(), processName.begin(), ::towlower);
+
+                        for (const auto& sandboxProc : sandboxProcesses) {
+                            std::wstring lowerSandboxProc(sandboxProc);
+                            std::transform(lowerSandboxProc.begin(), lowerSandboxProc.end(), lowerSandboxProc.begin(), ::towlower);
+
+                            if (processName == lowerSandboxProc) {
+                                if (sandboxProc == KnownSandboxProcesses::WIRESHARK ||
+                                    sandboxProc == KnownSandboxProcesses::PROCMON ||
+                                    sandboxProc == KnownSandboxProcesses::PROCMON64 ||
+                                    sandboxProc == KnownSandboxProcesses::FIDDLER ||
+                                    sandboxProc == KnownSandboxProcesses::OLLYDBG ||
+                                    sandboxProc == KnownSandboxProcesses::X64DBG ||
+                                    sandboxProc == KnownSandboxProcesses::X32DBG ||
+                                    sandboxProc == KnownSandboxProcesses::IDA ||
+                                    sandboxProc == KnownSandboxProcesses::IDA64) {
+                                    analysis.analysisToolProcesses.push_back(pe.szExeFile);
+                                }
+                                else {
+                                    analysis.sandboxProcesses.push_back(pe.szExeFile);
+                                }
+                                ++analysis.suspiciousProcessCount;
+                            }
+                        }
+                    } while (Process32NextW(snapshot, &pe));
+                }
+                CloseHandle(snapshot);
+            }
+
+            // -------------------------------------------------------------------------
+            // Check for Sandbox Mutexes
+            // -------------------------------------------------------------------------
+            const std::wstring_view sandboxMutexes[] = {
+                KnownSandboxMutexes::SANDBOXIE,
+                KnownSandboxMutexes::CUCKOO,
+                KnownSandboxMutexes::JOEBOX,
+                KnownSandboxMutexes::VMRAY,
+                L"Frz_State",           // Deep Freeze
+                L"SBIE_BOXED_ServiceInitComplete_Mutex",  // Sandboxie
+            };
+
+            for (const auto& mutex : sandboxMutexes) {
+                if (DoesMutexExist(mutex)) {
+                    analysis.sandboxMutexes.push_back(std::wstring(mutex));
+                }
+            }
+
+            // -------------------------------------------------------------------------
+            // Check for Sandbox Registry Keys
+            // -------------------------------------------------------------------------
+            const std::pair<HKEY, std::wstring_view> sandboxRegistryKeys[] = {
+                {HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Virtual Machine\\Guest\\Parameters"},
+                {HKEY_LOCAL_MACHINE, L"SOFTWARE\\VMware, Inc.\\VMware Tools"},
+                {HKEY_LOCAL_MACHINE, L"SOFTWARE\\Oracle\\VirtualBox Guest Additions"},
+                {HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\VBoxGuest"},
+                {HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\VBoxMouse"},
+                {HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\VBoxSF"},
+                {HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\VBoxVideo"},
+                {HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\vmci"},
+                {HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\vmhgfs"},
+                {HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\vmmouse"},
+                {HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Services\\vmrawdsk"},
+                {HKEY_LOCAL_MACHINE, L"SOFTWARE\\Wine"},
+                {HKEY_LOCAL_MACHINE, L"SOFTWARE\\Cuckoo"},
+                {HKEY_CURRENT_USER, L"SOFTWARE\\Cuckoo"},
+            };
+
+            for (const auto& [hive, keyPath] : sandboxRegistryKeys) {
+                HKEY hKey;
+                if (RegOpenKeyExW(hive, keyPath.data(), 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+                    analysis.sandboxRegistryKeys.push_back(std::wstring(keyPath));
+                    ++analysis.suspiciousRegistryCount;
+                    RegCloseKey(hKey);
+                }
+            }
+
+            // -------------------------------------------------------------------------
+            // Check for Sandbox Files
+            // -------------------------------------------------------------------------
+            const std::wstring sandboxFiles[] = {
+                L"C:\\Windows\\System32\\drivers\\VBoxMouse.sys",
+                L"C:\\Windows\\System32\\drivers\\VBoxGuest.sys",
+                L"C:\\Windows\\System32\\drivers\\VBoxSF.sys",
+                L"C:\\Windows\\System32\\drivers\\VBoxVideo.sys",
+                L"C:\\Windows\\System32\\vboxdisp.dll",
+                L"C:\\Windows\\System32\\vboxhook.dll",
+                L"C:\\Windows\\System32\\vboxogl.dll",
+                L"C:\\Windows\\System32\\drivers\\vmmouse.sys",
+                L"C:\\Windows\\System32\\drivers\\vmhgfs.sys",
+                L"C:\\Windows\\System32\\drivers\\vm3dmp.sys",
+                L"C:\\agent\\agent.py",            // Cuckoo
+                L"C:\\cuckoo\\agent\\agent.py",    // Cuckoo
+                L"C:\\sandbox\\starter.exe",
+                L"C:\\analysis\\analyzer.py",
+            };
+
+            for (const auto& filePath : sandboxFiles) {
+                if (GetFileAttributesW(filePath.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                    analysis.sandboxFiles.push_back(filePath);
+                }
+            }
+
+            // -------------------------------------------------------------------------
+            // Calculate Results
+            // -------------------------------------------------------------------------
+            analysis.totalArtifactsFound = analysis.sandboxDLLs.size() +
+                analysis.sandboxProcesses.size() +
+                analysis.analysisToolProcesses.size() +
+                analysis.sandboxMutexes.size() +
+                analysis.sandboxRegistryKeys.size() +
+                analysis.sandboxFiles.size();
+
+            // Determine primary suspect
+            if (!analysis.identifiedProducts.empty()) {
+                analysis.primarySuspect = analysis.identifiedProducts[0];
+            }
+
+            // Calculate suspicion score
+            analysis.suspicionScore = std::min(100.0f,
+                static_cast<float>(analysis.sandboxDLLs.size()) * 25.0f +
+                static_cast<float>(analysis.sandboxProcesses.size()) * 20.0f +
+                static_cast<float>(analysis.analysisToolProcesses.size()) * 15.0f +
+                static_cast<float>(analysis.sandboxMutexes.size()) * 25.0f +
+                static_cast<float>(analysis.sandboxRegistryKeys.size()) * 10.0f +
+                static_cast<float>(analysis.sandboxFiles.size()) * 15.0f);
+
+            // Definitive detection if we found direct evidence
+            analysis.definitiveDetection = !analysis.sandboxDLLs.empty() ||
+                !analysis.sandboxMutexes.empty() ||
+                !analysis.sandboxProcesses.empty();
+#endif
+
+            return analysis;
+        }
+
+        bool SandboxEvasionDetector::VerifyHumanInteraction(uint32_t monitoringDurationMs) {
+            auto analysis = AnalyzeHumanInteraction(monitoringDurationMs);
+            return analysis.result == InteractionResult::HumanDetected;
+        }
+
+        HumanInteractionAnalysis SandboxEvasionDetector::AnalyzeHumanInteraction(uint32_t monitoringDurationMs) {
+            HumanInteractionAnalysis analysis;
+            analysis.monitoringDurationMs = std::clamp(monitoringDurationMs,
+                SandboxConstants::MIN_INTERACTION_MONITOR_MS,
+                SandboxConstants::MAX_INTERACTION_MONITOR_MS);
+
+            m_impl->stats.humanInteractionChecks.fetch_add(1, std::memory_order_relaxed);
+
+            // Reset thread_local state to avoid cross-call contamination
+            // (previous call's final state would cause phantom transitions on first sample)
+            thread_local bool lastLeftButton = false;
+            thread_local bool lastRightButton = false;
+            thread_local std::bitset<256> previousKeyStates;
+            lastLeftButton = false;
+            lastRightButton = false;
+            previousKeyStates.reset();
+
+#ifdef _WIN32
+            analysis.startTime = std::chrono::steady_clock::now();
+
+            // Mouse tracking data
+            std::vector<std::pair<int32_t, int32_t>> mousePositions;
+            std::vector<std::chrono::steady_clock::time_point> mouseTimestamps;
+            POINT lastPos{};
+            GetCursorPos(&lastPos);
+            mousePositions.push_back({ lastPos.x, lastPos.y });
+            mouseTimestamps.push_back(std::chrono::steady_clock::now());
+
+            uint32_t sampleInterval = 50;  // Sample every 50ms
+            uint32_t samples = analysis.monitoringDurationMs / sampleInterval;
+
+            for (uint32_t i = 0; i < samples; ++i) {
+                Sleep(sampleInterval);
+
+                POINT currentPos{};
+                GetCursorPos(&currentPos);
+
+                if (currentPos.x != lastPos.x || currentPos.y != lastPos.y) {
+                    ++analysis.mouseMovementCount;
+                    int32_t dx = currentPos.x - lastPos.x;
+                    int32_t dy = currentPos.y - lastPos.y;
+                    analysis.mouseDistanceTraveled += static_cast<uint64_t>(
+                        std::sqrt(static_cast<double>(dx * dx + dy * dy)));
+
+                    mousePositions.push_back({ currentPos.x, currentPos.y });
+                    mouseTimestamps.push_back(std::chrono::steady_clock::now());
+                }
+
+                lastPos = currentPos;
+
+                // Check for clicks - use state change detection to avoid counting held buttons
+                // Thread-safe: thread_local declared at function scope and reset per-call
+                bool leftDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+                bool rightDown = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
+                
+                if (leftDown && !lastLeftButton) {
+                    ++analysis.leftClickCount;
+                    ++analysis.mouseClickCount;
+                }
+                if (rightDown && !lastRightButton) {
+                    ++analysis.rightClickCount;
+                    ++analysis.mouseClickCount;
+                }
+                
+                lastLeftButton = leftDown;
+                lastRightButton = rightDown;
+
+                // Track state changes to count only NEW key presses (not held keys)
+                // Thread-safe: thread_local declared at function scope and reset per-call
+                std::bitset<256> currentKeyStates;
+                
+                for (int key = 0x08; key <= 0xFE; ++key) {
+                    if (GetAsyncKeyState(key) & 0x8000) {
+                        currentKeyStates.set(key);
+                    }
+                }
+                
+                // Count only keys that transitioned from UP to DOWN
+                for (int key = 0x08; key <= 0xFE; ++key) {
+                    if (currentKeyStates[key] && !previousKeyStates[key]) {
+                        ++analysis.keyPressCount;
+                    }
+                }
+                
+                previousKeyStates = currentKeyStates;
+            }
+
+            analysis.endTime = std::chrono::steady_clock::now();
+
+            // Calculate mouse velocity
+            if (!mouseTimestamps.empty() && mouseTimestamps.size() > 1) {
+                auto totalTime = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    mouseTimestamps.back() - mouseTimestamps.front()).count();
+                if (totalTime > 0) {
+                    analysis.avgMouseVelocity = static_cast<double>(analysis.mouseDistanceTraveled) /
+                        (static_cast<double>(totalTime) / 1000.0);
+                }
+            }
+
+            // Calculate path entropy and straight line ratio
+            if (mousePositions.size() >= 3) {
+                analysis.pathEntropy = CalculateMousePathEntropy(mousePositions);
+                analysis.straightLineRatio = CalculateStraightLineRatio(mousePositions);
+            }
+
+            // Determine result
+            SandboxDetectorConfig currentConfig;
+            {
+                std::shared_lock lock(m_impl->configMutex);
+                currentConfig = m_impl->config;
+            }
+
+            bool hasMovement = analysis.mouseMovementCount >= currentConfig.minMouseMovements;
+            bool hasDistance = analysis.mouseDistanceTraveled >= currentConfig.minMouseDistance;
+            bool hasNaturalPath = analysis.straightLineRatio < SandboxConstants::MAX_STRAIGHT_LINE_RATIO;
+
+            if (hasMovement && hasDistance && hasNaturalPath) {
+                analysis.result = InteractionResult::HumanDetected;
+                analysis.humanConfidence = 80.0f + static_cast<float>(analysis.pathEntropy) * 20.0f;
+            }
+            else if (hasMovement && analysis.straightLineRatio >= SandboxConstants::MAX_STRAIGHT_LINE_RATIO) {
+                analysis.result = InteractionResult::BotPatterns;
+                analysis.botConfidence = 70.0f + static_cast<float>(analysis.straightLineRatio) * 30.0f;
+            }
+            else if (hasMovement) {
+                analysis.result = InteractionResult::SimulatedInteraction;
+                analysis.simulatedConfidence = 60.0f;
+            }
+            else {
+                analysis.result = InteractionResult::NoInteraction;
+                analysis.botConfidence = 90.0f;
+            }
+
+            analysis.humanConfidence = std::clamp(analysis.humanConfidence, 0.0f, 100.0f);
+            analysis.botConfidence = std::clamp(analysis.botConfidence, 0.0f, 100.0f);
+            analysis.analysisComplete = true;
+
+            // Generate findings
+            if (!hasMovement) {
+                analysis.findings.push_back(L"No significant mouse movement detected");
+            }
+            if (analysis.straightLineRatio >= SandboxConstants::MAX_STRAIGHT_LINE_RATIO) {
+                analysis.findings.push_back(L"Mouse movements appear robotic (high straight-line ratio)");
+            }
+            if (analysis.mouseClickCount == 0 && analysis.keyPressCount == 0) {
+                analysis.findings.push_back(L"No user input (clicks/keys) detected");
+            }
+#else
+            analysis.result = InteractionResult::Error;
+            analysis.errorMessage = L"Human interaction analysis not supported on this platform";
+#endif
+
+            return analysis;
+        }
+
+        // ============================================================================
+        // SPECIFIC CHECKS
+        // ============================================================================
+
+        bool SandboxEvasionDetector::IsSandboxProductDetected(SandboxProduct product) {
+            auto artifacts = ScanArtifacts();
+
+            for (const auto& detected : artifacts.identifiedProducts) {
+                if (detected == product) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        uint64_t SandboxEvasionDetector::GetSystemUptime() {
+#ifdef _WIN32
+            return GetTickCount64();
+#else
+            return 0;
+#endif
+        }
+
+        std::pair<uint32_t, uint32_t> SandboxEvasionDetector::GetScreenResolution() {
+#ifdef _WIN32
+            int width = GetSystemMetrics(SM_CXSCREEN);
+            int height = GetSystemMetrics(SM_CYSCREEN);
+            return { static_cast<uint32_t>(width), static_cast<uint32_t>(height) };
+#else
+            return { 0, 0 };
+#endif
+        }
+
+        bool SandboxEvasionDetector::IsSandboxDLLLoaded(std::wstring_view dllName) {
+#ifdef _WIN32
+            std::wstring dllNameStr(dllName);
+            return GetModuleHandleW(dllNameStr.c_str()) != nullptr;
+#else
+            return false;
+#endif
+        }
+
+        bool SandboxEvasionDetector::IsSandboxProcessRunning(std::wstring_view processName) {
+#ifdef _WIN32
+            HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if (snapshot == INVALID_HANDLE_VALUE) {
+                return false;
+            }
+
+            PROCESSENTRY32W pe{};
+            pe.dwSize = sizeof(pe);
+
+            std::wstring lowerTarget(processName);
+            std::transform(lowerTarget.begin(), lowerTarget.end(), lowerTarget.begin(), ::towlower);
+
+            bool found = false;
+            if (Process32FirstW(snapshot, &pe)) {
+                do {
+                    std::wstring currentProcess = pe.szExeFile;
+                    std::transform(currentProcess.begin(), currentProcess.end(), currentProcess.begin(), ::towlower);
+
+                    if (currentProcess == lowerTarget) {
+                        found = true;
+                        break;
+                    }
+                } while (Process32NextW(snapshot, &pe));
+            }
+
+            CloseHandle(snapshot);
+            return found;
+#else
+            return false;
+#endif
+        }
+
+        bool SandboxEvasionDetector::DoesMutexExist(std::wstring_view mutexName) {
+#ifdef _WIN32
+            std::wstring mutexStr(mutexName);
+            HANDLE mutex = OpenMutexW(SYNCHRONIZE, FALSE, mutexStr.c_str());
+            if (mutex != nullptr) {
+                CloseHandle(mutex);
+                return true;
+            }
+            return false;
+#else
+            return false;
+#endif
+        }
+
+        // ============================================================================
+        // CALLBACKS
+        // ============================================================================
+
+        uint64_t SandboxEvasionDetector::RegisterCallback(SandboxDetectionCallback callback) {
+            if (!callback) {
+                return 0;
+            }
+
+            uint64_t id = s_callbackIdCounter.fetch_add(1, std::memory_order_relaxed);
+
+            std::unique_lock lock(m_impl->callbacksMutex);
+            m_impl->callbacks[id] = std::move(callback);
+
+            SS_LOG_DEBUG(LOG_CATEGORY, L"Callback registered with ID: %llu", id);
+            return id;
+        }
+
+        bool SandboxEvasionDetector::UnregisterCallback(uint64_t callbackId) {
+            std::unique_lock lock(m_impl->callbacksMutex);
+            auto it = m_impl->callbacks.find(callbackId);
+            if (it != m_impl->callbacks.end()) {
+                m_impl->callbacks.erase(it);
+                SS_LOG_DEBUG(LOG_CATEGORY, L"Callback unregistered: %llu", callbackId);
+                return true;
+            }
+            return false;
+        }
+
+        // ============================================================================
+        // STATISTICS & CACHE
+        // ============================================================================
+
+        const SandboxDetectorStats& SandboxEvasionDetector::GetStats() const {
+            return m_impl->stats;
+        }
+
+        void SandboxEvasionDetector::ResetStats() {
+            m_impl->stats.Reset();
+            SS_LOG_DEBUG(LOG_CATEGORY, L"Statistics reset");
+        }
+
+        std::optional<SandboxEvasionResult> SandboxEvasionDetector::GetCachedResult() const {
+            std::shared_lock lock(m_impl->cacheMutex);
+            return m_impl->cachedResult;
+        }
+
+        void SandboxEvasionDetector::ClearCache() {
+            std::unique_lock lock(m_impl->cacheMutex);
+            m_impl->cachedResult.reset();
+            SS_LOG_DEBUG(LOG_CATEGORY, L"Cache cleared");
+        }
+
+        std::optional<HardwareProfile> SandboxEvasionDetector::GetHardwareProfile() const {
+            std::shared_lock lock(m_impl->hardwareProfileMutex);
+            return m_impl->cachedHardwareProfile;
+        }
+
+        // ============================================================================
+        // INTERNAL CHECK METHODS
+        // ============================================================================
+
+        void SandboxEvasionDetector::CheckHardwareSpecs(SandboxEvasionResult& result) {
+            auto hardware = AnalyzeHardware();
+            result.hardware = hardware;
+            result.hardwareScore = 100.0f - hardware.suspicionScore;
+
+            // Add indicators based on hardware findings
+            if (hardware.totalRAM < SandboxConstants::SUSPICIOUS_RAM_BYTES) {
+                AddIndicator(result, SandboxCheckType::RAMSize, SandboxIndicatorCategory::Hardware,
+                    SandboxIndicatorSeverity::High, 3.0f, 85.0f,
+                    L"Suspiciously low RAM detected",
+                    L"RAM below typical user systems",
+                    std::to_wstring(hardware.totalRAM / (1024 * 1024)) + L" MB",
+                    L">= 4096 MB");
+            }
+            else if (hardware.totalRAM < SandboxConstants::MIN_RAM_BYTES) {
+                AddIndicator(result, SandboxCheckType::RAMSize, SandboxIndicatorCategory::Hardware,
+                    SandboxIndicatorSeverity::Medium, 2.0f, 60.0f,
+                    L"Low RAM detected",
+                    L"RAM below recommended minimum",
+                    std::to_wstring(hardware.totalRAM / (1024 * 1024)) + L" MB",
+                    L">= 4096 MB");
+            }
+
+            if (hardware.logicalProcessors <= SandboxConstants::SUSPICIOUS_CPU_CORES) {
+                AddIndicator(result, SandboxCheckType::CPUCores, SandboxIndicatorCategory::Hardware,
+                    SandboxIndicatorSeverity::High, 3.0f, 80.0f,
+                    L"Single CPU core detected",
+                    L"Most modern systems have multiple cores",
+                    std::to_wstring(hardware.logicalProcessors),
+                    L">= 2");
+            }
+
+            if (hardware.totalDiskSpace < SandboxConstants::SUSPICIOUS_DISK_BYTES) {
+                AddIndicator(result, SandboxCheckType::DiskSize, SandboxIndicatorCategory::Hardware,
+                    SandboxIndicatorSeverity::Medium, 2.0f, 70.0f,
+                    L"Small disk detected",
+                    L"Disk size typical of sandbox environments",
+                    std::to_wstring(hardware.totalDiskSpace / (1024 * 1024 * 1024)) + L" GB",
+                    L">= 80 GB");
+            }
+
+            if (!hardware.audioDevicePresent) {
+                AddIndicator(result, SandboxCheckType::AudioDevices, SandboxIndicatorCategory::Hardware,
+                    SandboxIndicatorSeverity::Low, 1.0f, 40.0f,
+                    L"No audio device detected",
+                    L"Absence of audio devices is common in sandboxes");
+            }
+
+            ++result.totalChecks;
+            if (hardware.isSandboxLike) {
+                ++result.failedChecks;
+            }
+            else {
+                ++result.passedChecks;
+            }
+        }
+
+        void SandboxEvasionDetector::CheckUptime(SandboxEvasionResult& result) {
+            uint64_t uptime = GetSystemUptime();
+
+            if (uptime < SandboxConstants::VERY_SUSPICIOUS_UPTIME_MS) {
+                AddIndicator(result, SandboxCheckType::SystemUptime, SandboxIndicatorCategory::Timing,
+                    SandboxIndicatorSeverity::High, 4.0f, 90.0f,
+                    L"Very short system uptime",
+                    L"System was recently booted, typical of fresh sandbox",
+                    std::to_wstring(uptime / 1000) + L" seconds",
+                    L">= 120 seconds",
+                    SandboxProduct::Unknown, true);
+                result.timingScore += 40.0f;
+                ++result.failedChecks;
+            }
+            else if (uptime < SandboxConstants::SUSPICIOUS_UPTIME_MS) {
+                AddIndicator(result, SandboxCheckType::SystemUptime, SandboxIndicatorCategory::Timing,
+                    SandboxIndicatorSeverity::Medium, 2.5f, 70.0f,
+                    L"Short system uptime",
+                    L"System uptime below typical threshold",
+                    std::to_wstring(uptime / 1000) + L" seconds",
+                    L">= 300 seconds");
+                result.timingScore += 25.0f;
+                ++result.failedChecks;
+            }
+            else if (uptime < SandboxConstants::MIN_UPTIME_MS) {
+                AddIndicator(result, SandboxCheckType::SystemUptime, SandboxIndicatorCategory::Timing,
+                    SandboxIndicatorSeverity::Low, 1.5f, 50.0f,
+                    L"Relatively short system uptime",
+                    L"System uptime below minimum threshold",
+                    std::to_wstring(uptime / 60000) + L" minutes",
+                    L">= 10 minutes");
+                result.timingScore += 15.0f;
+            }
+            else {
+                ++result.passedChecks;
+            }
+
+            ++result.totalChecks;
+        }
+
+        void SandboxEvasionDetector::CheckLoadedModules(SandboxEvasionResult& result) {
+#ifdef _WIN32
+            const std::pair<std::wstring_view, SandboxProduct> sandboxDLLs[] = {
+                {KnownSandboxDLLs::SBIEDLL, SandboxProduct::Sandboxie},
+                {KnownSandboxDLLs::CUCKOOMON, SandboxProduct::Cuckoo},
+                {KnownSandboxDLLs::SNXHK, SandboxProduct::AvastDeepScreen},
+                {KnownSandboxDLLs::VMRAY, SandboxProduct::VMRay},
+                {KnownSandboxDLLs::JOEBOX, SandboxProduct::JoeSandbox},
+                {KnownSandboxDLLs::GUARD32, SandboxProduct::ComodoSandbox},
+                {KnownSandboxDLLs::GUARD64, SandboxProduct::ComodoSandbox},
+            };
+
+            for (const auto& [dll, product] : sandboxDLLs) {
+                if (GetModuleHandleW(dll.data()) != nullptr) {
+                    AddIndicator(result, SandboxCheckType::SandboxDLLs, SandboxIndicatorCategory::Artifact,
+                        SandboxIndicatorSeverity::Critical, 5.0f, 99.0f,
+                        L"Sandbox DLL detected: " + std::wstring(dll),
+                        L"Direct evidence of sandbox environment",
+                        std::wstring(dll), L"Not loaded",
+                        product, true);
+                    result.artifactScore += 30.0f;
+                    result.artifacts.sandboxDLLs.push_back(std::wstring(dll));
+                    result.artifacts.identifiedProducts.push_back(product);
+                    ++result.failedChecks;
+                }
+                else {
+                    ++result.passedChecks;
+                }
+                ++result.totalChecks;
+            }
+#endif
+        }
+
+        void SandboxEvasionDetector::CheckSystemWearAndTear(SandboxEvasionResult& result) {
+            auto wearAnalysis = AnalyzeWearAndTear();
+            result.wearAndTear = wearAnalysis;
+            result.wearAndTearScore = wearAnalysis.usageScore;
+
+            if (wearAnalysis.appearsFresh) {
+                AddIndicator(result, SandboxCheckType::InstalledPrograms, SandboxIndicatorCategory::WearAndTear,
+                    SandboxIndicatorSeverity::Medium, 2.0f, 65.0f,
+                    L"System appears freshly installed",
+                    L"Minimal system usage indicators detected");
+                ++result.failedChecks;
+            }
+            else {
+                ++result.passedChecks;
+            }
+
+            if (wearAnalysis.installedProgramCount != UINT32_MAX &&
+                wearAnalysis.installedProgramCount < SandboxConstants::MIN_INSTALLED_PROGRAMS) {
+                AddIndicator(result, SandboxCheckType::InstalledPrograms, SandboxIndicatorCategory::WearAndTear,
+                    SandboxIndicatorSeverity::Low, 1.5f, 55.0f,
+                    L"Few installed programs",
+                    L"Typical user systems have more software installed",
+                    std::to_wstring(wearAnalysis.installedProgramCount),
+                    L">= 20");
+            }
+
+            if (wearAnalysis.recentDocumentsCount < 5) {
+                AddIndicator(result, SandboxCheckType::RecentDocuments, SandboxIndicatorCategory::WearAndTear,
+                    SandboxIndicatorSeverity::Low, 1.0f, 45.0f,
+                    L"Very few recent documents",
+                    L"No document activity history",
+                    std::to_wstring(wearAnalysis.recentDocumentsCount),
+                    L">= 10");
+            }
+
+            ++result.totalChecks;
+        }
+
+        void SandboxEvasionDetector::CheckNamedObjects(SandboxEvasionResult& result) {
+#ifdef _WIN32
+            const std::pair<std::wstring_view, SandboxProduct> sandboxMutexes[] = {
+                {KnownSandboxMutexes::SANDBOXIE, SandboxProduct::Sandboxie},
+                {KnownSandboxMutexes::CUCKOO, SandboxProduct::Cuckoo},
+                {KnownSandboxMutexes::JOEBOX, SandboxProduct::JoeSandbox},
+                {KnownSandboxMutexes::VMRAY, SandboxProduct::VMRay},
+            };
+
+            for (const auto& [mutex, product] : sandboxMutexes) {
+                if (DoesMutexExist(mutex)) {
+                    AddIndicator(result, SandboxCheckType::SandboxMutexes, SandboxIndicatorCategory::Artifact,
+                        SandboxIndicatorSeverity::Critical, 5.0f, 99.0f,
+                        L"Sandbox mutex detected: " + std::wstring(mutex),
+                        L"Direct evidence of sandbox environment",
+                        std::wstring(mutex), L"Not present",
+                        product, true);
+                    result.artifactScore += 35.0f;
+                    result.artifacts.sandboxMutexes.push_back(std::wstring(mutex));
+                    ++result.failedChecks;
+                }
+                else {
+                    ++result.passedChecks;
+                }
+                ++result.totalChecks;
+            }
+#endif
+        }
+
+        void SandboxEvasionDetector::CheckScreenResolution(SandboxEvasionResult& result) {
+            auto [width, height] = GetScreenResolution();
+            result.environment.screenWidth = width;
+            result.environment.screenHeight = height;
+
+            bool isSuspicious = false;
+
+            if (width <= SandboxConstants::VERY_SUSPICIOUS_SCREEN_WIDTH &&
+                height <= SandboxConstants::VERY_SUSPICIOUS_SCREEN_HEIGHT) {
+                AddIndicator(result, SandboxCheckType::ScreenResolution, SandboxIndicatorCategory::Environment,
+                    SandboxIndicatorSeverity::High, 3.0f, 85.0f,
+                    L"Very low screen resolution",
+                    L"800x600 is extremely common in sandboxes",
+                    std::to_wstring(width) + L"x" + std::to_wstring(height),
+                    L">= 1280x720");
+                result.environmentScore += 25.0f;
+                isSuspicious = true;
+            }
+            else if (width <= SandboxConstants::SUSPICIOUS_SCREEN_WIDTH &&
+                height <= SandboxConstants::SUSPICIOUS_SCREEN_HEIGHT) {
+                AddIndicator(result, SandboxCheckType::ScreenResolution, SandboxIndicatorCategory::Environment,
+                    SandboxIndicatorSeverity::Medium, 2.0f, 65.0f,
+                    L"Low screen resolution",
+                    L"1024x768 is common in sandbox environments",
+                    std::to_wstring(width) + L"x" + std::to_wstring(height),
+                    L">= 1280x720");
+                result.environmentScore += 15.0f;
+                isSuspicious = true;
+            }
+
+            ++result.totalChecks;
+            if (isSuspicious) {
+                result.environment.isVMResolution = true;
+                ++result.failedChecks;
+            }
+            else {
+                ++result.passedChecks;
+            }
+        }
+
+        void SandboxEvasionDetector::CheckProcesses(SandboxEvasionResult& result, const ArtifactAnalysis& artifacts) {
+            for (const auto& proc : artifacts.sandboxProcesses) {
+                AddIndicator(result, SandboxCheckType::SandboxProcesses, SandboxIndicatorCategory::Artifact,
+                    SandboxIndicatorSeverity::High, 4.0f, 90.0f,
+                    L"Sandbox process detected: " + proc,
+                    L"Sandbox control process running",
+                    proc, L"Not running");
+                ++result.failedChecks;
+            }
+
+            for (const auto& proc : artifacts.analysisToolProcesses) {
+                AddIndicator(result, SandboxCheckType::AnalysisTools, SandboxIndicatorCategory::Artifact,
+                    SandboxIndicatorSeverity::Medium, 2.5f, 75.0f,
+                    L"Analysis tool detected: " + proc,
+                    L"Common malware analysis tool running",
+                    proc, L"Not running");
+                ++result.failedChecks;
+            }
+
+            result.artifacts.sandboxProcesses = artifacts.sandboxProcesses;
+            result.artifacts.analysisToolProcesses = artifacts.analysisToolProcesses;
+
+            result.totalChecks += static_cast<uint32_t>(result.artifacts.sandboxProcesses.size() +
+                result.artifacts.analysisToolProcesses.size());
+            if (result.artifacts.sandboxProcesses.empty() && result.artifacts.analysisToolProcesses.empty()) {
+                ++result.passedChecks;
+                ++result.totalChecks;
+            }
+        }
+
+        void SandboxEvasionDetector::CheckServices(SandboxEvasionResult& result) {
+#ifdef _WIN32
+            // Check for sandbox-related services
+            const std::pair<std::wstring, SandboxProduct> sandboxServices[] = {
+                {L"SbieSvc", SandboxProduct::Sandboxie},
+                {L"VBoxService", SandboxProduct::GenericAnalysis},
+                {L"VMTools", SandboxProduct::GenericAnalysis},
+                {L"vmicheartbeat", SandboxProduct::GenericAnalysis},
+            };
+
+            SC_HANDLE scManager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_ENUMERATE_SERVICE);
+            if (scManager) {
+                for (const auto& [serviceName, product] : sandboxServices) {
+                    SC_HANDLE service = OpenServiceW(scManager, serviceName.c_str(), SERVICE_QUERY_STATUS);
+                    if (service) {
+                        SERVICE_STATUS status{};
+                        if (QueryServiceStatus(service, &status)) {
+                            if (status.dwCurrentState == SERVICE_RUNNING) {
+                                AddIndicator(result, SandboxCheckType::SandboxServices, SandboxIndicatorCategory::Artifact,
+                                    SandboxIndicatorSeverity::High, 3.5f, 85.0f,
+                                    L"Sandbox service running: " + serviceName,
+                                    L"Sandbox-related service detected",
+                                    serviceName, L"Not running",
+                                    product);
+                                result.artifacts.sandboxServices.push_back(serviceName);
+                                ++result.failedChecks;
+                            }
+                        }
+                        CloseServiceHandle(service);
+                    }
+                    ++result.totalChecks;
+                }
+                CloseServiceHandle(scManager);
+            }
+
+            if (result.artifacts.sandboxServices.empty()) {
+                ++result.passedChecks;
+            }
+#endif
+        }
+
+        void SandboxEvasionDetector::CheckRegistry(SandboxEvasionResult& result) {
+            // Registry checks are included in AnalyzeEnvironment and ScanArtifacts
+            auto env = AnalyzeEnvironment();
+            result.environment = env;
+            result.environmentScore = 100.0f - env.suspicionScore;
+
+            if (!env.issues.empty()) {
+                for (const auto& issue : env.issues) {
+                    AddIndicator(result, SandboxCheckType::SandboxRegistry, SandboxIndicatorCategory::Environment,
+                        SandboxIndicatorSeverity::Medium, 2.0f, 60.0f,
+                        issue, L"Environment anomaly detected");
+                }
+                result.failedChecks += static_cast<uint32_t>(env.issues.size());
+            }
+            else {
+                ++result.passedChecks;
+            }
+
+            result.totalChecks += static_cast<uint32_t>(env.issues.size()) + 1;
+        }
+
+        void SandboxEvasionDetector::CheckFileSystem(SandboxEvasionResult& result, const ArtifactAnalysis& artifacts) {
+            for (const auto& file : artifacts.sandboxFiles) {
+                AddIndicator(result, SandboxCheckType::SandboxFiles, SandboxIndicatorCategory::FileSystem,
+                    SandboxIndicatorSeverity::High, 3.5f, 88.0f,
+                    L"Sandbox file detected: " + file,
+                    L"File typically found in sandbox environments",
+                    file, L"Not present");
+                ++result.failedChecks;
+            }
+
+            result.artifacts.sandboxFiles = artifacts.sandboxFiles;
+
+            ++result.totalChecks;
+            if (result.artifacts.sandboxFiles.empty()) {
+                ++result.passedChecks;
+            }
+        }
+
+        void SandboxEvasionDetector::CheckAPIHooks(SandboxEvasionResult& result) {
+#ifdef _WIN32
+            // Check for inline hooks on common APIs using PhantomDisassembler
+            const std::pair<const char*, const char*> criticalAPIs[] = {
+                {"ntdll.dll", "NtQueryInformationProcess"},
+                {"ntdll.dll", "NtQuerySystemInformation"},
+                {"ntdll.dll", "NtCreateFile"},
+                {"ntdll.dll", "NtOpenProcess"},
+                {"ntdll.dll", "NtQueryVirtualMemory"},
+                {"ntdll.dll", "NtReadVirtualMemory"},
+                {"ntdll.dll", "NtWriteVirtualMemory"},
+                {"ntdll.dll", "NtDelayExecution"},
+                {"kernel32.dll", "IsDebuggerPresent"},
+                {"kernel32.dll", "GetTickCount"},
+                {"kernel32.dll", "GetTickCount64"},
+                {"kernel32.dll", "QueryPerformanceCounter"},
+                {"kernel32.dll", "GetSystemTimeAsFileTime"},
+                {"kernel32.dll", "CreateFileW"},
+                {"kernel32.dll", "ReadFile"},
+                {"kernel32.dll", "VirtualAlloc"},
+                {"kernel32.dll", "VirtualProtect"},
+            };
+
+            // Ensure disassembler is initialized
+            if (!m_impl->disasmInitialized) {
+                m_impl->InitializeDisasm();
+            }
+
+            size_t hookedCount = 0;
+            constexpr size_t MAX_PROLOGUE_BYTES = 32;  // Analyze first 32 bytes of each function
+
+            for (const auto& [module, function] : criticalAPIs) {
+                HMODULE hMod = GetModuleHandleA(module);
+                if (!hMod) continue;
+
+                FARPROC proc = GetProcAddress(hMod, function);
+                if (!proc) continue;
+
+                const uint8_t* funcBytes = reinterpret_cast<const uint8_t*>(proc);
+
+                // Disassemble and detect hooks
+                Phantom::Disasm::DecodedInstruction instruction;
+                Phantom::Disasm::DecodedOperand operands[Phantom::Disasm::MAX_OPERANDS];
+
+                // Decode the first instruction
+                if (!Phantom::Disasm::IsSuccess(
+                    m_impl->GetDecoder(true)->DecodeFull(
+                    funcBytes,
+                    MAX_PROLOGUE_BYTES,
+                    instruction,
+                    operands))) {
+                    continue;
+                }
+
+                bool isHooked = false;
+                std::wstring hookType;
+
+                // Check for common hook patterns:
+                // 1. JMP rel32 (E9 xx xx xx xx) - 5 byte near jump
+                // 2. JMP [rip+disp32] (FF 25 xx xx xx xx) - 6 byte indirect jump
+                // 3. MOV RAX, imm64; JMP RAX - 12 byte trampoline
+                // 4. PUSH addr; RET - push/ret gadget
+                // 5. INT 3 (CC) - breakpoint hook
+
+                switch (instruction.mnemonic) {
+                    case Phantom::Disasm::Mnemonic::JMP:
+                        // Any JMP as first instruction is suspicious
+                        isHooked = true;
+                        if (instruction.length == 5 && funcBytes[0] == 0xE9) {
+                            hookType = L"JMP rel32 (inline hook)";
+                        } else if (instruction.length == 6 && funcBytes[0] == 0xFF && funcBytes[1] == 0x25) {
+                            hookType = L"JMP [RIP+disp32] (indirect hook)";
+                        } else {
+                            hookType = L"JMP instruction (hook)";
+                        }
+                        break;
+
+                    case Phantom::Disasm::Mnemonic::CALL:
+                        // CALL as first instruction can be a hook
+                        isHooked = true;
+                        hookType = L"CALL instruction (detour)";
+                        break;
+
+                    case Phantom::Disasm::Mnemonic::PUSH:
+                        // Check for PUSH addr; RET pattern
+                        if (instruction.operand_count > 0 &&
+                            operands[0].type == Phantom::Disasm::OperandType::IMMEDIATE) {
+                            // Decode next instruction to check for RET
+                            Phantom::Disasm::DecodedInstruction nextInstr;
+                            Phantom::Disasm::DecodedOperand nextOps[Phantom::Disasm::MAX_OPERANDS];
+                            if (Phantom::Disasm::IsSuccess(
+                                m_impl->GetDecoder(true)->DecodeFull(
+                                funcBytes + instruction.length,
+                                MAX_PROLOGUE_BYTES - instruction.length,
+                                nextInstr,
+                                nextOps))) {
+                                if (nextInstr.mnemonic == Phantom::Disasm::Mnemonic::RET) {
+                                    isHooked = true;
+                                    hookType = L"PUSH/RET gadget (hook)";
+                                }
+                            }
+                        }
+                        break;
+
+                    case Phantom::Disasm::Mnemonic::INT3:
+                        isHooked = true;
+                        hookType = L"INT3 breakpoint (debug hook)";
+                        break;
+
+                    case Phantom::Disasm::Mnemonic::INT:
+                        if (instruction.operand_count > 0 &&
+                            operands[0].type == Phantom::Disasm::OperandType::IMMEDIATE &&
+                            operands[0].imm.value.u == 0x2D) {
+                            isHooked = true;
+                            hookType = L"INT 2D (debug hook)";
+                        }
+                        break;
+
+                    case Phantom::Disasm::Mnemonic::MOV:
+                        // Check for MOV RAX, imm64 pattern (often followed by JMP RAX)
+                        if (instruction.operand_count >= 2 &&
+                            operands[0].type == Phantom::Disasm::OperandType::REGISTER &&
+                            operands[0].reg.value == Phantom::Disasm::Register::RAX &&
+                            operands[1].type == Phantom::Disasm::OperandType::IMMEDIATE) {
+                            // Decode subsequent instructions looking for JMP RAX
+                            size_t offset = instruction.length;
+                            for (int i = 0; i < 3 && offset < MAX_PROLOGUE_BYTES; ++i) {
+                                Phantom::Disasm::DecodedInstruction scanInstr;
+                                Phantom::Disasm::DecodedOperand scanOps[Phantom::Disasm::MAX_OPERANDS];
+                                if (!Phantom::Disasm::IsSuccess(
+                                    m_impl->GetDecoder(true)->DecodeFull(
+                                    funcBytes + offset,
+                                    MAX_PROLOGUE_BYTES - offset,
+                                    scanInstr,
+                                    scanOps))) {
+                                    break;
+                                }
+                                if (scanInstr.mnemonic == Phantom::Disasm::Mnemonic::JMP &&
+                                    scanOps[0].type == Phantom::Disasm::OperandType::REGISTER &&
+                                    scanOps[0].reg.value == Phantom::Disasm::Register::RAX) {
+                                    isHooked = true;
+                                    hookType = L"MOV RAX, imm64; JMP RAX (trampoline)";
+                                    break;
+                                }
+                                offset += scanInstr.length;
+                            }
+                        }
+                        break;
+
+                    default:
+                        // For ntdll syscall stubs, the expected pattern is:
+                        // MOV R10, RCX; MOV EAX, syscall_number
+                        // If we see something else entirely, it might be patched
+                        if (strstr(module, "ntdll") != nullptr) {
+                            // Check if this looks like a normal syscall stub
+                            bool looksNormal = false;
+                            if (instruction.mnemonic == Phantom::Disasm::Mnemonic::MOV &&
+                                instruction.operand_count >= 2) {
+                                // MOV R10, RCX is expected
+                                if (operands[0].type == Phantom::Disasm::OperandType::REGISTER &&
+                                    operands[0].reg.value == Phantom::Disasm::Register::R10) {
+                                    looksNormal = true;
+                                }
+                            }
+                            // If it doesn't look normal and it's not a standard instruction,
+                            // flag for review (but don't mark as definitively hooked)
+                        }
+                        break;
+                }
+
+                if (isHooked) {
+                    ++hookedCount;
+                    std::wstring apiName = Utils::StringUtils::ToWide(
+                        std::string(module) + "!" + function);
+                    result.artifacts.hookedAPIs.push_back(apiName + L" - " + hookType);
+
+                    SS_LOG_WARN(LOG_CATEGORY,
+                        L"API hook detected: %ls (%ls)",
+                        apiName.c_str(), hookType.c_str());
+                }
+            }
+
+            if (hookedCount > 0) {
+                AddIndicator(result, SandboxCheckType::HookDetection, SandboxIndicatorCategory::Artifact,
+                    SandboxIndicatorSeverity::High, 4.0f, 85.0f,
+                    L"API hooks detected: " + std::to_wstring(hookedCount) + L" functions",
+                    L"Inline hooks indicate monitoring/sandbox environment",
+                    std::to_wstring(hookedCount) + L" hooks", L"0 hooks");
+                result.artifacts.apiHooksDetected = true;
+                result.artifacts.hookedAPICount = hookedCount;
+                ++result.failedChecks;
+            }
+            else {
+                ++result.passedChecks;
+            }
+
+            ++result.totalChecks;
+#endif
+        }
+
+        void SandboxEvasionDetector::CheckNetworkCharacteristics(SandboxEvasionResult& result) {
+#ifdef _WIN32
+            // Check for VM MAC address prefixes
+            ULONG adaptersSize = 0;
+            GetAdaptersInfo(nullptr, &adaptersSize);
+
+            if (adaptersSize > 0) {
+                std::vector<uint8_t> buffer(adaptersSize);
+                PIP_ADAPTER_INFO adapters = reinterpret_cast<PIP_ADAPTER_INFO>(buffer.data());
+
+                if (GetAdaptersInfo(adapters, &adaptersSize) == ERROR_SUCCESS) {
+                    for (PIP_ADAPTER_INFO adapter = adapters; adapter; adapter = adapter->Next) {
+                        if (adapter->AddressLength >= 3) {
+                            for (const auto& vmPrefix : VM_MAC_PREFIXES) {
+                                if (adapter->Address[0] == vmPrefix[0] &&
+                                    adapter->Address[1] == vmPrefix[1] &&
+                                    adapter->Address[2] == vmPrefix[2]) {
+
+                                    wchar_t macStr[32];
+                                    swprintf_s(macStr, L"%02X:%02X:%02X:*",
+                                        adapter->Address[0], adapter->Address[1], adapter->Address[2]);
+
+                                    AddIndicator(result, SandboxCheckType::MACAddress, SandboxIndicatorCategory::Network,
+                                        SandboxIndicatorSeverity::Medium, 2.5f, 75.0f,
+                                        L"VM/Sandbox MAC address prefix detected",
+                                        L"Network adapter has known virtual machine OUI",
+                                        macStr, L"Physical adapter OUI");
+                                    result.networkScore += 20.0f;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            ++result.totalChecks;
+            ++result.passedChecks;  // Not definitive by itself
+#endif
+        }
+
+        void SandboxEvasionDetector::CalculateProbability(SandboxEvasionResult& result) {
+            SandboxDetectorConfig currentConfig;
+            {
+                std::shared_lock lock(m_impl->configMutex);
+                currentConfig = m_impl->config;
+            }
+
+            // Gather category scores
+            std::vector<float> scores = {
+                100.0f - result.hardware.suspicionScore,           // Hardware (inverted)
+                result.wearAndTear.usageScore,                     // Wear and tear
+                result.humanInteraction.has_value() ?
+                    result.humanInteraction->humanConfidence : 50.0f,  // Human interaction
+                100.0f - result.environment.suspicionScore,        // Environment (inverted)
+                100.0f - result.artifacts.suspicionScore,          // Artifacts (inverted)
+                100.0f - result.timingScore,                       // Timing (inverted)
+                100.0f - result.networkScore,                      // Network (inverted)
+            };
+
+            std::vector<float> weights = {
+                currentConfig.hardwareWeight,
+                currentConfig.wearAndTearWeight,
+                currentConfig.humanInteractionWeight,
+                currentConfig.environmentWeight,
+                currentConfig.artifactWeight,
+                currentConfig.timingWeight,
+                currentConfig.networkWeight,
+            };
+
+            // Calculate weighted "clean" probability (higher = less likely sandbox)
+            float cleanProbability = CalculateWeightedProbability(scores, weights);
+
+            // Sandbox probability is inverse
+            result.probability = 100.0f - cleanProbability;
+
+            // Boost probability if definitive artifacts found
+            bool hasDefinitiveEvidence = result.artifacts.definitiveDetection;
+            for (const auto& indicator : result.indicators) {
+                if (indicator.isConclusive) {
+                    hasDefinitiveEvidence = true;
+                    break;
+                }
+            }
+
+            if (hasDefinitiveEvidence) {
+                result.probability = std::max(result.probability, 95.0f);
+                result.isDefinitive = true;
+            }
+
+            // Clamp probability
+            result.probability = std::clamp(result.probability, 0.0f, 100.0f);
+
+            // Determine if sandbox is likely based on threshold
+            result.isSandboxLikely = result.probability >= currentConfig.probabilityThreshold;
+
+            // Calculate confidence based on number of checks and consistency
+            float checksRatio = (result.totalChecks > 0) ?
+                static_cast<float>(result.failedChecks + result.passedChecks) / static_cast<float>(result.totalChecks) : 0.0f;
+            result.confidence = checksRatio * 100.0f;
+
+            // Adjust confidence based on indicator severity distribution
+            size_t criticalCount = 0, highCount = 0;
+            for (const auto& indicator : result.indicators) {
+                if (indicator.severity == SandboxIndicatorSeverity::Critical) ++criticalCount;
+                else if (indicator.severity == SandboxIndicatorSeverity::High) ++highCount;
+            }
+
+            if (criticalCount > 0) {
+                result.confidence = std::min(100.0f, result.confidence + 20.0f);
+            }
+            if (highCount >= 3) {
+                result.confidence = std::min(100.0f, result.confidence + 10.0f);
+            }
+
+            // Generate summary message
+            if (result.isSandboxLikely) {
+                result.summaryMessages.push_back(L"Sandbox environment detected with " +
+                    std::to_wstring(static_cast<int>(result.probability)) + L"% probability");
+            }
+            else {
+                result.summaryMessages.push_back(L"No sandbox detected (probability: " +
+                    std::to_wstring(static_cast<int>(result.probability)) + L"%)");
+            }
+        }
+
+        void SandboxEvasionDetector::IdentifySandboxProduct(SandboxEvasionResult& result) {
+            // Count product identifications
+            std::unordered_map<SandboxProduct, int> productVotes;
+
+            for (const auto& indicator : result.indicators) {
+                if (indicator.suspectedProduct != SandboxProduct::Unknown) {
+                    productVotes[indicator.suspectedProduct]++;
+                }
+            }
+
+            for (const auto& product : result.artifacts.identifiedProducts) {
+                productVotes[product] += 2;  // Artifact identification is stronger
+            }
+
+            // Find product with most votes
+            SandboxProduct bestProduct = SandboxProduct::Unknown;
+            int maxVotes = 0;
+
+            for (const auto& [product, votes] : productVotes) {
+                if (votes > maxVotes) {
+                    maxVotes = votes;
+                    bestProduct = product;
+                }
+            }
+
+            result.identifiedSandbox = bestProduct;
+
+            // Collect all suspected products
+            for (const auto& [product, votes] : productVotes) {
+                result.suspectedProducts.push_back(product);
+            }
+
+            // Set sandbox name
+            if (bestProduct != SandboxProduct::Unknown) {
+                result.sandboxName = Utils::StringUtils::ToWide(SandboxProductToString(bestProduct));
+            }
+
+            // Multiple sandboxes?
+            if (productVotes.size() > 1) {
+                result.identifiedSandbox = SandboxProduct::Multiple;
+                result.sandboxName = L"Multiple sandbox indicators";
+            }
+        }
+
+        void SandboxEvasionDetector::AddMitreMappings(SandboxEvasionResult& result) {
+            std::unordered_set<std::string> uniqueMitre;
+
+            for (const auto& indicator : result.indicators) {
+                const char* mitre = SandboxCheckToMitre(indicator.checkType);
+                if (mitre && strlen(mitre) > 0) {
+                    uniqueMitre.insert(mitre);
+                }
+            }
+
+            result.mitreIds.assign(uniqueMitre.begin(), uniqueMitre.end());
+
+            // Primary tactic is always Defense Evasion for sandbox detection
+            result.mitreTactic = "TA0005";
+        }
+
+        void SandboxEvasionDetector::AddIndicator(
+            SandboxEvasionResult& result,
+            SandboxCheckType checkType,
+            SandboxIndicatorCategory category,
+            SandboxIndicatorSeverity severity,
+            float weight,
+            float confidence,
+            const std::wstring& description,
+            const std::wstring& technicalDetails,
+            const std::wstring& observedValue,
+            const std::wstring& expectedValue,
+            SandboxProduct suspectedProduct,
+            bool isConclusive
+        ) {
+            if (result.indicators.size() >= SandboxConstants::MAX_INDICATORS) {
+                SS_LOG_WARN(LOG_CATEGORY, L"Maximum indicator limit reached, skipping: %ls", description.c_str());
+                return;
+            }
+
+            SandboxIndicator indicator;
+            indicator.checkType = checkType;
+            indicator.category = category;
+            indicator.severity = severity;
+            indicator.weight = weight;
+            indicator.confidence = confidence;
+            indicator.suspectedProduct = suspectedProduct;
+            indicator.description = description;
+            indicator.technicalDetails = technicalDetails;
+            indicator.observedValue = observedValue;
+            indicator.expectedValue = expectedValue;
+            indicator.mitreId = SandboxCheckToMitre(checkType);
+            indicator.detectionTime = std::chrono::system_clock::now();
+            indicator.isConclusive = isConclusive;
+
+            result.indicators.push_back(std::move(indicator));
+        }
+
+        void SandboxEvasionDetector::UpdateCache(const SandboxEvasionResult& result) {
+            std::unique_lock lock(m_impl->cacheMutex);
+            m_impl->cachedResult = result;
+            m_impl->cacheTimestamp = std::chrono::system_clock::now();
+        }
+
+        void SandboxEvasionDetector::InvokeCallbacks(const SandboxEvasionResult& result) {
+            // DEADLOCK FIX: snapshot the callback registry under the lock, then
+            // invoke without holding it. A user-supplied callback that calls
+            // RegisterCallback / UnregisterCallback would otherwise re-acquire the
+            // same shared_mutex in unique mode and self-deadlock.
+            std::vector<std::pair<uint64_t, SandboxDetectionCallback>> snapshot;
+            {
+                std::shared_lock lock(m_impl->callbacksMutex);
+                snapshot.reserve(m_impl->callbacks.size());
+                for (const auto& kv : m_impl->callbacks) {
+                    if (kv.second) {
+                        snapshot.emplace_back(kv.first, kv.second);
+                    }
+                }
+            }
+            for (const auto& [id, callback] : snapshot) {
+                try {
+                    callback(result);
+                }
+                catch (const std::exception& e) {
+                    SS_LOG_ERROR(LOG_CATEGORY, L"Callback %llu threw exception: %hs", id, e.what());
+                }
+                catch (...) {
+                    SS_LOG_ERROR(LOG_CATEGORY, L"Callback %llu threw unknown exception", id);
+                }
+            }
+        }
+
+        // ============================================================================
+        // UTILITY FUNCTIONS
+        // ============================================================================
+
+        double CalculateMousePathEntropy(
+            const std::vector<std::pair<int32_t, int32_t>>& movements
+        ) noexcept {
+            if (movements.size() < 3) return 0.0;
+
+            // Calculate angles between consecutive segments
+            std::vector<double> angles;
+            angles.reserve(movements.size() - 2);
+
+            for (size_t i = 1; i < movements.size() - 1; ++i) {
+                double dx1 = static_cast<double>(movements[i].first - movements[i - 1].first);
+                double dy1 = static_cast<double>(movements[i].second - movements[i - 1].second);
+                double dx2 = static_cast<double>(movements[i + 1].first - movements[i].first);
+                double dy2 = static_cast<double>(movements[i + 1].second - movements[i].second);
+
+                double len1 = std::sqrt(dx1 * dx1 + dy1 * dy1);
+                double len2 = std::sqrt(dx2 * dx2 + dy2 * dy2);
+
+                if (len1 > 0.001 && len2 > 0.001) {
+                    double dot = dx1 * dx2 + dy1 * dy2;
+                    double cosAngle = dot / (len1 * len2);
+                    cosAngle = std::clamp(cosAngle, -1.0, 1.0);
+                    angles.push_back(std::acos(cosAngle));
+                }
+            }
+
+            if (angles.empty()) return 0.0;
+
+            // Calculate entropy of angle distribution
+            // Bin angles into 8 buckets (0-45, 45-90, etc.)
+            constexpr int BUCKETS = 8;
+            std::array<int, BUCKETS> histogram{};
+
+            for (double angle : angles) {
+                int bucket = static_cast<int>((angle / M_PI) * BUCKETS);
+                bucket = std::clamp(bucket, 0, BUCKETS - 1);
+                histogram[bucket]++;
+            }
+
+            // Shannon entropy
+            double entropy = 0.0;
+            double total = static_cast<double>(angles.size());
+
+            for (int count : histogram) {
+                if (count > 0) {
+                    double p = static_cast<double>(count) / total;
+                    entropy -= p * std::log2(p);
+                }
+            }
+
+            // Normalize to 0-1 (max entropy = log2(BUCKETS))
+            return entropy / std::log2(BUCKETS);
+        }
+
+        double CalculateStraightLineRatio(
+            const std::vector<std::pair<int32_t, int32_t>>& movements
+        ) noexcept {
+            if (movements.size() < 2) return 1.0;
+
+            // Calculate actual path length
+            double pathLength = 0.0;
+            for (size_t i = 1; i < movements.size(); ++i) {
+                double dx = static_cast<double>(movements[i].first - movements[i - 1].first);
+                double dy = static_cast<double>(movements[i].second - movements[i - 1].second);
+                pathLength += std::sqrt(dx * dx + dy * dy);
+            }
+
+            // Calculate straight-line distance
+            double dx = static_cast<double>(movements.back().first - movements.front().first);
+            double dy = static_cast<double>(movements.back().second - movements.front().second);
+            double straightDistance = std::sqrt(dx * dx + dy * dy);
+
+            if (pathLength < 0.001) return 1.0;
+
+            // Ratio of straight distance to path length (1.0 = perfectly straight)
+            return straightDistance / pathLength;
+        }
+
+        // ============================================================================
+        // TYPE B: Per-Process Sandbox Evasion Analysis
+        // ============================================================================
+
+        // Known sandbox-detection API imports to look for in target processes
+        namespace SandboxDetectionAPIs {
+            static constexpr const char* HARDWARE_APIS[] = {
+                "GlobalMemoryStatusEx", "GetSystemInfo", "GetNativeSystemInfo",
+                "GetDiskFreeSpaceExW", "GetDiskFreeSpaceExA",
+                "GetLogicalProcessorInformation", "GetLogicalProcessorInformationEx",
+                "SetupDiGetClassDevsW", "SetupDiEnumDeviceInfo",
+                "GetDeviceCaps"
+            };
+
+            static constexpr const char* TIMING_APIS[] = {
+                "GetTickCount", "GetTickCount64",
+                "QueryPerformanceCounter", "QueryPerformanceFrequency",
+                "NtQuerySystemTime", "GetSystemTimeAsFileTime"
+            };
+
+            static constexpr const char* ENVIRONMENT_APIS[] = {
+                "GetSystemMetrics", "EnumDisplayDevicesW", "EnumDisplaySettingsW",
+                "GetComputerNameW", "GetComputerNameA",
+                "GetUserNameW", "GetUserNameA",
+                "GetTimeZoneInformation", "GetLocaleInfoW",
+                "GetUserDefaultLCID", "GetSystemDefaultLCID"
+            };
+
+            static constexpr const char* ARTIFACT_APIS[] = {
+                "GetModuleHandleW", "GetModuleHandleA",
+                "OpenMutexW", "OpenMutexA",
+                "CreateToolhelp32Snapshot", "Process32FirstW", "Process32NextW",
+                "EnumServicesStatusExW",
+                "RegOpenKeyExW", "RegQueryValueExW",
+                "FindFirstFileW", "FindNextFileW"
+            };
+
+            static constexpr const char* HUMAN_INTERACTION_APIS[] = {
+                "GetCursorPos", "GetAsyncKeyState", "GetKeyState",
+                "GetLastInputInfo", "GetForegroundWindow",
+                "GetWindowTextW", "EnumWindows",
+                "SetWindowsHookExW"
+            };
+        } // namespace SandboxDetectionAPIs
+
+        // Known sandbox-related strings to scan for in target process memory
+        namespace SandboxStrings {
+            static const std::vector<std::wstring> SANDBOX_DLLS = {
+                L"sbiedll.dll", L"api_log.dll", L"dir_watch.dll",
+                L"pstorec.dll", L"vmcheck.dll", L"wpespy.dll",
+                L"SbieDll.dll", L"SxIn.dll", L"Sf2.dll",
+                L"snxhk.dll", L"cmdvrt32.dll", L"cmdvrt64.dll"
+            };
+
+            static const std::vector<std::wstring> SANDBOX_PROCESSES = {
+                L"vmsrvc.exe", L"vboxservice.exe", L"vboxtray.exe",
+                L"vmtoolsd.exe", L"vmwaretray.exe", L"vmwareuser.exe",
+                L"wireshark.exe", L"procmon.exe", L"procmon64.exe",
+                L"ollydbg.exe", L"x64dbg.exe", L"x32dbg.exe",
+                L"idaq.exe", L"idaq64.exe", L"pestudio.exe",
+                L"regmon.exe", L"filemon.exe", L"autoruns.exe",
+                L"agent.py", L"analyzer.py"
+            };
+
+            static const std::vector<std::wstring> SANDBOX_MUTEXES = {
+                L"CuckooMutex", L"SbieSandbox", L"SBIE_BOXED_",
+                L"JoeBoxMutex", L"Anubis_Sandbox",
+                L"ThreatExpert", L"HookSwitchMutex"
+            };
+
+            static const std::vector<std::wstring> VM_VENDOR_STRINGS = {
+                L"VMware", L"VirtualBox", L"QEMU", L"Xen",
+                L"Virtual HD", L"VBOX HARDDISK",
+                L"VMware Virtual", L"VMWARE", L"innotek GmbH",
+                L"Oracle Corporation", L"Parallels"
+            };
+
+            static const std::vector<std::wstring> SANDBOX_REGISTRY_PATHS = {
+                L"SOFTWARE\\Oracle\\VirtualBox",
+                L"SOFTWARE\\VMware, Inc.\\VMware Tools",
+                L"SYSTEM\\CurrentControlSet\\Services\\VBoxGuest",
+                L"SYSTEM\\CurrentControlSet\\Services\\VBoxMouse",
+                L"SYSTEM\\CurrentControlSet\\Services\\vmci",
+                L"SYSTEM\\CurrentControlSet\\Services\\vmhgfs",
+                L"HARDWARE\\DEVICEMAP\\Scsi\\Scsi Port 0",
+                L"HARDWARE\\Description\\System\\SystemBiosVersion"
+            };
+        } // namespace SandboxStrings
+
+        bool SandboxEvasionDetector::AnalyzeProcess(
+            HANDLE hProcess,
+            uint32_t processId,
+            ProcessSandboxResult& result,
+            const ProcessSandboxConfig& config
+        ) {
+            if (!m_impl->initialized.load(std::memory_order_acquire)) {
+                SS_LOG_ERROR(LOG_CATEGORY, L"SandboxEvasionDetector not initialized");
+                return false;
+            }
+
+            auto startTime = std::chrono::steady_clock::now();
+            result = ProcessSandboxResult{};
+            result.processId = processId;
+
+            try {
+                // Get process path for PE analysis
+                std::wstring processPath;
+                if (!config.kernelContext.imagePath.empty()) {
+                    processPath = config.kernelContext.imagePath;
+                } else {
+                    wchar_t pathBuf[MAX_PATH] = {};
+                    DWORD pathSize = MAX_PATH;
+                    if (QueryFullProcessImageNameW(hProcess, 0, pathBuf, &pathSize)) {
+                        processPath = pathBuf;
+                    }
+                }
+
+                bool is64Bit = true;
+                {
+                    BOOL isWow64 = FALSE;
+                    if (IsWow64Process(hProcess, &isWow64)) {
+                        is64Bit = !isWow64;
+                    }
+                }
+
+                // TYPE B Check 1: Import analysis
+                if (config.checkImports && !processPath.empty()) {
+                    CheckTargetSandboxImports(hProcess, processPath, result);
+                }
+
+                // TYPE B Check 2: Memory string scan
+                if (config.checkMemoryStrings) {
+                    CheckTargetSandboxStrings(hProcess, result, config.maxMemoryScanBytes);
+                }
+
+                // TYPE B Check 3: Code pattern analysis (RDTSC, CPUID, etc.)
+                if (config.checkCodePatterns && !processPath.empty()) {
+                    CheckTargetTimingPatterns(hProcess, processPath, is64Bit, result, config.maxCodeScanBytes);
+                }
+
+                // Calculate final score
+                CalculateProcessEvasionScore(result);
+
+                auto endTime = std::chrono::steady_clock::now();
+                result.analysisDurationUs = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        endTime - startTime).count());
+
+                // Fire callback if evasion detected
+                if (result.hasEvasionCapability) {
+                    std::shared_lock lock(m_impl->configMutex);
+                    if (m_impl->processDetectionCallback) {
+                        try {
+                            m_impl->processDetectionCallback(result);
+                        } catch (...) {
+                            SS_LOG_ERROR(LOG_CATEGORY, L"Exception in process sandbox detection callback");
+                        }
+                    }
+                }
+
+                m_impl->stats.totalScans.fetch_add(1, std::memory_order_relaxed);
+                if (result.hasEvasionCapability) {
+                    m_impl->stats.sandboxesDetected.fetch_add(1, std::memory_order_relaxed);
+                }
+                // EMA of per-process analysis duration (alpha = 1/8) — see ScanSystem
+                // for the matching update on full-system scans.
+                {
+                    uint64_t prev = m_impl->stats.avgAnalysisDurationUs.load(std::memory_order_relaxed);
+                    for (;;) {
+                        const uint64_t next = (prev == 0)
+                            ? result.analysisDurationUs
+                            : prev - (prev >> 3) + (result.analysisDurationUs >> 3);
+                        if (m_impl->stats.avgAnalysisDurationUs.compare_exchange_weak(
+                                prev, next, std::memory_order_relaxed)) {
+                            break;
+                        }
+                    }
+                }
+
+                SS_LOG_DEBUG(LOG_CATEGORY,
+                    L"Process sandbox analysis PID %lu: score=%.1f evasive=%ls duration=%lluus",
+                    processId, result.evasionScore,
+                    result.hasEvasionCapability ? L"YES" : L"NO",
+                    result.analysisDurationUs);
+
+                return true;
+            }
+            catch (const std::exception& e) {
+                SS_LOG_ERROR(LOG_CATEGORY, L"AnalyzeProcess failed for PID %lu: %hs", processId, e.what());
+                return false;
+            }
+            catch (...) {
+                SS_LOG_ERROR(LOG_CATEGORY, L"AnalyzeProcess failed for PID %lu: unknown exception", processId);
+                return false;
+            }
+        }
+
+        bool SandboxEvasionDetector::AnalyzeProcess(
+            uint32_t processId,
+            ProcessSandboxResult& result,
+            const ProcessSandboxConfig& config
+        ) {
+            HANDLE hProcess = OpenProcess(
+                PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, processId);
+            if (!hProcess) {
+                SS_LOG_WARN(LOG_CATEGORY, L"Cannot open process %lu for sandbox analysis: %lu",
+                    processId, GetLastError());
+                return false;
+            }
+
+            // RAII guard so the handle is released on every path, including any
+            // future code that adds early returns. Replaces the prior dead-code
+            // try/catch (CloseHandle was already unconditional after the try block).
+            struct HandleGuard {
+                HANDLE h;
+                ~HandleGuard() { if (h && h != INVALID_HANDLE_VALUE) CloseHandle(h); }
+            } guard{ hProcess };
+
+            return AnalyzeProcess(hProcess, processId, result, config);
+        }
+
+        void SandboxEvasionDetector::SetProcessDetectionCallback(ProcessSandboxCallback callback) {
+            std::unique_lock lock(m_impl->configMutex);
+            m_impl->processDetectionCallback = std::move(callback);
+        }
+
+        void SandboxEvasionDetector::CheckTargetSandboxImports(
+            HANDLE hProcess,
+            const std::wstring& processPath,
+            ProcessSandboxResult& result
+        ) {
+            try {
+                PEParser::PEParser parser;
+                PEParser::PEInfo peInfo;
+
+                if (!parser.ParseFile(processPath, peInfo, nullptr)) {
+                    return;
+                }
+
+                std::vector<PEParser::ImportInfo> imports;
+                if (!parser.ParseImports(imports, nullptr)) {
+                    return;
+                }
+
+                // Build a set of all imported function names for fast lookup
+                std::unordered_set<std::string> importedFunctions;
+                for (const auto& dll : imports) {
+                    for (const auto& func : dll.functions) {
+                        if (!func.byOrdinal && !func.name.empty()) {
+                            importedFunctions.insert(func.name);
+                        }
+                    }
+                }
+
+                // Check hardware fingerprinting APIs
+                for (const auto& api : SandboxDetectionAPIs::HARDWARE_APIS) {
+                    if (importedFunctions.count(api)) {
+                        result.imports.hardwareFingerprinting.push_back(
+                            Utils::StringUtils::ToWide(api));
+                    }
+                }
+
+                // Check timing APIs
+                for (const auto& api : SandboxDetectionAPIs::TIMING_APIS) {
+                    if (importedFunctions.count(api)) {
+                        result.imports.timingAPIs.push_back(
+                            Utils::StringUtils::ToWide(api));
+                    }
+                }
+
+                // Check environment query APIs
+                for (const auto& api : SandboxDetectionAPIs::ENVIRONMENT_APIS) {
+                    if (importedFunctions.count(api)) {
+                        result.imports.environmentQueries.push_back(
+                            Utils::StringUtils::ToWide(api));
+                    }
+                }
+
+                // Check artifact detection APIs
+                for (const auto& api : SandboxDetectionAPIs::ARTIFACT_APIS) {
+                    if (importedFunctions.count(api)) {
+                        result.imports.artifactChecks.push_back(
+                            Utils::StringUtils::ToWide(api));
+                    }
+                }
+
+                // Check human interaction detection APIs
+                for (const auto& api : SandboxDetectionAPIs::HUMAN_INTERACTION_APIS) {
+                    if (importedFunctions.count(api)) {
+                        result.imports.humanInteractionChecks.push_back(
+                            Utils::StringUtils::ToWide(api));
+                    }
+                }
+
+                // Score based on COMBINATION of suspicious imports
+                // Individual APIs like GetTickCount are benign; it's the combination that matters
+                float importScore = 0.0f;
+                size_t hwCount = result.imports.hardwareFingerprinting.size();
+                size_t timCount = result.imports.timingAPIs.size();
+                size_t envCount = result.imports.environmentQueries.size();
+                size_t artCount = result.imports.artifactChecks.size();
+                size_t humCount = result.imports.humanInteractionChecks.size();
+
+                // Hardware fingerprinting: 3+ APIs is suspicious
+                if (hwCount >= 3) importScore += 15.0f;
+                else if (hwCount >= 2) importScore += 5.0f;
+
+                // Timing + hardware combination = sandbox detection pattern
+                if (timCount >= 2 && hwCount >= 2) importScore += 20.0f;
+
+                // Artifact checking APIs (GetModuleHandle + OpenMutex + process enumeration)
+                if (artCount >= 4) importScore += 15.0f;
+                else if (artCount >= 2) importScore += 5.0f;
+
+                // Human interaction checking
+                if (humCount >= 3) importScore += 15.0f;
+                else if (humCount >= 2) importScore += 5.0f;
+
+                // Environment fingerprinting
+                if (envCount >= 3) importScore += 10.0f;
+
+                // Cross-category combinations (strongest signal)
+                size_t categoriesHit = 0;
+                if (hwCount >= 2) categoriesHit++;
+                if (timCount >= 2) categoriesHit++;
+                if (artCount >= 2) categoriesHit++;
+                if (humCount >= 2) categoriesHit++;
+                if (envCount >= 2) categoriesHit++;
+
+                if (categoriesHit >= 4) importScore += 25.0f;
+                else if (categoriesHit >= 3) importScore += 15.0f;
+                else if (categoriesHit >= 2) importScore += 5.0f;
+
+                result.imports.score = std::min(importScore, 100.0f);
+            }
+            catch (...) {
+                SS_LOG_ERROR(LOG_CATEGORY, L"CheckTargetSandboxImports: Exception for PID %lu", result.processId);
+            }
+        }
+
+        void SandboxEvasionDetector::CheckTargetSandboxStrings(
+            HANDLE hProcess,
+            ProcessSandboxResult& result,
+            size_t maxScanBytes
+        ) {
+            try {
+                MEMORY_BASIC_INFORMATION mbi = {};
+                uint8_t* address = nullptr;
+                size_t totalScanned = 0;
+                constexpr size_t SCAN_BUFFER_SIZE = 64 * 1024; // 64KB chunks
+                std::vector<uint8_t> buffer(SCAN_BUFFER_SIZE);
+
+                constexpr size_t MAX_STRING_FINDINGS = 200;
+
+                while (VirtualQueryEx(hProcess, address, &mbi, sizeof(mbi)) == sizeof(mbi)) {
+                    if (totalScanned >= maxScanBytes) break;
+
+                    // Pointer overflow guard
+                    uintptr_t nextAddr = reinterpret_cast<uintptr_t>(address) + mbi.RegionSize;
+                    if (nextAddr < reinterpret_cast<uintptr_t>(address)) break;
+                    address = reinterpret_cast<uint8_t*>(nextAddr);
+
+                    // Only scan committed, readable regions
+                    if (mbi.State != MEM_COMMIT) continue;
+                    if (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) continue;
+
+                    // Cap per-region scan
+                    size_t regionScanSize = std::min<size_t>(mbi.RegionSize, 1024 * 1024);
+                    size_t offset = 0;
+
+                    while (offset < regionScanSize) {
+                        size_t chunkSize = std::min(SCAN_BUFFER_SIZE, regionScanSize - offset);
+                        SIZE_T bytesRead = 0;
+
+                        void* readAddr = reinterpret_cast<void*>(
+                            reinterpret_cast<uintptr_t>(mbi.BaseAddress) + offset);
+
+                        if (!ReadProcessMemory(hProcess, readAddr, buffer.data(), chunkSize, &bytesRead) ||
+                            bytesRead == 0) {
+                            break;
+                        }
+
+                        totalScanned += bytesRead;
+
+                        // Scan for wide strings (most Windows APIs use wide strings)
+                        std::wstring_view wideView(
+                            reinterpret_cast<const wchar_t*>(buffer.data()),
+                            bytesRead / sizeof(wchar_t));
+
+                        // Check sandbox DLL names
+                        for (const auto& dll : SandboxStrings::SANDBOX_DLLS) {
+                            if (result.strings.sandboxDLLNames.size() >= MAX_STRING_FINDINGS) break;
+                            if (wideView.find(dll) != std::wstring_view::npos) {
+                                if (std::find(result.strings.sandboxDLLNames.begin(),
+                                    result.strings.sandboxDLLNames.end(), dll) ==
+                                    result.strings.sandboxDLLNames.end()) {
+                                    result.strings.sandboxDLLNames.push_back(dll);
+                                }
+                            }
+                        }
+
+                        // Check sandbox process names
+                        for (const auto& proc : SandboxStrings::SANDBOX_PROCESSES) {
+                            if (result.strings.sandboxProcessNames.size() >= MAX_STRING_FINDINGS) break;
+                            if (wideView.find(proc) != std::wstring_view::npos) {
+                                if (std::find(result.strings.sandboxProcessNames.begin(),
+                                    result.strings.sandboxProcessNames.end(), proc) ==
+                                    result.strings.sandboxProcessNames.end()) {
+                                    result.strings.sandboxProcessNames.push_back(proc);
+                                }
+                            }
+                        }
+
+                        // Check sandbox mutex names
+                        for (const auto& mutex : SandboxStrings::SANDBOX_MUTEXES) {
+                            if (result.strings.sandboxMutexNames.size() >= MAX_STRING_FINDINGS) break;
+                            if (wideView.find(mutex) != std::wstring_view::npos) {
+                                if (std::find(result.strings.sandboxMutexNames.begin(),
+                                    result.strings.sandboxMutexNames.end(), mutex) ==
+                                    result.strings.sandboxMutexNames.end()) {
+                                    result.strings.sandboxMutexNames.push_back(mutex);
+                                }
+                            }
+                        }
+
+                        // Check VM vendor strings
+                        for (const auto& vm : SandboxStrings::VM_VENDOR_STRINGS) {
+                            if (result.strings.vmVendorStrings.size() >= MAX_STRING_FINDINGS) break;
+                            if (wideView.find(vm) != std::wstring_view::npos) {
+                                if (std::find(result.strings.vmVendorStrings.begin(),
+                                    result.strings.vmVendorStrings.end(), vm) ==
+                                    result.strings.vmVendorStrings.end()) {
+                                    result.strings.vmVendorStrings.push_back(vm);
+                                }
+                            }
+                        }
+
+                        // Check sandbox registry paths
+                        for (const auto& reg : SandboxStrings::SANDBOX_REGISTRY_PATHS) {
+                            if (result.strings.sandboxRegistryPaths.size() >= MAX_STRING_FINDINGS) break;
+                            if (wideView.find(reg) != std::wstring_view::npos) {
+                                if (std::find(result.strings.sandboxRegistryPaths.begin(),
+                                    result.strings.sandboxRegistryPaths.end(), reg) ==
+                                    result.strings.sandboxRegistryPaths.end()) {
+                                    result.strings.sandboxRegistryPaths.push_back(reg);
+                                }
+                            }
+                        }
+
+                        // Also check ANSI strings
+                        std::string_view ansiView(
+                            reinterpret_cast<const char*>(buffer.data()), bytesRead);
+
+                        // Check for sandbox product names in ANSI
+                        for (const auto& product : SandboxStrings::SANDBOX_PROCESSES) {
+                            if (result.strings.sandboxProcessNames.size() >= MAX_STRING_FINDINGS) break;
+                            std::string ansiProduct = Utils::StringUtils::ToNarrow(product);
+                            if (ansiView.find(ansiProduct) != std::string_view::npos) {
+                                if (std::find(result.strings.sandboxProcessNames.begin(),
+                                    result.strings.sandboxProcessNames.end(), product) ==
+                                    result.strings.sandboxProcessNames.end()) {
+                                    result.strings.sandboxProcessNames.push_back(product);
+                                }
+                            }
+                        }
+
+                        offset += bytesRead;
+                    }
+                }
+
+                // Score based on string findings
+                float stringScore = 0.0f;
+                size_t dllCount = result.strings.sandboxDLLNames.size();
+                size_t procCount = result.strings.sandboxProcessNames.size();
+                size_t mutexCount = result.strings.sandboxMutexNames.size();
+                size_t vmCount = result.strings.vmVendorStrings.size();
+                size_t regCount = result.strings.sandboxRegistryPaths.size();
+
+                // Sandbox DLL strings are strong indicators
+                if (dllCount >= 3) stringScore += 30.0f;
+                else if (dllCount >= 1) stringScore += 15.0f;
+
+                // Process name strings
+                if (procCount >= 5) stringScore += 20.0f;
+                else if (procCount >= 2) stringScore += 10.0f;
+
+                // Mutex names (very specific to sandbox detection)
+                if (mutexCount >= 2) stringScore += 25.0f;
+                else if (mutexCount >= 1) stringScore += 15.0f;
+
+                // VM vendor strings (moderate signal — could be legitimate VM tools)
+                if (vmCount >= 3) stringScore += 10.0f;
+                else if (vmCount >= 1) stringScore += 5.0f;
+
+                // Registry paths
+                if (regCount >= 3) stringScore += 15.0f;
+                else if (regCount >= 1) stringScore += 8.0f;
+
+                result.strings.score = std::min(stringScore, 100.0f);
+            }
+            catch (...) {
+                SS_LOG_ERROR(LOG_CATEGORY, L"CheckTargetSandboxStrings: Exception for PID %lu", result.processId);
+            }
+        }
+
+        void SandboxEvasionDetector::CheckTargetTimingPatterns(
+            HANDLE hProcess,
+            const std::wstring& processPath,
+            bool is64Bit,
+            ProcessSandboxResult& result,
+            size_t maxCodeScanBytes
+        ) {
+            try {
+                if (!m_impl->disasmInitialized) {
+                    return;
+                }
+
+                PEParser::PEParser parser;
+                PEParser::PEInfo peInfo;
+
+                if (!parser.ParseFile(processPath, peInfo, nullptr)) {
+                    return;
+                }
+
+                // Get target module base
+                constexpr DWORD MAX_MODULES = 256;
+                HMODULE hModules[MAX_MODULES] = {};
+                DWORD cbNeeded = 0;
+
+                if (!EnumProcessModulesEx(hProcess, hModules, sizeof(hModules), &cbNeeded, LIST_MODULES_ALL) ||
+                    cbNeeded == 0) {
+                    return;
+                }
+
+                HMODULE hTargetModule = nullptr;
+                DWORD moduleCount = static_cast<DWORD>(
+                    std::min<size_t>(cbNeeded / sizeof(HMODULE), MAX_MODULES));
+                for (DWORD i = 0; i < moduleCount; ++i) {
+                    wchar_t modPath[MAX_PATH] = {};
+                    if (GetModuleFileNameExW(hProcess, hModules[i], modPath, MAX_PATH)) {
+                        if (_wcsicmp(modPath, processPath.c_str()) == 0) {
+                            hTargetModule = hModules[i];
+                            break;
+                        }
+                    }
+                }
+                if (!hTargetModule) return;
+
+                size_t totalCodeScanned = 0;
+
+                Phantom::Disasm::Decoder* decoder = m_impl->GetDecoder(is64Bit);
+
+                for (const auto& section : peInfo.sections) {
+                    if (!section.hasCode) continue;
+                    if (totalCodeScanned >= maxCodeScanBytes) break;
+
+                    // CORRECTNESS FIX: when reading from a *loaded* image, the in-memory
+                    // section is sized by virtualSize (rawSize is the on-disk size and
+                    // is often smaller — sometimes 0 for .bss-style sections — which
+                    // would clamp the scan and miss code that only exists at runtime).
+                    size_t scanSize = std::min<size_t>(section.virtualSize, 1024 * 1024);
+                    if (scanSize == 0) continue;
+                    std::vector<uint8_t> codeBuffer(scanSize);
+                    SIZE_T bytesRead = 0;
+
+                    void* sectionAddr = reinterpret_cast<void*>(
+                        reinterpret_cast<uintptr_t>(hTargetModule) + section.virtualAddress);
+
+                    if (!ReadProcessMemory(hProcess, sectionAddr, codeBuffer.data(), scanSize, &bytesRead) ||
+                        bytesRead == 0) {
+                        continue;
+                    }
+
+                    totalCodeScanned += bytesRead;
+
+                    // Disassemble and look for sandbox-detection instruction patterns
+                    Phantom::Disasm::DecodedInstruction instruction;
+                    Phantom::Disasm::DecodedOperand operands[Phantom::Disasm::MAX_OPERANDS];
+                    size_t disOffset = 0;
+                    bool lastWasRDTSC = false;
+                    size_t instructionsSinceRDTSC = 0;
+
+                    while (disOffset < bytesRead) {
+                        if (Phantom::Disasm::IsSuccess(
+                            decoder->DecodeFull(codeBuffer.data() + disOffset,
+                            bytesRead - disOffset, instruction, operands))) {
+
+                            switch (instruction.mnemonic) {
+                            case Phantom::Disasm::Mnemonic::RDTSC:
+                            case Phantom::Disasm::Mnemonic::RDTSCP:
+                                result.codePatterns.rdtscInstructions++;
+                                if (lastWasRDTSC && instructionsSinceRDTSC <= 20) {
+                                    // RDTSC sandwich pattern — strong sandbox detection signal
+                                    result.codePatterns.timingSandwiches++;
+                                }
+                                lastWasRDTSC = true;
+                                instructionsSinceRDTSC = 0;
+                                break;
+
+                            case Phantom::Disasm::Mnemonic::CPUID:
+                                result.codePatterns.cpuidInstructions++;
+                                // CPUID near RDTSC = VM exit measurement
+                                if (lastWasRDTSC && instructionsSinceRDTSC <= 10) {
+                                    result.codePatterns.vmExitProbes++;
+                                }
+                                break;
+
+                            case Phantom::Disasm::Mnemonic::IN_INST:
+                                // IN instruction — check for VMware backdoor port 0x5658
+                                if (instruction.operand_count >= 2 &&
+                                    operands[1].type == Phantom::Disasm::OperandType::IMMEDIATE &&
+                                    operands[1].imm.value.u == 0x5658) {
+                                    result.codePatterns.portProbes++;
+                                }
+                                break;
+
+                            default:
+                                if (lastWasRDTSC) {
+                                    instructionsSinceRDTSC++;
+                                    if (instructionsSinceRDTSC > 50) {
+                                        lastWasRDTSC = false;
+                                    }
+                                }
+                                break;
+                            }
+
+                            disOffset += instruction.length;
+                        } else {
+                            disOffset++;
+                        }
+                    }
+                }
+
+                // Score based on code pattern findings
+                float codeScore = 0.0f;
+
+                // RDTSC sandwich is a very strong signal
+                if (result.codePatterns.timingSandwiches >= 3) codeScore += 35.0f;
+                else if (result.codePatterns.timingSandwiches >= 1) codeScore += 20.0f;
+
+                // VM exit probes (CPUID near RDTSC)
+                if (result.codePatterns.vmExitProbes >= 2) codeScore += 25.0f;
+                else if (result.codePatterns.vmExitProbes >= 1) codeScore += 15.0f;
+
+                // Port probes (VMware backdoor)
+                if (result.codePatterns.portProbes >= 1) codeScore += 20.0f;
+
+                // Excessive CPUID usage (beyond normal)
+                if (result.codePatterns.cpuidInstructions >= 10) codeScore += 10.0f;
+
+                // Many RDTSC instructions
+                if (result.codePatterns.rdtscInstructions >= 20) codeScore += 10.0f;
+
+                result.codePatterns.score = std::min(codeScore, 100.0f);
+            }
+            catch (...) {
+                SS_LOG_ERROR(LOG_CATEGORY, L"CheckTargetTimingPatterns: Exception for PID %lu", result.processId);
+            }
+        }
+
+        void SandboxEvasionDetector::CalculateProcessEvasionScore(ProcessSandboxResult& result) {
+            // Weighted combination of all three analysis scores
+            constexpr float IMPORT_WEIGHT = 0.30f;
+            constexpr float STRING_WEIGHT = 0.40f;
+            constexpr float CODE_WEIGHT = 0.30f;
+
+            result.evasionScore = std::min(100.0f,
+                result.imports.score * IMPORT_WEIGHT +
+                result.strings.score * STRING_WEIGHT +
+                result.codePatterns.score * CODE_WEIGHT);
+
+            // Threshold for evasion capability
+            constexpr float EVASION_THRESHOLD = 25.0f;
+            result.hasEvasionCapability = (result.evasionScore >= EVASION_THRESHOLD);
+
+            // Add MITRE ATT&CK mappings
+            if (result.imports.score > 0 || result.strings.score > 0 || result.codePatterns.score > 0) {
+                result.mitreIds.push_back("T1497");      // Virtualization/Sandbox Evasion
+                result.mitreIds.push_back("T1497.001");  // System Checks
+            }
+            if (result.codePatterns.timingSandwiches > 0 || result.codePatterns.vmExitProbes > 0) {
+                result.mitreIds.push_back("T1497.003");  // Time Based Evasion
+            }
+            if (!result.strings.sandboxProcessNames.empty() || !result.imports.artifactChecks.empty()) {
+                result.mitreIds.push_back("T1057");      // Process Discovery
+            }
+            if (!result.strings.sandboxRegistryPaths.empty()) {
+                result.mitreIds.push_back("T1012");      // Query Registry
+            }
+            if (!result.imports.humanInteractionChecks.empty()) {
+                result.mitreIds.push_back("T1497.002");  // User Activity Based Checks
+            }
+        }
+
+    } // namespace AntiEvasion
+} // namespace ShadowStrike

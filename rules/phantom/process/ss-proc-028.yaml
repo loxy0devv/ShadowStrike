@@ -1,0 +1,55 @@
+id: ss-proc-028
+detection_name: "Win32/Net.UserGroup.Enumeration"
+description: "Detects net.exe or net1.exe used to enumerate local and domain users, groups, and memberships. This is a standard discovery step in post-exploitation, allowing attackers to identify privileged accounts and group memberships prior to lateral movement or credential targeting."
+scope: process
+severity: medium
+status: stable
+source: native
+confidence: 0.75
+weight: 1.5
+version: 1
+
+attack:
+  - tactic: TA0007
+    technique: T1069
+    name: "Permission Groups Discovery"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1069/"
+    title: "ATT&CK T1069"
+
+logic:
+  and:
+    - field_in:
+        field: process.name
+        values:
+          - net.exe
+          - net1.exe
+        case_insensitive: true
+    - or:
+        - field_regex:
+            field: process.command_line
+            pattern: "(?i)net\\s+(user|users)"
+        - field_regex:
+            field: process.command_line
+            pattern: "(?i)net\\s+(group|groups|localgroup)"
+        - field_regex:
+            field: process.command_line
+            pattern: "(?i)net\\s+accounts"
+        - field_regex:
+            field: process.command_line
+            pattern: "(?i)net\\s+view\\s+/domain"
+
+fp_guard:
+  notes:
+    - "Helpdesk staff and system administrators routinely run net user/group commands. Correlate with user context and frequency."
+    - "Monitoring and inventory solutions may execute these commands periodically."
+    - "High volume from a single non-admin user within a short timeframe is more suspicious."
+  suppress:
+    - field: process.parent.name
+      values:
+        - cmd.exe
+    - field: process.user
+      values:
+        - "DOMAIN\\svc_monitoring"
+        - "DOMAIN\\helpdesk"

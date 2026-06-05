@@ -1,0 +1,50 @@
+id: ss-net-001
+detection_name: "Win32/C2.Beaconing"
+description: "Periodic outbound connections to a single external host from an unsigned or anomalous process."
+scope: network
+severity: high
+status: stable
+source: native
+confidence: 0.70
+weight: 2.0
+version: 1
+
+attack:
+  - tactic: TA0011
+    technique: T1071
+    name: "Application Layer Protocol"
+  - tactic: TA0011
+    technique: T1571
+    name: "Non-Standard Port"
+
+logic:
+  and:
+    - field_equals:
+        field: network.direction
+        value: "outbound"
+    - field_exists:
+        field: network.destination.ip
+    - or:
+        - lacks_mitigation:
+            field: process.mitigation.dynamic_code_prohibited
+        - field_equals:
+            field: file.signer.signed
+            value: "false"
+    - field_not_in:
+        field: process.name
+        values:
+          - chrome.exe
+          - msedge.exe
+          - firefox.exe
+          - iexplore.exe
+          - OneDrive.exe
+          - MicrosoftEdgeUpdate.exe
+          - MsMpEng.exe
+          - svchost.exe
+          - lsass.exe
+        case_insensitive: true
+
+fp_guard:
+  notes:
+    - "Unsigned updaters and telemetry agents may trigger this. Correlate with other behavioral signals."
+    - "Threshold: escalate only when combined with process score >= 25."

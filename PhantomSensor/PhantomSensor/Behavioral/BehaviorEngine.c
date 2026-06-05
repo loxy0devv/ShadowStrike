@@ -1,0 +1,5018 @@
+﻿/*
+ * ShadowStrike - Enterprise NGAV/EDR Platform
+ * Copyright (C) 2026 ShadowStrike Security
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+/**
+ * ============================================================================
+ * ShadowStrike NGAV - ENTERPRISE BEHAVIORAL ENGINE IMPLEMENTATION
+ * ============================================================================
+ *
+ * @file BehaviorEngine.c
+ * @brief Enterprise-grade behavioral analysis engine for kernel EDR.
+ *
+ * Implements Enterprise-grade behavioral detection:
+ * - Real-time event correlation and attack chain tracking
+ * - MITRE ATT&CK technique detection and mapping
+ * - Multi-stage attack chain construction
+ * - Threat scoring with weighted factor analysis
+ * - Process behavioral context tracking
+ * - Rule-based detection with compiled conditions
+ * - Anomaly detection baselines
+ * - Automatic remediation support
+ *
+ * Architecture:
+ * - Asynchronous event processing via worker thread
+ * - Lock-free event queue for high-throughput submission
+ * - Per-process behavioral context with reference counting
+ * - Attack chain correlation across process boundaries
+ * - Lookaside list allocation for hot paths
+ *
+ * BSOD PREVENTION:
+ * - Proper IRQL handling throughout
+ * - Safe resource acquisition ordering
+ * - Graceful shutdown with pending operation tracking
+ * - Memory allocation failure handling
+ * - Reference counting for all shared structures
+ *
+ * LOCK HIERARCHY (MUST BE ACQUIRED IN THIS ORDER):
+ * 1. g_BeState.ChainLock (ERESOURCE) - outermost
+ * 2. g_BeState.ProcessLock (ERESOURCE)
+ * 3. g_BeState.RuleLock (ERESOURCE)
+ * 4. g_ChainHashLock (PUSH_LOCK)
+ * 5. g_ProcessHashLock (PUSH_LOCK)
+ * 6. g_BeState.EventQueueLock (SPINLOCK)
+ * 7. Chain->Lock (SPINLOCK) - innermost
+ *
+ * NEVER acquire locks in reverse order to prevent deadlocks.
+ *
+ * Performance Characteristics:
+ * - O(1) process context lookup via hash table
+ * - Lock-free statistics updates
+ * - Batched event processing
+ * - Rate-limited logging
+ *
+ * MITRE ATT&CK Coverage:
+ * - Full Enterprise ATT&CK matrix support
+ * - Technique-to-tactic mapping
+ * - Sub-technique detection
+ * - Kill chain stage tracking
+ *
+ * @author ShadowStrike Security Team
+ * @version 2.1.0 (Enterprise Edition - Security Hardened)
+ * @copyright (c) 2026 ShadowStrike Security. All rights reserved.
+ * ============================================================================
+ */
+
+#pragma warning(push)
+#pragma warning(disable: 4324)
+#include "BehaviorEngine.h"
+#pragma warning(pop)
+
+#include "AttackChainTracker.h"
+#include "RuleEngine.h"
+#include "ThreatScoring.h"
+#include "MITREMapper.h"
+#include "AnomalyDetector.h"
+#include "IOCMatcher.h"
+#include "PatternMatcher.h"
+#include "../Core/Globals.h"
+#include "../Core/DriverEntry.h"
+#include "../Utilities/MemoryUtils.h"
+#include "../Utilities/StringUtils.h"
+#include "../Callbacks/FileSystem/FileBackupEngine.h"
+#include "../ETW/ETWProvider.h"
+#include "../ETW/TelemetryEvents.h"
+#include <ntstrsafe.h>
+
+//
+// PROCESS_TERMINATE is not in WDK km headers
+//
+#ifndef PROCESS_TERMINATE
+#define PROCESS_TERMINATE 0x0001
+#endif
+
+// ============================================================================
+// PRIVATE CONSTANTS
+// ============================================================================
+
+/**
+ * @brief Process context hash table bucket count (power of 2)
+ */
+#define BE_PROCESS_HASH_BUCKETS         1024
+
+/**
+ * @brief Chain hash table bucket count
+ */
+#define BE_CHAIN_HASH_BUCKETS           512
+
+/**
+ * @brief Maximum events to process per worker iteration
+ */
+#define BE_EVENTS_PER_BATCH             100
+
+/**
+ * @brief Worker thread wake interval (ms)
+ */
+#define BE_WORKER_WAKE_INTERVAL_MS      100
+
+/**
+ * @brief Chain cleanup interval (ms)
+ */
+#define BE_CHAIN_CLEANUP_INTERVAL_MS    60000
+
+/**
+ * @brief Process context cleanup age (ms)
+ */
+#define BE_PROCESS_CLEANUP_AGE_MS       300000
+
+/**
+ * @brief Maximum worker shutdown wait retries
+ */
+#define BE_WORKER_SHUTDOWN_RETRIES      3
+
+/**
+ * @brief Worker shutdown wait timeout per retry (100ms units)
+ */
+#define BE_WORKER_SHUTDOWN_TIMEOUT_MS   5000
+
+/**
+ * @brief Lookaside list depths
+ */
+#define BE_EVENT_LOOKASIDE_DEPTH        512
+#define BE_CHAIN_LOOKASIDE_DEPTH        128
+#define BE_ENTRY_LOOKASIDE_DEPTH        1024
+#define BE_CONTEXT_LOOKASIDE_DEPTH      256
+
+/**
+ * @brief Event type to severity mapping thresholds
+ */
+#define BE_SEVERITY_LOW_THRESHOLD       200
+#define BE_SEVERITY_MEDIUM_THRESHOLD    400
+#define BE_SEVERITY_HIGH_THRESHOLD      700
+#define BE_SEVERITY_CRITICAL_THRESHOLD  900
+
+/**
+ * @brief Anomaly detection score boost when statistical deviation detected
+ */
+#define BE_ANOMALY_SCORE_BOOST          200
+
+/**
+ * @brief Maximum process name length
+ */
+#define BE_MAX_PROCESS_NAME             260
+
+// ============================================================================
+// PRIVATE TYPES
+// ============================================================================
+
+/**
+ * @brief Process context hash entry
+ */
+typedef struct _BE_PROCESS_HASH_ENTRY {
+    LIST_ENTRY HashListEntry;
+    PBE_PROCESS_CONTEXT Context;
+} BE_PROCESS_HASH_ENTRY, *PBE_PROCESS_HASH_ENTRY;
+
+/**
+ * @brief Chain hash entry
+ */
+typedef struct _BE_CHAIN_HASH_ENTRY {
+    LIST_ENTRY HashListEntry;
+    PBE_ATTACK_CHAIN Chain;
+} BE_CHAIN_HASH_ENTRY, *PBE_CHAIN_HASH_ENTRY;
+
+/**
+ * @brief Event type to MITRE mapping entry
+ */
+typedef struct _BE_EVENT_MITRE_MAP {
+    BEHAVIOR_EVENT_TYPE EventType;
+    UINT32 MitreTechnique;
+    MITRE_TACTIC PrimaryTactic;
+    UINT32 BaseThreatScore;
+    THREAT_SEVERITY BaseSeverity;
+} BE_EVENT_MITRE_MAP, *PBE_EVENT_MITRE_MAP;
+
+// ============================================================================
+// GLOBAL STATE
+// ============================================================================
+
+/**
+ * @brief Behavioral engine global state
+ */
+static BEHAVIOR_ENGINE_GLOBALS g_BeState = {0};
+
+/**
+ * @brief Process context hash table
+ */
+static LIST_ENTRY g_ProcessHashTable[BE_PROCESS_HASH_BUCKETS];
+static EX_PUSH_LOCK g_ProcessHashLock;
+
+/**
+ * @brief Chain hash table (by chain ID)
+ */
+static LIST_ENTRY g_ChainHashTable[BE_CHAIN_HASH_BUCKETS];
+static EX_PUSH_LOCK g_ChainHashLock;
+
+/**
+ * @brief Subsystem pointers â€” children initialized in BeEngineInitialize, shutdown in BeEngineShutdown.
+ */
+static PACT_TRACKER g_AttackChainTracker;
+static PRE_ENGINE g_RuleEngine;
+static PMM_MAPPER g_MitreMapper;
+static PPM_MATCHER g_PatternMatcher;
+static PIOM_MATCHER g_IocMatcher;
+static PAD_DETECTOR g_AnomalyDetector;
+
+// ============================================================================
+// EVENT TO MITRE MAPPING TABLE
+// ============================================================================
+
+static const BE_EVENT_MITRE_MAP g_EventMitreMap[] = {
+    // Process Execution
+    { BehaviorEvent_ProcessCreate,          MITRE_T1106, Tactic_Execution, 100, ThreatSeverity_Informational },
+    { BehaviorEvent_ChildProcessSpawn,      MITRE_T1106, Tactic_Execution, 150, ThreatSeverity_Low },
+    { BehaviorEvent_CommandLineExecution,   MITRE_T1059, Tactic_Execution, 200, ThreatSeverity_Low },
+    { BehaviorEvent_ScriptExecution,        MITRE_T1059, Tactic_Execution, 300, ThreatSeverity_Medium },
+    { BehaviorEvent_PowerShellExecution,    MITRE_T1059_001, Tactic_Execution, 400, ThreatSeverity_Medium },
+    { BehaviorEvent_WMIExecution,           MITRE_T1047, Tactic_Execution, 350, ThreatSeverity_Medium },
+    { BehaviorEvent_ScheduledTaskCreate,    MITRE_T1053_005, Tactic_Persistence, 450, ThreatSeverity_Medium },
+    { BehaviorEvent_ServiceCreate,          MITRE_T1543_003, Tactic_Persistence, 400, ThreatSeverity_Medium },
+    { BehaviorEvent_DriverLoad,             MITRE_T1547_006, Tactic_Persistence, 600, ThreatSeverity_High },
+    { BehaviorEvent_SuspiciousParentChild,  MITRE_T1055, Tactic_DefenseEvasion, 500, ThreatSeverity_Medium },
+    { BehaviorEvent_LOLBinExecution,        MITRE_T1218, Tactic_DefenseEvasion, 450, ThreatSeverity_Medium },
+
+    // Code Injection
+    { BehaviorEvent_RemoteThreadCreate,     MITRE_T1055_001, Tactic_PrivilegeEscalation, 700, ThreatSeverity_High },
+    { BehaviorEvent_APCQueueInjection,      MITRE_T1055_004, Tactic_PrivilegeEscalation, 750, ThreatSeverity_High },
+    { BehaviorEvent_ProcessHollowing,       MITRE_T1055_012, Tactic_DefenseEvasion, 850, ThreatSeverity_Critical },
+    { BehaviorEvent_ProcessDoppelganging,   MITRE_T1055_013, Tactic_DefenseEvasion, 900, ThreatSeverity_Critical },
+    { BehaviorEvent_AtomBombing,            MITRE_T1055, Tactic_DefenseEvasion, 800, ThreatSeverity_High },
+    { BehaviorEvent_ModuleStomping,         MITRE_T1055, Tactic_DefenseEvasion, 750, ThreatSeverity_High },
+    { BehaviorEvent_ReflectiveDLLLoad,      MITRE_T1620, Tactic_DefenseEvasion, 800, ThreatSeverity_High },
+    { BehaviorEvent_EarlyBirdInjection,     MITRE_T1055, Tactic_DefenseEvasion, 850, ThreatSeverity_Critical },
+    { BehaviorEvent_ThreadExecutionHijack,  MITRE_T1055_003, Tactic_PrivilegeEscalation, 750, ThreatSeverity_High },
+    { BehaviorEvent_NtMapViewInjection,     MITRE_T1055, Tactic_DefenseEvasion, 700, ThreatSeverity_High },
+    { BehaviorEvent_SetWindowsHookEx,       MITRE_T1056_001, Tactic_CredentialAccess, 500, ThreatSeverity_Medium },
+    { BehaviorEvent_QueueUserAPC,           MITRE_T1055_004, Tactic_PrivilegeEscalation, 700, ThreatSeverity_High },
+
+    // Memory Operations
+    { BehaviorEvent_SuspiciousAllocation,   MITRE_T1055, Tactic_DefenseEvasion, 400, ThreatSeverity_Medium },
+    { BehaviorEvent_RWXMemory,              MITRE_T1055, Tactic_DefenseEvasion, 600, ThreatSeverity_High },
+    { BehaviorEvent_MemoryProtectionChange, MITRE_T1055, Tactic_DefenseEvasion, 500, ThreatSeverity_Medium },
+    { BehaviorEvent_CrossProcessRead,       MITRE_T1055, Tactic_CredentialAccess, 550, ThreatSeverity_Medium },
+    { BehaviorEvent_CrossProcessWrite,      MITRE_T1055, Tactic_PrivilegeEscalation, 650, ThreatSeverity_High },
+    { BehaviorEvent_UnbackedExecutable,     MITRE_T1620, Tactic_DefenseEvasion, 700, ThreatSeverity_High },
+    { BehaviorEvent_ShellcodeDetected,      MITRE_T1055, Tactic_Execution, 850, ThreatSeverity_Critical },
+
+    // Privilege Operations
+    { BehaviorEvent_PrivilegeEscalation,    MITRE_T1068, Tactic_PrivilegeEscalation, 800, ThreatSeverity_High },
+    { BehaviorEvent_TokenManipulation,      MITRE_T1134, Tactic_PrivilegeEscalation, 700, ThreatSeverity_High },
+    { BehaviorEvent_TokenImpersonation,     MITRE_T1134_001, Tactic_PrivilegeEscalation, 650, ThreatSeverity_High },
+    { BehaviorEvent_TokenStealing,          MITRE_T1134_001, Tactic_PrivilegeEscalation, 750, ThreatSeverity_High },
+    { BehaviorEvent_BypassUAC,              MITRE_T1548_002, Tactic_PrivilegeEscalation, 700, ThreatSeverity_High },
+    { BehaviorEvent_SeDebugPrivilege,       MITRE_T1134, Tactic_PrivilegeEscalation, 600, ThreatSeverity_High },
+
+    // Persistence
+    { BehaviorEvent_RegistryRunKey,         MITRE_T1547_001, Tactic_Persistence, 500, ThreatSeverity_Medium },
+    { BehaviorEvent_ScheduledTaskPersistence, MITRE_T1053_005, Tactic_Persistence, 550, ThreatSeverity_Medium },
+    { BehaviorEvent_ServicePersistence,     MITRE_T1543_003, Tactic_Persistence, 500, ThreatSeverity_Medium },
+    { BehaviorEvent_StartupFolderDrop,      MITRE_T1547_001, Tactic_Persistence, 450, ThreatSeverity_Medium },
+    { BehaviorEvent_WMISubscription,        MITRE_T1546_003, Tactic_Persistence, 600, ThreatSeverity_High },
+    { BehaviorEvent_DLLHijacking,           MITRE_T1574_001, Tactic_Persistence, 650, ThreatSeverity_High },
+    { BehaviorEvent_COMHijacking,           MITRE_T1546_015, Tactic_Persistence, 600, ThreatSeverity_High },
+    { BehaviorEvent_BootkitInstall,         MITRE_T1542_003, Tactic_Persistence, 950, ThreatSeverity_Critical },
+    { BehaviorEvent_ImageFilePersistence,   MITRE_T1546_012, Tactic_Persistence, 700, ThreatSeverity_High },
+
+    // Defense Evasion
+    { BehaviorEvent_DirectSyscall,          MITRE_T1106, Tactic_DefenseEvasion, 650, ThreatSeverity_High },
+    { BehaviorEvent_NtdllUnhooking,         MITRE_T1562_001, Tactic_DefenseEvasion, 750, ThreatSeverity_High },
+    { BehaviorEvent_HeavensGate,            MITRE_T1106, Tactic_DefenseEvasion, 800, ThreatSeverity_High },
+    { BehaviorEvent_ETWPatching,            MITRE_T1562_006, Tactic_DefenseEvasion, 850, ThreatSeverity_Critical },
+    { BehaviorEvent_AMSIBypass,             MITRE_T1562_001, Tactic_DefenseEvasion, 800, ThreatSeverity_High },
+    { BehaviorEvent_DisableWindowsDefender, MITRE_T1562_001, Tactic_DefenseEvasion, 750, ThreatSeverity_High },
+    { BehaviorEvent_DisableFirewall,        MITRE_T1562_004, Tactic_DefenseEvasion, 600, ThreatSeverity_High },
+    { BehaviorEvent_ProcessMasquerading,    MITRE_T1036, Tactic_DefenseEvasion, 550, ThreatSeverity_Medium },
+    { BehaviorEvent_TimestampModification,  MITRE_T1070_006, Tactic_DefenseEvasion, 500, ThreatSeverity_Medium },
+    { BehaviorEvent_HiddenFileCreation,     MITRE_T1564_001, Tactic_DefenseEvasion, 350, ThreatSeverity_Low },
+    { BehaviorEvent_AlternateDataStream,    MITRE_T1564_004, Tactic_DefenseEvasion, 450, ThreatSeverity_Medium },
+    { BehaviorEvent_LogDeletion,            MITRE_T1070_001, Tactic_DefenseEvasion, 700, ThreatSeverity_High },
+    { BehaviorEvent_VirtualizationEvasion,  MITRE_T1497, Tactic_DefenseEvasion, 400, ThreatSeverity_Medium },
+    { BehaviorEvent_DebuggerEvasion,        MITRE_T1497, Tactic_DefenseEvasion, 350, ThreatSeverity_Low },
+    { BehaviorEvent_SandboxEvasion,         MITRE_T1497, Tactic_DefenseEvasion, 450, ThreatSeverity_Medium },
+    { BehaviorEvent_PPLBypass,              MITRE_T1548, Tactic_DefenseEvasion, 900, ThreatSeverity_Critical },
+    { BehaviorEvent_CallbackRemoval,        MITRE_T1562_001, Tactic_DefenseEvasion, 850, ThreatSeverity_Critical },
+
+    // Credential Access
+    { BehaviorEvent_LSASSAccess,            MITRE_T1003_001, Tactic_CredentialAccess, 900, ThreatSeverity_Critical },
+    { BehaviorEvent_SAMRegistryAccess,      MITRE_T1003_002, Tactic_CredentialAccess, 800, ThreatSeverity_High },
+    { BehaviorEvent_NTDSAccess,             MITRE_T1003_003, Tactic_CredentialAccess, 850, ThreatSeverity_Critical },
+    { BehaviorEvent_CredentialDumping,      MITRE_T1003, Tactic_CredentialAccess, 900, ThreatSeverity_Critical },
+    { BehaviorEvent_KeyloggerBehavior,      MITRE_T1056_001, Tactic_CredentialAccess, 700, ThreatSeverity_High },
+    { BehaviorEvent_BrowserCredentialAccess, MITRE_T1555_003, Tactic_CredentialAccess, 650, ThreatSeverity_High },
+    { BehaviorEvent_DCSync,                 MITRE_T1003_006, Tactic_CredentialAccess, 950, ThreatSeverity_Critical },
+
+    // Network
+    { BehaviorEvent_C2Communication,        MITRE_T1071, Tactic_CommandAndControl, 800, ThreatSeverity_High },
+    { BehaviorEvent_DNSTunneling,           MITRE_T1071_004, Tactic_CommandAndControl, 750, ThreatSeverity_High },
+    { BehaviorEvent_DGADomain,              MITRE_T1568_002, Tactic_CommandAndControl, 700, ThreatSeverity_High },
+    { BehaviorEvent_Beaconing,              MITRE_T1071, Tactic_CommandAndControl, 650, ThreatSeverity_High },
+    { BehaviorEvent_DataExfiltration,       MITRE_T1041, Tactic_Exfiltration, 800, ThreatSeverity_High },
+    { BehaviorEvent_LateralMovementNetwork, MITRE_T1021, Tactic_LateralMovement, 700, ThreatSeverity_High },
+    { BehaviorEvent_ReverseShell,           MITRE_T1059, Tactic_Execution, 900, ThreatSeverity_Critical },
+    { BehaviorEvent_PortScanning,           MITRE_T1046, Tactic_Discovery, 400, ThreatSeverity_Medium },
+
+    // Impact
+    { BehaviorEvent_RansomwareBehavior,     MITRE_T1486, Tactic_Impact, 1000, ThreatSeverity_Critical },
+    { BehaviorEvent_MassFileEncryption,     MITRE_T1486, Tactic_Impact, 1000, ThreatSeverity_Critical },
+    { BehaviorEvent_MassFileDeletion,       MITRE_T1485, Tactic_Impact, 900, ThreatSeverity_Critical },
+    { BehaviorEvent_VSSDestruction,         MITRE_T1490, Tactic_Impact, 950, ThreatSeverity_Critical },
+    { BehaviorEvent_BackupDeletion,         MITRE_T1490, Tactic_Impact, 900, ThreatSeverity_Critical },
+    { BehaviorEvent_DiskWipe,               MITRE_T1561, Tactic_Impact, 1000, ThreatSeverity_Critical },
+    { BehaviorEvent_ServiceStopping,        MITRE_T1489, Tactic_Impact, 600, ThreatSeverity_High },
+
+    // ALPC Inter-Process Communication (T1559)
+    { BehaviorEvent_AlpcBlocked,            MITRE_T1559, Tactic_Execution, 800, ThreatSeverity_High },
+    { BehaviorEvent_AlpcSuspicious,         MITRE_T1559, Tactic_Execution, 600, ThreatSeverity_Medium },
+    { BehaviorEvent_AlpcCrossSession,       MITRE_T1559, Tactic_LateralMovement, 700, ThreatSeverity_High },
+
+    // Terminator
+    { 0, 0, Tactic_None, 0, ThreatSeverity_None }
+};
+
+// ============================================================================
+// FORWARD DECLARATIONS
+// ============================================================================
+
+static NTSTATUS
+BepInitializeHashTables(
+    VOID
+    );
+
+static VOID
+BepCleanupHashTables(
+    VOID
+    );
+
+static NTSTATUS
+BepInitializeLookasideLists(
+    VOID
+    );
+
+static VOID
+BepCleanupLookasideLists(
+    VOID
+    );
+
+static VOID
+BepWorkerThread(
+    _In_ PVOID StartContext
+    );
+
+static VOID
+BepProcessEventBatch(
+    VOID
+    );
+
+static NTSTATUS
+BepProcessSingleEvent(
+    _In_ PBE_PENDING_EVENT Event
+    );
+
+static PBE_PENDING_EVENT
+BepAllocateEvent(
+    _In_ UINT32 EventDataSize
+    );
+
+static VOID
+BepFreeEvent(
+    _In_ PBE_PENDING_EVENT Event
+    );
+
+static PBE_ATTACK_CHAIN
+BepAllocateChain(
+    VOID
+    );
+
+static VOID
+BepFreeChain(
+    _In_ PBE_ATTACK_CHAIN Chain
+    );
+
+static PBE_CHAIN_ENTRY
+BepAllocateChainEntry(
+    VOID
+    );
+
+static VOID
+BepFreeChainEntry(
+    _In_ PBE_CHAIN_ENTRY Entry
+    );
+
+static PBE_PROCESS_CONTEXT
+BepAllocateProcessContext(
+    VOID
+    );
+
+static VOID
+BepFreeProcessContext(
+    _In_ PBE_PROCESS_CONTEXT Context
+    );
+
+static UINT32
+BepHashProcessId(
+    _In_ UINT32 ProcessId
+    );
+
+static UINT32
+BepHashChainId(
+    _In_ UINT64 ChainId
+    );
+
+static NTSTATUS
+BepInsertProcessContext(
+    _In_ PBE_PROCESS_CONTEXT Context
+    );
+
+static VOID
+BepRemoveProcessContext(
+    _In_ PBE_PROCESS_CONTEXT Context
+    );
+
+static NTSTATUS
+BepInsertChain(
+    _In_ PBE_ATTACK_CHAIN Chain
+    );
+
+static VOID
+BepRemoveChain(
+    _In_ PBE_ATTACK_CHAIN Chain
+    );
+
+static VOID
+BepRemoveChainFromHash(
+    _In_ PBE_ATTACK_CHAIN Chain
+    );
+
+static VOID
+BepRemoveProcessContextFromHash(
+    _In_ PBE_PROCESS_CONTEXT Context
+    );
+
+static BOOLEAN
+BepIsCriticalProcess(
+    _In_ UINT32 ProcessId
+    );
+
+static NTSTATUS
+BepGetOrCreateProcessContext(
+    _In_ UINT32 ProcessId,
+    _Out_ PBE_PROCESS_CONTEXT* Context
+    );
+
+static NTSTATUS
+BepGetOrCreateChain(
+    _In_ UINT32 ProcessId,
+    _Out_ PBE_ATTACK_CHAIN* Chain
+    );
+
+static NTSTATUS
+BepCorrelateEventToChain(
+    _In_ PBE_PENDING_EVENT Event,
+    _In_ PBE_PROCESS_CONTEXT ProcessContext,
+    _Inout_ PBE_ATTACK_CHAIN Chain
+    );
+
+static NTSTATUS
+BepMapEventToMitre(
+    _In_ BEHAVIOR_EVENT_TYPE EventType,
+    _Out_ PUINT32 TechniqueId,
+    _Out_ PMITRE_TACTIC Tactic,
+    _Out_ PUINT32 BaseThreatScore,
+    _Out_ PTHREAT_SEVERITY BaseSeverity
+    );
+
+static ATTACK_CHAIN_STAGE
+BepTacticToStage(
+    _In_ MITRE_TACTIC Tactic
+    );
+
+static UINT32
+BepCalculateEventThreatScore(
+    _In_ PBE_PENDING_EVENT Event,
+    _In_ PBE_PROCESS_CONTEXT ProcessContext,
+    _In_ UINT32 BaseThreatScore
+    );
+
+static THREAT_SEVERITY
+BepScoreToSeverity(
+    _In_ UINT32 ThreatScore
+    );
+
+static BEHAVIOR_RESPONSE_ACTION
+BepDetermineResponse(
+    _In_ PBE_PENDING_EVENT Event,
+    _In_ PBE_ATTACK_CHAIN Chain,
+    _In_ UINT32 ThreatScore
+    );
+
+static VOID
+BepUpdateProcessContext(
+    _In_ PBE_PROCESS_CONTEXT Context,
+    _In_ PBE_PENDING_EVENT Event,
+    _In_ UINT32 ThreatScore
+    );
+
+static VOID
+BepUpdateChainState(
+    _In_ PBE_ATTACK_CHAIN Chain,
+    _In_ PBE_CHAIN_ENTRY Entry
+    );
+
+static VOID
+BepCleanupStaleChains(
+    VOID
+    );
+
+static VOID
+BepCleanupStaleProcessContexts(
+    VOID
+    );
+
+static BOOLEAN
+BepIsLolBin(
+    _In_ PCWSTR ImagePath
+    );
+
+static BOOLEAN
+BepIsScriptHost(
+    _In_ PCWSTR ImagePath
+    );
+
+static VOID
+BepGetProcessName(
+    _In_ PCWSTR ImagePath,
+    _Out_writes_(MaxLength) PWCHAR ProcessName,
+    _In_ ULONG MaxLength
+    );
+
+// ============================================================================
+// PUBLIC API - INITIALIZATION
+// ============================================================================
+
+// Forward declaration for pattern match callback (defined after BepProcessSingleEvent)
+static VOID BepPatternMatchCallback(_In_ PPM_PATTERN, _In_ PPM_MATCH_STATE, _In_opt_ PVOID);
+
+// Forward declaration for attack chain alert callback
+static VOID BepAttackChainCallback(_In_ PACT_ATTACK_CHAIN, _In_ PACT_CHAIN_EVENT, _In_opt_ PVOID);
+
+/**
+ * @brief Initialize the behavioral engine.
+ *
+ * This function initializes all behavioral analysis components:
+ * 1. Initialize hash tables for process and chain tracking
+ * 2. Initialize lookaside lists for memory allocation
+ * 3. Initialize event queue
+ * 4. Create worker thread
+ * 5. Initialize subsystems (if available)
+ *
+ * @return STATUS_SUCCESS on success, error status otherwise.
+ */
+_IRQL_requires_max_(PASSIVE_LEVEL)
+NTSTATUS
+BeEngineInitialize(
+    VOID
+    )
+{
+    NTSTATUS status;
+    HANDLE threadHandle = NULL;
+    OBJECT_ATTRIBUTES oa;
+
+    PAGED_CODE();
+
+    //
+    // Check if already initialized
+    //
+    if (g_BeState.Initialized) {
+        return STATUS_ALREADY_INITIALIZED;
+    }
+
+    RtlZeroMemory(&g_BeState, sizeof(BEHAVIOR_ENGINE_GLOBALS));
+
+    //
+    // Initialize rundown protection for safe shutdown drain
+    //
+    ExInitializeRundownProtection(&g_BeState.RundownRef);
+
+    //
+    // Initialize hash tables
+    //
+    status = BepInitializeHashTables();
+    if (!NT_SUCCESS(status)) {
+        goto Cleanup;
+    }
+
+    //
+    // Initialize lookaside lists
+    //
+    status = BepInitializeLookasideLists();
+    if (!NT_SUCCESS(status)) {
+        BepCleanupHashTables();
+        goto Cleanup;
+    }
+
+    //
+    // Initialize lists and locks
+    //
+    InitializeListHead(&g_BeState.ActiveChainList);
+    ExInitializeResourceLite(&g_BeState.ChainLock);
+    g_BeState.ActiveChainCount = 0;
+    g_BeState.NextChainId = 1;
+
+    InitializeListHead(&g_BeState.ProcessContextList);
+    ExInitializeResourceLite(&g_BeState.ProcessLock);
+    g_BeState.ProcessContextCount = 0;
+
+    InitializeListHead(&g_BeState.LoadedRuleList);
+    ExInitializeResourceLite(&g_BeState.RuleLock);
+    g_BeState.LoadedRuleCount = 0;
+    g_BeState.EnabledRuleCount = 0;
+
+    InitializeListHead(&g_BeState.PendingEventQueue);
+    KeInitializeSpinLock(&g_BeState.EventQueueLock);
+    g_BeState.PendingEventCount = 0;
+    g_BeState.MaxPendingEvents = BE_MAX_PENDING_EVENTS;
+
+    //
+    // Initialize worker thread events
+    //
+    KeInitializeEvent(&g_BeState.WorkerWakeEvent, SynchronizationEvent, FALSE);
+    KeInitializeEvent(&g_BeState.WorkerStopEvent, NotificationEvent, FALSE);
+    g_BeState.WorkerStopping = FALSE;
+
+    //
+    // Set default configuration
+    //
+    g_BeState.ChainTimeoutMs = BE_DEFAULT_CHAIN_TIMEOUT_MS;
+    g_BeState.MaxActiveChains = BE_DEFAULT_MAX_ACTIVE_CHAINS;
+    g_BeState.MaxEventsPerChain = BE_DEFAULT_MAX_EVENTS_PER_CHAIN;
+    g_BeState.CorrelationWindowMs = BE_DEFAULT_CORRELATION_WINDOW_MS;
+    g_BeState.HighThreatThreshold = BE_DEFAULT_HIGH_THREAT_THRESHOLD;
+    g_BeState.CriticalThreshold = BE_DEFAULT_CRITICAL_THRESHOLD;
+
+    //
+    // Create worker thread
+    //
+    InitializeObjectAttributes(&oa, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
+
+    status = PsCreateSystemThread(
+        &threadHandle,
+        THREAD_ALL_ACCESS,
+        &oa,
+        NULL,
+        NULL,
+        BepWorkerThread,
+        NULL
+        );
+
+    if (!NT_SUCCESS(status)) {
+        goto CleanupResources;
+    }
+
+    //
+    // Get thread object reference. CRITICAL: keep handle open until we
+    // either (a) succeed and acquire ETHREAD reference, or (b) fail and
+    // wait on the still-open handle for the orphaned thread to terminate.
+    // Closing the handle without waiting on Ob-failure leaves a live kernel
+    // thread accessing g_BeState while CleanupResources zeroes it — UAF/BSOD.
+    //
+    status = ObReferenceObjectByHandle(
+        threadHandle,
+        THREAD_ALL_ACCESS,
+        *PsThreadType,
+        KernelMode,
+        (PVOID*)&g_BeState.WorkerThread,
+        NULL
+        );
+
+    if (!NT_SUCCESS(status)) {
+        //
+        // Signal worker to terminate, then wait on the still-open handle.
+        // We do NOT have an ETHREAD reference yet, so we must wait via handle.
+        //
+        g_BeState.WorkerStopping = TRUE;
+        KeSetEvent(&g_BeState.WorkerStopEvent, IO_NO_INCREMENT, FALSE);
+        KeSetEvent(&g_BeState.WorkerWakeEvent, IO_NO_INCREMENT, FALSE);
+
+        {
+            LARGE_INTEGER waitTimeout;
+            NTSTATUS waitStatus;
+
+            waitTimeout.QuadPart = -((LONGLONG)BE_WORKER_SHUTDOWN_TIMEOUT_MS * 10000);
+            waitStatus = ZwWaitForSingleObject(threadHandle, FALSE, &waitTimeout);
+            if (waitStatus == STATUS_TIMEOUT) {
+                //
+                // Indefinite fallback: returning would leave a live kernel
+                // thread accessing g_BeState we are about to zero — guaranteed BSOD.
+                //
+                DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_ERROR_LEVEL,
+                    "[ShadowStrike:BehaviorEngine] init-time worker shutdown "
+                    "timeout (status=0x%08X) — waiting indefinitely to prevent UAF\n",
+                    waitStatus);
+                (VOID)ZwWaitForSingleObject(threadHandle, FALSE, NULL);
+            }
+        }
+
+        ZwClose(threadHandle);
+        threadHandle = NULL;
+        goto CleanupResources;
+    }
+
+    ZwClose(threadHandle);
+    threadHandle = NULL;
+
+    //
+    // Initialize timing
+    //
+    {
+        LARGE_INTEGER currentTime;
+        KeQuerySystemTime(&currentTime);
+        g_BeState.LastChainCleanupTime = (UINT64)(currentTime.QuadPart / 10000);
+        g_BeState.LastStatisticsReportTime = g_BeState.LastChainCleanupTime;
+    }
+
+    //
+    // Initialize child subsystems â€” failures are non-fatal (degrade gracefully).
+    // Each child is NULL-checked at usage sites throughout the engine.
+    //
+
+    //
+    // MITREMapper: technique classification and MITRE ATT&CK mapping
+    //
+    {
+        NTSTATUS childStatus = MmInitialize(&g_MitreMapper);
+        if (NT_SUCCESS(childStatus)) {
+            childStatus = MmLoadTechniques(g_MitreMapper);
+            if (!NT_SUCCESS(childStatus)) {
+                DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
+                           "[ShadowStrike:BehaviorEngine] MITREMapper technique load failed: 0x%08X\n",
+                           childStatus);
+                MmShutdown(g_MitreMapper);
+                g_MitreMapper = NULL;
+            }
+        } else {
+            DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
+                       "[ShadowStrike:BehaviorEngine] MITREMapper init failed: 0x%08X\n",
+                       childStatus);
+            g_MitreMapper = NULL;
+        }
+    }
+
+    //
+    // AttackChainTracker: multi-stage attack correlation
+    //
+    {
+        NTSTATUS childStatus = ActInitialize(&g_AttackChainTracker);
+        if (!NT_SUCCESS(childStatus)) {
+            DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
+                       "[ShadowStrike:BehaviorEngine] AttackChainTracker init failed: 0x%08X\n",
+                       childStatus);
+            g_AttackChainTracker = NULL;
+        } else {
+            //
+            // Register callback â€” routes chain alerts into BehaviorEngine
+            // stats, logging, and (future) user-mode notification.
+            //
+            (VOID)ActRegisterCallback(g_AttackChainTracker, BepAttackChainCallback, NULL);
+        }
+    }
+
+    //
+    // RuleEngine: behavioral detection rule evaluation
+    //
+    {
+        NTSTATUS childStatus = ReInitialize(&g_RuleEngine);
+        if (!NT_SUCCESS(childStatus)) {
+            DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
+                       "[ShadowStrike:BehaviorEngine] RuleEngine init failed: 0x%08X\n",
+                       childStatus);
+            g_RuleEngine = NULL;
+        }
+    }
+
+    //
+    // PatternMatcher: behavioral pattern recognition
+    //
+    {
+        NTSTATUS childStatus = PtmInitialize(&g_PatternMatcher);
+        if (!NT_SUCCESS(childStatus)) {
+            DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
+                       "[ShadowStrike:BehaviorEngine] PatternMatcher init failed: 0x%08X\n",
+                       childStatus);
+            g_PatternMatcher = NULL;
+        } else {
+            //
+            // Register completion callback â€” routes pattern matches into
+            // BehaviorEngine stats and logging.
+            //
+            (VOID)PmRegisterCallback(g_PatternMatcher, BepPatternMatchCallback, NULL);
+        }
+    }
+
+    //
+    // IOCMatcher: indicator of compromise matching
+    //
+    {
+        NTSTATUS childStatus = IomInitialize(&g_IocMatcher, NULL);
+        if (!NT_SUCCESS(childStatus)) {
+            DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
+                       "[ShadowStrike:BehaviorEngine] IOCMatcher init failed: 0x%08X\n",
+                       childStatus);
+            g_IocMatcher = NULL;
+        }
+    }
+
+    //
+    // AnomalyDetector: statistical anomaly detection
+    //
+    {
+        NTSTATUS childStatus = AdInitialize(&g_AnomalyDetector);
+        if (!NT_SUCCESS(childStatus)) {
+            DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,
+                       "[ShadowStrike:BehaviorEngine] AnomalyDetector init failed: 0x%08X\n",
+                       childStatus);
+            g_AnomalyDetector = NULL;
+        }
+    }
+
+    //
+    // Mark as initialized and enabled
+    //
+    g_BeState.Initialized = TRUE;
+    g_BeState.Enabled = TRUE;
+
+    return STATUS_SUCCESS;
+
+CleanupResources:
+    //
+    // Cleanup any partially-initialized children
+    //
+    if (g_AnomalyDetector != NULL) {
+        AdShutdown(g_AnomalyDetector);
+        g_AnomalyDetector = NULL;
+    }
+    if (g_IocMatcher != NULL) {
+        IomShutdown(&g_IocMatcher);
+        g_IocMatcher = NULL;
+    }
+    if (g_PatternMatcher != NULL) {
+        PtmShutdown(g_PatternMatcher);
+        g_PatternMatcher = NULL;
+    }
+    if (g_RuleEngine != NULL) {
+        ReShutdown(g_RuleEngine);
+        g_RuleEngine = NULL;
+    }
+    if (g_AttackChainTracker != NULL) {
+        ActShutdown(g_AttackChainTracker);
+        g_AttackChainTracker = NULL;
+    }
+    if (g_MitreMapper != NULL) {
+        MmShutdown(g_MitreMapper);
+        g_MitreMapper = NULL;
+    }
+
+    ExDeleteResourceLite(&g_BeState.ChainLock);
+    ExDeleteResourceLite(&g_BeState.ProcessLock);
+    ExDeleteResourceLite(&g_BeState.RuleLock);
+    BepCleanupLookasideLists();
+    BepCleanupHashTables();
+
+Cleanup:
+    RtlZeroMemory(&g_BeState, sizeof(BEHAVIOR_ENGINE_GLOBALS));
+    return status;
+}
+
+/**
+ * @brief Shutdown the behavioral engine.
+ *
+ * Performs graceful shutdown:
+ * 1. Signal worker thread to stop
+ * 2. Wait for worker thread completion
+ * 3. Free all pending events
+ * 4. Free all chains and process contexts
+ * 5. Cleanup resources
+ */
+_IRQL_requires_max_(PASSIVE_LEVEL)
+VOID
+BeEngineShutdown(
+    VOID
+    )
+{
+    PLIST_ENTRY entry;
+    PBE_PENDING_EVENT event;
+    PBE_ATTACK_CHAIN chain;
+    PBE_PROCESS_CONTEXT context;
+    LARGE_INTEGER timeout;
+
+    PAGED_CODE();
+
+    if (!g_BeState.Initialized) {
+        return;
+    }
+
+    //
+    // Mark as disabled and stopping
+    //
+    g_BeState.Enabled = FALSE;
+    g_BeState.WorkerStopping = TRUE;
+
+    //
+    // Signal worker thread to stop
+    //
+    KeSetEvent(&g_BeState.WorkerStopEvent, IO_NO_INCREMENT, FALSE);
+    KeSetEvent(&g_BeState.WorkerWakeEvent, IO_NO_INCREMENT, FALSE);
+
+    //
+    // Wait for worker thread to exit
+    //
+    if (g_BeState.WorkerThread != NULL) {
+        timeout.QuadPart = -100000000;  // 10 seconds
+        KeWaitForSingleObject(
+            g_BeState.WorkerThread,
+            Executive,
+            KernelMode,
+            FALSE,
+            &timeout
+            );
+
+        ObDereferenceObject(g_BeState.WorkerThread);
+        g_BeState.WorkerThread = NULL;
+    }
+
+    //
+    // Wait for all in-flight operations to complete before freeing resources.
+    // ExWaitForRundownProtectionRelease blocks until all ExAcquireRundownProtection
+    // callers have called ExReleaseRundownProtection. After this returns,
+    // no new acquisitions can succeed (they return FALSE).
+    //
+    ExWaitForRundownProtectionRelease(&g_BeState.RundownRef);
+
+    //
+    // Free all pending events
+    //
+    {
+        KIRQL oldIrql;
+        KeAcquireSpinLock(&g_BeState.EventQueueLock, &oldIrql);
+
+        while (!IsListEmpty(&g_BeState.PendingEventQueue)) {
+            entry = RemoveHeadList(&g_BeState.PendingEventQueue);
+            event = CONTAINING_RECORD(entry, BE_PENDING_EVENT, ListEntry);
+            g_BeState.PendingEventCount--;
+
+            KeReleaseSpinLock(&g_BeState.EventQueueLock, oldIrql);
+            BepFreeEvent(event);
+            KeAcquireSpinLock(&g_BeState.EventQueueLock, &oldIrql);
+        }
+
+        KeReleaseSpinLock(&g_BeState.EventQueueLock, oldIrql);
+    }
+
+    //
+    // CRITICAL: Clean hash tables FIRST to prevent any in-flight lookups
+    // from finding objects we're about to free. After this, no new refs
+    // can be acquired via BeEngineGetChain/BeEngineGetProcessContext.
+    //
+    BepCleanupHashTables();
+
+    //
+    // Free all attack chains
+    //
+    KeEnterCriticalRegion();
+    ExAcquireResourceExclusiveLite(&g_BeState.ChainLock, TRUE);
+
+    while (!IsListEmpty(&g_BeState.ActiveChainList)) {
+        entry = RemoveHeadList(&g_BeState.ActiveChainList);
+        chain = CONTAINING_RECORD(entry, BE_ATTACK_CHAIN, ListEntry);
+        g_BeState.ActiveChainCount--;
+
+        //
+        // Free chain entries
+        //
+        while (!IsListEmpty(&chain->EntryList)) {
+            PLIST_ENTRY entryEntry = RemoveHeadList(&chain->EntryList);
+            PBE_CHAIN_ENTRY chainEntry = CONTAINING_RECORD(entryEntry, BE_CHAIN_ENTRY, ListEntry);
+            BepFreeChainEntry(chainEntry);
+        }
+
+        BepFreeChain(chain);
+    }
+
+    ExReleaseResourceLite(&g_BeState.ChainLock);
+    KeLeaveCriticalRegion();
+
+    //
+    // Free all process contexts
+    //
+    KeEnterCriticalRegion();
+    ExAcquireResourceExclusiveLite(&g_BeState.ProcessLock, TRUE);
+
+    while (!IsListEmpty(&g_BeState.ProcessContextList)) {
+        entry = RemoveHeadList(&g_BeState.ProcessContextList);
+        context = CONTAINING_RECORD(entry, BE_PROCESS_CONTEXT, ListEntry);
+        g_BeState.ProcessContextCount--;
+        BepFreeProcessContext(context);
+    }
+
+    ExReleaseResourceLite(&g_BeState.ProcessLock);
+    KeLeaveCriticalRegion();
+
+    //
+    // Shutdown child subsystems (reverse init order)
+    //
+    if (g_AnomalyDetector != NULL) {
+        AdShutdown(g_AnomalyDetector);
+        g_AnomalyDetector = NULL;
+    }
+
+    if (g_IocMatcher != NULL) {
+        IomShutdown(&g_IocMatcher);
+        g_IocMatcher = NULL;
+    }
+
+    if (g_PatternMatcher != NULL) {
+        PtmShutdown(g_PatternMatcher);
+        g_PatternMatcher = NULL;
+    }
+
+    if (g_RuleEngine != NULL) {
+        ReShutdown(g_RuleEngine);
+        g_RuleEngine = NULL;
+    }
+
+    if (g_AttackChainTracker != NULL) {
+        ActShutdown(g_AttackChainTracker);
+        g_AttackChainTracker = NULL;
+    }
+
+    if (g_MitreMapper != NULL) {
+        MmShutdown(g_MitreMapper);
+        g_MitreMapper = NULL;
+    }
+
+    //
+    // Cleanup resources (hash tables already cleaned above before frees)
+    //
+    ExDeleteResourceLite(&g_BeState.ChainLock);
+    ExDeleteResourceLite(&g_BeState.ProcessLock);
+    ExDeleteResourceLite(&g_BeState.RuleLock);
+
+    BepCleanupLookasideLists();
+
+    //
+    // Clear state
+    //
+    g_BeState.Initialized = FALSE;
+    RtlZeroMemory(&g_BeState, sizeof(BEHAVIOR_ENGINE_GLOBALS));
+}
+
+/**
+ * @brief Enable or disable the behavioral engine.
+ */
+_IRQL_requires_max_(PASSIVE_LEVEL)
+NTSTATUS
+BeEngineSetEnabled(
+    _In_ BOOLEAN Enable
+    )
+{
+    PAGED_CODE();
+
+    if (!g_BeState.Initialized) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    if (!ExAcquireRundownProtection(&g_BeState.RundownRef)) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    g_BeState.Enabled = Enable;
+
+    ExReleaseRundownProtection(&g_BeState.RundownRef);
+    return STATUS_SUCCESS;
+}
+
+// ============================================================================
+// PUBLIC API - EVENT SUBMISSION
+// ============================================================================
+
+/**
+ * @brief Submit behavioral event for analysis.
+ */
+_IRQL_requires_max_(DISPATCH_LEVEL)
+NTSTATUS
+BeEngineSubmitEvent(
+    _In_ BEHAVIOR_EVENT_TYPE EventType,
+    _In_ BEHAVIOR_EVENT_CATEGORY Category,
+    _In_ UINT32 ProcessId,
+    _In_reads_bytes_(EventDataSize) PVOID EventData,
+    _In_ UINT32 EventDataSize,
+    _In_ UINT32 ThreatScore,
+    _In_ BOOLEAN IsBlocking,
+    _Out_opt_ PBEHAVIOR_RESPONSE_ACTION Response
+    )
+{
+    PBE_PENDING_EVENT event;
+    KIRQL oldIrql;
+    LARGE_INTEGER currentTime;
+    UINT32 mitreTechnique;
+    MITRE_TACTIC tactic;
+    UINT32 baseThreatScore;
+    THREAT_SEVERITY baseSeverity;
+
+    if (!g_BeState.Initialized || !g_BeState.Enabled) {
+        if (Response != NULL) {
+            *Response = BehaviorResponse_Allow;
+        }
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    //
+    // Acquire rundown protection â€” prevents shutdown from freeing resources
+    // while this operation is in-flight. Returns FALSE if shutdown is draining.
+    //
+    if (!ExAcquireRundownProtection(&g_BeState.RundownRef)) {
+        if (Response != NULL) {
+            *Response = BehaviorResponse_Allow;
+        }
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    //
+    // CRITICAL IRQL CHECK: Blocking events require synchronous processing
+    // which calls functions that acquire ERESOURCE locks. These locks
+    // can only be acquired at IRQL <= APC_LEVEL. Reject blocking requests
+    // at DISPATCH_LEVEL to prevent BSOD.
+    //
+    if (IsBlocking && KeGetCurrentIrql() > APC_LEVEL) {
+        if (Response != NULL) {
+            *Response = BehaviorResponse_Allow;
+        }
+        ExReleaseRundownProtection(&g_BeState.RundownRef);
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+
+    //
+    // Check queue limit
+    //
+    if ((UINT32)g_BeState.PendingEventCount >= g_BeState.MaxPendingEvents) {
+        InterlockedIncrement64(&g_BeState.EventsDropped);
+        if (Response != NULL) {
+            *Response = BehaviorResponse_Allow;
+        }
+        ExReleaseRundownProtection(&g_BeState.RundownRef);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    //
+    // Map event to MITRE
+    //
+    BepMapEventToMitre(EventType, &mitreTechnique, &tactic, &baseThreatScore, &baseSeverity);
+
+    //
+    // Use provided threat score if non-zero
+    //
+    if (ThreatScore > 0) {
+        baseThreatScore = ThreatScore;
+    }
+
+    //
+    // Allocate event
+    //
+    event = BepAllocateEvent(EventDataSize);
+    if (event == NULL) {
+        InterlockedIncrement64(&g_BeState.EventsDropped);
+        if (Response != NULL) {
+            *Response = BehaviorResponse_Allow;
+        }
+        ExReleaseRundownProtection(&g_BeState.RundownRef);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    //
+    // Initialize event
+    //
+    KeQuerySystemTime(&currentTime);
+
+    event->EventType = EventType;
+    event->Category = Category;
+    event->ReceiveTime = (UINT64)(currentTime.QuadPart / 10000);
+    event->ProcessId = ProcessId;
+    event->InitialThreatScore = baseThreatScore;
+    event->InitialSeverity = baseSeverity;
+    event->MitreAttackId = mitreTechnique;
+    event->EventDataSize = EventDataSize;
+    event->Flags = 0;
+
+    if (IsBlocking) {
+        event->Flags |= BE_EVENT_FLAG_BLOCKING;
+    }
+
+    //
+    // Copy event data
+    //
+    if (EventData != NULL && EventDataSize > 0) {
+        RtlCopyMemory(event->EventData, EventData, EventDataSize);
+    }
+
+    //
+    // Generate correlation ID
+    //
+    event->CorrelationId.Timestamp = event->ReceiveTime;
+    event->CorrelationId.ProcessId = ProcessId;
+    event->CorrelationId.SequenceNumber = (UINT64)InterlockedIncrement64(&g_BeState.TotalEventsProcessed);
+
+    //
+    // For blocking events, process synchronously
+    //
+    if (IsBlocking) {
+        NTSTATUS status = BepProcessSingleEvent(event);
+
+        if (Response != NULL) {
+            //
+            // Determine response based on threat score
+            //
+            if (event->InitialThreatScore >= g_BeState.CriticalThreshold) {
+                *Response = BehaviorResponse_Block;
+            } else if (event->InitialThreatScore >= g_BeState.HighThreatThreshold) {
+                *Response = BehaviorResponse_Alert;
+            } else {
+                *Response = BehaviorResponse_Allow;
+            }
+        }
+
+        BepFreeEvent(event);
+        ExReleaseRundownProtection(&g_BeState.RundownRef);
+        return status;
+    }
+
+    //
+    // Queue for async processing
+    //
+    KeAcquireSpinLock(&g_BeState.EventQueueLock, &oldIrql);
+    InsertTailList(&g_BeState.PendingEventQueue, &event->ListEntry);
+    g_BeState.PendingEventCount++;
+    KeReleaseSpinLock(&g_BeState.EventQueueLock, oldIrql);
+
+    //
+    // Wake worker thread
+    //
+    KeSetEvent(&g_BeState.WorkerWakeEvent, IO_NO_INCREMENT, FALSE);
+
+    if (Response != NULL) {
+        *Response = BehaviorResponse_Allow;
+    }
+
+    ExReleaseRundownProtection(&g_BeState.RundownRef);
+    return STATUS_SUCCESS;
+}
+
+/**
+ * @brief Submit process creation event.
+ *
+ * Creates a new behavioral context for the process and submits
+ * a process creation event for behavioral analysis.
+ *
+ * SECURITY NOTE: We do NOT store a reference to PEPROCESS to avoid
+ * use-after-free if the process terminates while context exists.
+ * Process information is captured at creation time only.
+ */
+_IRQL_requires_max_(PASSIVE_LEVEL)
+NTSTATUS
+BeEngineProcessCreate(
+    _In_ UINT32 ProcessId,
+    _In_ UINT32 ParentProcessId,
+    _In_ PCUNICODE_STRING ImagePath,
+    _In_opt_ PCUNICODE_STRING CommandLine
+    )
+{
+    PBE_PROCESS_CONTEXT context;
+    NTSTATUS status;
+    PEPROCESS process = NULL;
+
+    PAGED_CODE();
+
+    if (!g_BeState.Initialized || !g_BeState.Enabled) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    //
+    // Rundown gate: spans the lookaside allocation and hash insertion
+    // so shutdown cannot delete g_BeState.ProcessLock or the lookaside
+    // mid-flight.
+    //
+    if (!ExAcquireRundownProtection(&g_BeState.RundownRef)) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    //
+    // Allocate process context
+    //
+    context = BepAllocateProcessContext();
+    if (context == NULL) {
+        ExReleaseRundownProtection(&g_BeState.RundownRef);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    //
+    // Initialize context
+    //
+    context->ProcessId = ProcessId;
+    context->ParentProcessId = ParentProcessId;
+    context->RefCount = 1;
+
+    //
+    // Get process create time - we intentionally do NOT store PEPROCESS
+    // to avoid use-after-free. The process object reference is only held
+    // temporarily to extract immutable properties.
+    //
+    status = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)ProcessId, &process);
+    if (NT_SUCCESS(status)) {
+        //
+        // Extract create time while we hold the reference
+        //
+        context->ProcessCreateTime = (UINT64)(PsGetProcessCreateTimeQuadPart(process) / 10000);
+
+        //
+        // DO NOT store ProcessObject - it would be a dangling pointer after
+        // we dereference. Set to NULL to make this explicit.
+        //
+        context->ProcessObject = NULL;
+
+        //
+        // Release reference immediately - we don't need it anymore
+        //
+        ObDereferenceObject(process);
+        process = NULL;
+    } else {
+        //
+        // Process lookup failed - this can happen if process is already gone
+        // Use current time as fallback
+        //
+        LARGE_INTEGER currentTime;
+        KeQuerySystemTime(&currentTime);
+        context->ProcessCreateTime = (UINT64)(currentTime.QuadPart / 10000);
+        context->ProcessObject = NULL;
+    }
+
+    //
+    // Copy image path
+    //
+    if (ImagePath != NULL && ImagePath->Buffer != NULL) {
+        SIZE_T copyLen = min(ImagePath->Length, (MAX_FILE_PATH_LENGTH - 1) * sizeof(WCHAR));
+        RtlCopyMemory(context->ImagePath, ImagePath->Buffer, copyLen);
+        context->ImagePath[copyLen / sizeof(WCHAR)] = L'\0';
+    }
+
+    //
+    // Copy command line
+    //
+    if (CommandLine != NULL && CommandLine->Buffer != NULL) {
+        SIZE_T copyLen = min(CommandLine->Length, (MAX_COMMAND_LINE_LENGTH - 1) * sizeof(WCHAR));
+        RtlCopyMemory(context->CommandLine, CommandLine->Buffer, copyLen);
+        context->CommandLine[copyLen / sizeof(WCHAR)] = L'\0';
+    }
+
+    //
+    // Determine process flags
+    //
+    if (BepIsLolBin(context->ImagePath)) {
+        context->Flags |= BE_PROC_FLAG_LOLBIN;
+    }
+
+    if (BepIsScriptHost(context->ImagePath)) {
+        context->Flags |= BE_PROC_FLAG_SCRIPT_HOST;
+    }
+
+    //
+    // Initialize chain list
+    //
+    InitializeListHead(&context->ChainList);
+    context->ChainCount = 0;
+
+    //
+    // Insert into tracking
+    //
+    status = BepInsertProcessContext(context);
+    if (!NT_SUCCESS(status)) {
+        BepFreeProcessContext(context);
+        ExReleaseRundownProtection(&g_BeState.RundownRef);
+        return status;
+    }
+
+    ExReleaseRundownProtection(&g_BeState.RundownRef);
+
+    //
+    // Submit process creation event (BeEngineSubmitEvent has its own
+    // rundown gate, so we release ours first to keep the protection
+    // window minimal.)
+    //
+    return BeEngineSubmitEvent(
+        BehaviorEvent_ProcessCreate,
+        BehaviorCategory_ProcessExecution,
+        ProcessId,
+        NULL,
+        0,
+        0,
+        FALSE,
+        NULL
+        );
+}
+
+/**
+ * @brief Submit process termination event.
+ */
+_IRQL_requires_max_(PASSIVE_LEVEL)
+NTSTATUS
+BeEngineProcessTerminate(
+    _In_ UINT32 ProcessId
+    )
+{
+    PBE_PROCESS_CONTEXT context;
+    NTSTATUS status;
+
+    PAGED_CODE();
+
+    if (!g_BeState.Initialized) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    //
+    // Find and update context. Flag mutation must be atomic — concurrent
+    // BeEngineReleaseProcessContext at DISPATCH_LEVEL also writes Flags
+    // without holding ProcessLock.
+    //
+    status = BeEngineGetProcessContext(ProcessId, &context);
+    if (NT_SUCCESS(status)) {
+        InterlockedOr((LONG*)&context->Flags, BE_PROC_FLAG_TERMINATED);
+        BeEngineReleaseProcessContext(context);
+    }
+
+    //
+    // Submit termination event
+    //
+    return BeEngineSubmitEvent(
+        BehaviorEvent_ProcessTerminate,
+        BehaviorCategory_ProcessExecution,
+        ProcessId,
+        NULL,
+        0,
+        0,
+        FALSE,
+        NULL
+        );
+}
+
+// ============================================================================
+// PUBLIC API - ATTACK CHAIN MANAGEMENT
+// ============================================================================
+
+/**
+ * @brief Get attack chain by ID.
+ */
+_IRQL_requires_max_(APC_LEVEL)
+NTSTATUS
+BeEngineGetChain(
+    _In_ UINT64 ChainId,
+    _Out_ PBE_ATTACK_CHAIN* Chain
+    )
+{
+    UINT32 hashIndex;
+    PLIST_ENTRY entry;
+    PBE_CHAIN_HASH_ENTRY hashEntry;
+    NTSTATUS status = STATUS_NOT_FOUND;
+
+    if (Chain == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    *Chain = NULL;
+
+    if (!g_BeState.Initialized) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    //
+    // Rundown gate: prevents shutdown from freeing g_ChainHashLock /
+    // chain memory while we are in this function. Failed acquire means
+    // shutdown has begun draining — fail closed.
+    //
+    if (!ExAcquireRundownProtection(&g_BeState.RundownRef)) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    hashIndex = BepHashChainId(ChainId);
+
+    FltAcquirePushLockShared(&g_ChainHashLock);
+
+    for (entry = g_ChainHashTable[hashIndex].Flink;
+         entry != &g_ChainHashTable[hashIndex];
+         entry = entry->Flink) {
+
+        hashEntry = CONTAINING_RECORD(entry, BE_CHAIN_HASH_ENTRY, HashListEntry);
+
+        if (hashEntry->Chain->ChainId == ChainId) {
+            //
+            // Try-acquire reference: only increment if RefCount > 0.
+            // If RefCount is 0, the chain is being freed â€” skip it.
+            //
+            {
+                LONG oldRef;
+                BOOLEAN acquired = FALSE;
+
+                do {
+                    oldRef = ReadNoFence(&hashEntry->Chain->RefCount);
+                    if (oldRef <= 0) {
+                        break;
+                    }
+                    if (InterlockedCompareExchange(&hashEntry->Chain->RefCount,
+                                                   oldRef + 1, oldRef) == oldRef) {
+                        acquired = TRUE;
+                        break;
+                    }
+                } while (TRUE);
+
+                if (!acquired) {
+                    continue;
+                }
+            }
+
+            *Chain = hashEntry->Chain;
+            status = STATUS_SUCCESS;
+            break;
+        }
+    }
+
+    FltReleasePushLock(&g_ChainHashLock);
+    ExReleaseRundownProtection(&g_BeState.RundownRef);
+    return status;
+}
+
+/**
+ * @brief Get attack chains for process.
+ *
+ * SECURITY: This function now holds the ProcessLock while iterating
+ * the chain list to prevent race conditions and use-after-free.
+ */
+_IRQL_requires_max_(APC_LEVEL)
+NTSTATUS
+BeEngineGetProcessChains(
+    _In_ UINT32 ProcessId,
+    _Out_writes_to_(MaxChains, *ChainCount) PBE_ATTACK_CHAIN* Chains,
+    _In_ UINT32 MaxChains,
+    _Out_ PUINT32 ChainCount
+    )
+{
+    PBE_PROCESS_CONTEXT context;
+    NTSTATUS status;
+    PLIST_ENTRY entry;
+    UINT32 count = 0;
+
+    PAGED_CODE();
+
+    if (Chains == NULL || ChainCount == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    *ChainCount = 0;
+
+    if (MaxChains == 0) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (!g_BeState.Initialized) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    //
+    // Rundown gate: protects the direct g_BeState.ProcessLock acquire
+    // below from racing with shutdown deleting the ERESOURCE.
+    //
+    if (!ExAcquireRundownProtection(&g_BeState.RundownRef)) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    status = BeEngineGetProcessContext(ProcessId, &context);
+    if (!NT_SUCCESS(status)) {
+        ExReleaseRundownProtection(&g_BeState.RundownRef);
+        return status;
+    }
+
+    //
+    // CRITICAL: Hold ProcessLock while iterating chain list to prevent
+    // concurrent modification. The chain list is protected by the process
+    // context's implicit ownership, but we need to ensure the chains
+    // themselves aren't freed while we're referencing them.
+    //
+    KeEnterCriticalRegion();
+    ExAcquireResourceSharedLite(&g_BeState.ProcessLock, TRUE);
+
+    for (entry = context->ChainList.Flink;
+         entry != &context->ChainList && count < MaxChains;
+         entry = entry->Flink) {
+
+        PBE_ATTACK_CHAIN chain = CONTAINING_RECORD(entry, BE_ATTACK_CHAIN, ProcessListEntry);
+
+        //
+        // Safely acquire a reference. We loop with CmpXchg to atomically
+        // increment only if the refcount is > 0. If it's 0, the chain
+        // is being freed and we skip it.
+        //
+        {
+            LONG oldRef;
+            BOOLEAN acquired = FALSE;
+
+            do {
+                oldRef = InterlockedCompareExchange(&chain->RefCount, 0, 0);
+                if (oldRef <= 0) {
+                    break;
+                }
+                if (InterlockedCompareExchange(&chain->RefCount, oldRef + 1, oldRef) == oldRef) {
+                    acquired = TRUE;
+                    break;
+                }
+            } while (TRUE);
+
+            if (!acquired) {
+                continue;
+            }
+        }
+
+        Chains[count++] = chain;
+    }
+
+    ExReleaseResourceLite(&g_BeState.ProcessLock);
+    KeLeaveCriticalRegion();
+
+    *ChainCount = count;
+    BeEngineReleaseProcessContext(context);
+
+    ExReleaseRundownProtection(&g_BeState.RundownRef);
+    return STATUS_SUCCESS;
+}
+
+/**
+ * @brief Release chain reference.
+ *
+ * CRITICAL: Implements proper reference counting with cleanup on zero.
+ * When the last reference is released, the chain is removed from tracking
+ * and freed. This prevents memory leaks and ensures deterministic cleanup.
+ *
+ * THREAD SAFETY: Uses InterlockedDecrement for atomic refcount update.
+ * Cleanup is deferred to avoid holding locks during free operations.
+ */
+_IRQL_requires_max_(DISPATCH_LEVEL)
+VOID
+BeEngineReleaseChain(
+    _In_ PBE_ATTACK_CHAIN Chain
+    )
+{
+    LONG newRefCount;
+
+    if (Chain == NULL) {
+        return;
+    }
+
+    newRefCount = InterlockedDecrement(&Chain->RefCount);
+
+    //
+    // CRITICAL: RefCount should never go negative
+    //
+    NT_ASSERT(newRefCount >= 0);
+
+    if (newRefCount == 0) {
+        //
+        // Last reference released — chain must be cleaned up.
+        // We cannot call cleanup functions that acquire ERESOURCE
+        // at DISPATCH_LEVEL, so we mark the chain as inactive and
+        // let the cleanup thread handle actual removal.
+        //
+        if (KeGetCurrentIrql() <= APC_LEVEL) {
+            PLIST_ENTRY entryEntry;
+            PBE_CHAIN_ENTRY chainEntry;
+            BOOLEAN needFree = FALSE;
+
+            //
+            // Rundown gate: shutdown may have already begun draining
+            // and deleting g_BeState.ChainLock / lookasides. If we
+            // can't acquire rundown, defer freeing — leak is bounded
+            // (driver unload reclaims the pool); the alternative is
+            // ExAcquireResourceExclusiveLite on a deleted ERESOURCE,
+            // which BSODs.
+            //
+            if (!ExAcquireRundownProtection(&g_BeState.RundownRef)) {
+                //
+                // Mark inactive so that if shutdown hasn't yet drained
+                // the chain list, the shutdown drain will free us.
+                //
+                InterlockedExchange8((CHAR*)&Chain->IsActive, FALSE);
+                return;
+            }
+
+            //
+            // CRITICAL: Acquire ChainLock BEFORE setting IsActive = FALSE.
+            // Setting the flag without the lock created a race with
+            // BepCleanupStaleChains: the worker could see !IsActive, remove
+            // the chain from the list, and then this thread would do a
+            // second RemoveEntryList on the same LIST_ENTRY — causing
+            // BugCheck 0x139 P1=3 (LIST_ENTRY double remove).
+            //
+            KeEnterCriticalRegion();
+            ExAcquireResourceExclusiveLite(&g_BeState.ChainLock, TRUE);
+
+            if (Chain->IsActive) {
+                Chain->IsActive = FALSE;
+                RemoveEntryList(&Chain->ListEntry);
+                g_BeState.ActiveChainCount--;
+                BepRemoveChainFromHash(Chain);
+                needFree = TRUE;
+            }
+
+            ExReleaseResourceLite(&g_BeState.ChainLock);
+            KeLeaveCriticalRegion();
+
+            if (needFree) {
+                //
+                // Remove from process context's chain list
+                //
+                KeEnterCriticalRegion();
+                ExAcquireResourceExclusiveLite(&g_BeState.ProcessLock, TRUE);
+                RemoveEntryList(&Chain->ProcessListEntry);
+                ExReleaseResourceLite(&g_BeState.ProcessLock);
+                KeLeaveCriticalRegion();
+
+                //
+                // Free all chain entries
+                //
+                while (!IsListEmpty(&Chain->EntryList)) {
+                    entryEntry = RemoveHeadList(&Chain->EntryList);
+                    chainEntry = CONTAINING_RECORD(entryEntry, BE_CHAIN_ENTRY, ListEntry);
+                    BepFreeChainEntry(chainEntry);
+                }
+
+                BepFreeChain(Chain);
+            }
+
+            ExReleaseRundownProtection(&g_BeState.RundownRef);
+        } else {
+            //
+            // At DISPATCH_LEVEL: mark inactive for worker cleanup.
+            // Only one thread can reach RefCount==0 (InterlockedDecrement
+            // is atomic), so this 1-byte store is safe; we use
+            // InterlockedExchange8 for a strict torn-write guarantee
+            // against the concurrent !IsActive read in BepCleanupStaleChains.
+            //
+            InterlockedExchange8((CHAR*)&Chain->IsActive, FALSE);
+        }
+    }
+}
+
+/**
+ * @brief Mark chain as false positive.
+ */
+_IRQL_requires_max_(APC_LEVEL)
+NTSTATUS
+BeEngineMarkChainFalsePositive(
+    _In_ UINT64 ChainId
+    )
+{
+    PBE_ATTACK_CHAIN chain;
+    NTSTATUS status;
+    KIRQL oldIrql;
+
+    PAGED_CODE();
+
+    status = BeEngineGetChain(ChainId, &chain);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    //
+    // Acquire the chain's spinlock to serialize state mutations
+    // with concurrent BepProcessSingleEvent / BeEngineRemediateChain
+    // readers/writers. Without this, Flags |= and IsActive = FALSE
+    // race with similar mutations elsewhere (torn read of Flags
+    // bitmask, lost updates).
+    //
+    KeAcquireSpinLock(&chain->Lock, &oldIrql);
+    chain->Flags |= BE_CHAIN_FLAG_FALSE_POSITIVE;
+    chain->IsActive = FALSE;
+    KeReleaseSpinLock(&chain->Lock, oldIrql);
+
+    BeEngineReleaseChain(chain);
+    return STATUS_SUCCESS;
+}
+
+/**
+ * @brief Check if a process is a critical system process.
+ *
+ * SECURITY: This function prevents termination of critical Windows
+ * processes that would cause system instability or BSOD.
+ *
+ * @param ProcessId Process ID to check.
+ * @return TRUE if process is critical and should NOT be terminated.
+ */
+static BOOLEAN
+BepIsCriticalProcess(
+    _In_ UINT32 ProcessId
+    )
+{
+    NTSTATUS status;
+    PEPROCESS process = NULL;
+    PUNICODE_STRING processName = NULL;
+    BOOLEAN isCritical = FALSE;
+
+    //
+    // System process (PID 4) is always critical
+    //
+    if (ProcessId == 4) {
+        return TRUE;
+    }
+
+    //
+    // Idle process (PID 0) is always critical
+    //
+    if (ProcessId == 0) {
+        return TRUE;
+    }
+
+    //
+    // Get process object to check name
+    //
+    status = PsLookupProcessByProcessId((HANDLE)(ULONG_PTR)ProcessId, &process);
+    if (!NT_SUCCESS(status)) {
+        //
+        // Can't lookup - be safe and assume not critical
+        // (process may have already exited)
+        //
+        return FALSE;
+    }
+
+    //
+    // Check for critical system processes by name
+    // These processes are essential for Windows operation
+    //
+    status = SeLocateProcessImageName(process, &processName);
+    if (NT_SUCCESS(status) && processName != NULL && processName->Buffer != NULL) {
+        //
+        // List of critical Windows processes that must never be terminated
+        //
+        static const PCWSTR criticalProcesses[] = {
+            L"\\csrss.exe",           // Client/Server Runtime - BSOD if killed
+            L"\\smss.exe",            // Session Manager - BSOD if killed
+            L"\\wininit.exe",         // Windows Initialization
+            L"\\winlogon.exe",        // Windows Logon
+            L"\\services.exe",        // Service Control Manager
+            L"\\lsass.exe",           // Local Security Authority
+            L"\\lsaiso.exe",          // LSA Isolated
+            L"\\svchost.exe",         // Service Host (many critical services)
+            L"\\System",              // System process
+            L"\\Registry",            // Registry process
+            L"\\Memory Compression",  // Memory compression
+            L"\\dwm.exe",             // Desktop Window Manager
+            L"\\conhost.exe",         // Console host
+            L"\\ntoskrnl.exe",        // Kernel (shouldn't be here but safety)
+            NULL
+        };
+
+        for (UINT32 i = 0; criticalProcesses[i] != NULL; i++) {
+            if (wcsstr(processName->Buffer, criticalProcesses[i]) != NULL) {
+                isCritical = TRUE;
+                break;
+            }
+        }
+
+        ExFreePool(processName);
+    }
+
+    ObDereferenceObject(process);
+    return isCritical;
+}
+
+/**
+ * @brief Remediate attack chain with critical process protection.
+ *
+ * SECURITY HARDENING:
+ * - Validates chain state before remediation
+ * - Protects critical system processes from termination
+ * - Logs all remediation actions for audit trail
+ * - Validates process still matches original chain criteria
+ */
+_IRQL_requires_max_(PASSIVE_LEVEL)
+NTSTATUS
+BeEngineRemediateChain(
+    _In_ UINT64 ChainId,
+    _In_ UINT32 RemediationFlags
+    )
+{
+    PBE_ATTACK_CHAIN chain;
+    NTSTATUS status;
+    UINT32 terminatedCount = 0;
+    UINT32 skippedCount = 0;
+    KIRQL oldIrql;
+    UINT32 primaryProcessId;
+    UINT32 cumulativeThreatScore;
+    UINT32 relatedProcessIds[32];
+    UINT32 relatedProcessCount;
+
+    PAGED_CODE();
+
+    status = BeEngineGetChain(ChainId, &chain);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    //
+    // Atomically validate state and claim the remediation under chain->Lock.
+    // Setting IsRemediated=TRUE here serves as a single-shot guard so two
+    // concurrent BeEngineRemediateChain calls cannot both terminate the
+    // primary process. We snapshot all decision-relevant fields under the
+    // lock so the long-running ZwTerminate / FbeRollback work below
+    // operates on consistent data, even if another thread modifies the
+    // chain after we drop the lock.
+    //
+    KeAcquireSpinLock(&chain->Lock, &oldIrql);
+
+    if (chain->Flags & BE_CHAIN_FLAG_FALSE_POSITIVE) {
+        KeReleaseSpinLock(&chain->Lock, oldIrql);
+        BeEngineReleaseChain(chain);
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+
+    if (chain->IsRemediated) {
+        KeReleaseSpinLock(&chain->Lock, oldIrql);
+        BeEngineReleaseChain(chain);
+        return STATUS_SUCCESS;
+    }
+
+    if ((RemediationFlags & (BE_REMEDIATE_TERMINATE_PRIMARY | BE_REMEDIATE_TERMINATE_RELATED)) &&
+        chain->CumulativeThreatScore < g_BeState.HighThreatThreshold) {
+        KeReleaseSpinLock(&chain->Lock, oldIrql);
+        BeEngineReleaseChain(chain);
+        return STATUS_ACCESS_DENIED;
+    }
+
+    primaryProcessId = chain->PrimaryProcessId;
+    cumulativeThreatScore = chain->CumulativeThreatScore;
+    relatedProcessCount = chain->RelatedProcessCount;
+    if (relatedProcessCount > RTL_NUMBER_OF(relatedProcessIds)) {
+        relatedProcessCount = RTL_NUMBER_OF(relatedProcessIds);
+    }
+    if (relatedProcessCount > 0) {
+        RtlCopyMemory(relatedProcessIds,
+                      chain->RelatedProcessIds,
+                      relatedProcessCount * sizeof(UINT32));
+    }
+
+    //
+    // Claim the remediation. Subsequent concurrent calls will see
+    // IsRemediated and return STATUS_SUCCESS above without re-running
+    // the termination logic.
+    //
+    chain->IsRemediated = TRUE;
+
+    KeReleaseSpinLock(&chain->Lock, oldIrql);
+
+    UNREFERENCED_PARAMETER(cumulativeThreatScore);
+
+    //
+    // Rollback file modifications if ransomware detected
+    // CRITICAL: Must happen BEFORE process termination so we have valid PID
+    //
+    if (RemediationFlags & BE_REMEDIATE_ROLLBACK_FILES) {
+        ULONG filesRestored = 0;
+        FBE_ROLLBACK_RESULT rollbackResult;
+
+        rollbackResult = FbeRollbackProcess(
+            (HANDLE)(ULONG_PTR)primaryProcessId,
+            &filesRestored
+            );
+
+        DbgPrintEx(
+            DPFLTR_IHVDRIVER_ID,
+            (rollbackResult == FbeRollback_Success) ? DPFLTR_INFO_LEVEL : DPFLTR_WARNING_LEVEL,
+            "[ShadowStrike/BehaviorEngine] Ransomware rollback for PID %u: result=%d, files=%lu\n",
+            primaryProcessId,
+            rollbackResult,
+            filesRestored
+            );
+    }
+
+    //
+    // Terminate primary process if requested
+    //
+    if (RemediationFlags & BE_REMEDIATE_TERMINATE_PRIMARY) {
+        //
+        // CRITICAL: Check if primary process is critical system process
+        //
+        if (BepIsCriticalProcess(primaryProcessId)) {
+            //
+            // Cannot terminate critical process - skip but continue
+            //
+            skippedCount++;
+        } else {
+            HANDLE processHandle;
+            OBJECT_ATTRIBUTES oa;
+            CLIENT_ID clientId;
+
+            clientId.UniqueProcess = (HANDLE)(ULONG_PTR)primaryProcessId;
+            clientId.UniqueThread = NULL;
+            InitializeObjectAttributes(&oa, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
+
+            status = ZwOpenProcess(&processHandle, PROCESS_TERMINATE, &oa, &clientId);
+            if (NT_SUCCESS(status)) {
+                status = ZwTerminateProcess(processHandle, STATUS_ACCESS_DENIED);
+                ZwClose(processHandle);
+
+                if (NT_SUCCESS(status)) {
+                    terminatedCount++;
+                }
+            }
+        }
+    }
+
+    //
+    // Terminate related processes if requested
+    //
+    if (RemediationFlags & BE_REMEDIATE_TERMINATE_RELATED) {
+        for (UINT32 i = 0; i < relatedProcessCount; i++) {
+            UINT32 relatedPid = relatedProcessIds[i];
+
+            //
+            // CRITICAL: Check if related process is critical system process
+            //
+            if (BepIsCriticalProcess(relatedPid)) {
+                skippedCount++;
+                continue;
+            }
+
+            HANDLE processHandle;
+            OBJECT_ATTRIBUTES oa;
+            CLIENT_ID clientId;
+
+            clientId.UniqueProcess = (HANDLE)(ULONG_PTR)relatedPid;
+            clientId.UniqueThread = NULL;
+            InitializeObjectAttributes(&oa, NULL, OBJ_KERNEL_HANDLE, NULL, NULL);
+
+            status = ZwOpenProcess(&processHandle, PROCESS_TERMINATE, &oa, &clientId);
+            if (NT_SUCCESS(status)) {
+                status = ZwTerminateProcess(processHandle, STATUS_ACCESS_DENIED);
+                ZwClose(processHandle);
+
+                if (NT_SUCCESS(status)) {
+                    terminatedCount++;
+                }
+            }
+        }
+    }
+
+    //
+    // Finalize chain state under the spinlock to prevent torn writes
+    // racing with concurrent state mutations elsewhere in the engine.
+    //
+    KeAcquireSpinLock(&chain->Lock, &oldIrql);
+    chain->IsActive = FALSE;
+    chain->Flags |= BE_CHAIN_FLAG_AUTO_REMEDIATE;
+    KeReleaseSpinLock(&chain->Lock, oldIrql);
+
+    if (terminatedCount > 0) {
+        InterlockedIncrement64(&g_BeState.TotalThreatsBlocked);
+    }
+
+    BeEngineReleaseChain(chain);
+    return STATUS_SUCCESS;
+}
+
+// ============================================================================
+// PUBLIC API - PROCESS CONTEXT
+// ============================================================================
+
+/**
+ * @brief Get behavioral context for process.
+ */
+_IRQL_requires_max_(APC_LEVEL)
+NTSTATUS
+BeEngineGetProcessContext(
+    _In_ UINT32 ProcessId,
+    _Out_ PBE_PROCESS_CONTEXT* Context
+    )
+{
+    UINT32 hashIndex;
+    PLIST_ENTRY entry;
+    PBE_PROCESS_HASH_ENTRY hashEntry;
+    NTSTATUS status = STATUS_NOT_FOUND;
+
+    if (Context == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    *Context = NULL;
+
+    if (!g_BeState.Initialized) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    //
+    // Rundown gate: blocks shutdown from deleting g_ProcessHashLock or
+    // freeing context memory while we hold a hash-table iterator.
+    //
+    if (!ExAcquireRundownProtection(&g_BeState.RundownRef)) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    hashIndex = BepHashProcessId(ProcessId);
+
+    FltAcquirePushLockShared(&g_ProcessHashLock);
+
+    for (entry = g_ProcessHashTable[hashIndex].Flink;
+         entry != &g_ProcessHashTable[hashIndex];
+         entry = entry->Flink) {
+
+        hashEntry = CONTAINING_RECORD(entry, BE_PROCESS_HASH_ENTRY, HashListEntry);
+
+        if (hashEntry->Context->ProcessId == ProcessId) {
+            //
+            // Try-acquire reference: only increment if RefCount > 0.
+            // If RefCount is 0, the context is being freed â€” skip it.
+            //
+            {
+                LONG oldRef;
+                BOOLEAN acquired = FALSE;
+
+                do {
+                    oldRef = ReadNoFence(&hashEntry->Context->RefCount);
+                    if (oldRef <= 0) {
+                        break;
+                    }
+                    if (InterlockedCompareExchange(&hashEntry->Context->RefCount,
+                                                   oldRef + 1, oldRef) == oldRef) {
+                        acquired = TRUE;
+                        break;
+                    }
+                } while (TRUE);
+
+                if (!acquired) {
+                    continue;
+                }
+            }
+
+            *Context = hashEntry->Context;
+            status = STATUS_SUCCESS;
+            break;
+        }
+    }
+
+    FltReleasePushLock(&g_ProcessHashLock);
+    ExReleaseRundownProtection(&g_BeState.RundownRef);
+    return status;
+}
+
+/**
+ * @brief Release process context reference.
+ *
+ * CRITICAL: Implements proper reference counting with cleanup on zero.
+ * When the last reference is released, the context is removed from tracking
+ * and freed. This prevents memory leaks and ensures deterministic cleanup.
+ *
+ * THREAD SAFETY: Uses InterlockedDecrement for atomic refcount update.
+ */
+_IRQL_requires_max_(DISPATCH_LEVEL)
+VOID
+BeEngineReleaseProcessContext(
+    _In_ PBE_PROCESS_CONTEXT Context
+    )
+{
+    LONG newRefCount;
+
+    if (Context == NULL) {
+        return;
+    }
+
+    newRefCount = InterlockedDecrement(&Context->RefCount);
+
+    //
+    // CRITICAL: RefCount should never go negative
+    //
+    NT_ASSERT(newRefCount >= 0);
+
+    if (newRefCount == 0) {
+        //
+        // Last reference released — context must be cleaned up.
+        // Mark as terminated so cleanup thread handles it, or
+        // clean up immediately if at appropriate IRQL.
+        //
+        if (KeGetCurrentIrql() <= APC_LEVEL) {
+            BOOLEAN needFree = FALSE;
+
+            //
+            // Rundown gate: shutdown may have already begun draining
+            // and deleting g_BeState.ProcessLock / lookasides. Failed
+            // acquire means we must defer freeing — driver unload will
+            // reclaim the pool. Acquiring a deleted ERESOURCE BSODs.
+            //
+            if (!ExAcquireRundownProtection(&g_BeState.RundownRef)) {
+                InterlockedOr((LONG*)&Context->Flags, BE_PROC_FLAG_TERMINATED);
+                return;
+            }
+
+            //
+            // CRITICAL: Acquire ProcessLock BEFORE setting the
+            // TERMINATED flag. Setting the flag without the lock
+            // created a race with BepCleanupStaleProcessContexts:
+            // the worker could see TERMINATED + RefCount<=1, remove
+            // the context from the list, and then this thread would
+            // do a second RemoveEntryList — BugCheck 0x139 P1=3.
+            //
+            KeEnterCriticalRegion();
+            ExAcquireResourceExclusiveLite(&g_BeState.ProcessLock, TRUE);
+
+            if (!(Context->Flags & BE_PROC_FLAG_CLEANUP_DONE)) {
+                Context->Flags |= BE_PROC_FLAG_TERMINATED | BE_PROC_FLAG_CLEANUP_DONE;
+                RemoveEntryList(&Context->ListEntry);
+                g_BeState.ProcessContextCount--;
+                BepRemoveProcessContextFromHash(Context);
+                needFree = TRUE;
+            }
+
+            ExReleaseResourceLite(&g_BeState.ProcessLock);
+            KeLeaveCriticalRegion();
+
+            if (needFree) {
+                BepFreeProcessContext(Context);
+            }
+
+            ExReleaseRundownProtection(&g_BeState.RundownRef);
+        } else {
+            //
+            // At DISPATCH_LEVEL: mark terminated for worker cleanup.
+            // Only one thread can reach RefCount==0 (InterlockedDecrement
+            // is atomic). Use InterlockedOr for a strict torn-write
+            // guarantee against the concurrent Flags read in
+            // BepCleanupStaleProcessContexts.
+            //
+            InterlockedOr((LONG*)&Context->Flags, BE_PROC_FLAG_TERMINATED);
+        }
+    }
+}
+
+/**
+ * @brief Get behavioral risk score for process.
+ */
+_IRQL_requires_max_(APC_LEVEL)
+NTSTATUS
+BeEngineGetProcessRiskScore(
+    _In_ UINT32 ProcessId,
+    _Out_ PUINT32 Score
+    )
+{
+    PBE_PROCESS_CONTEXT context;
+    NTSTATUS status;
+
+    if (Score == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    status = BeEngineGetProcessContext(ProcessId, &context);
+    if (!NT_SUCCESS(status)) {
+        *Score = 0;
+        return status;
+    }
+
+    *Score = context->BehaviorScore;
+    BeEngineReleaseProcessContext(context);
+
+    return STATUS_SUCCESS;
+}
+
+// ============================================================================
+// PUBLIC API - RULES
+// ============================================================================
+
+/**
+ * @brief Load behavioral detection rules.
+ */
+_IRQL_requires_max_(PASSIVE_LEVEL)
+NTSTATUS
+BeEngineLoadRules(
+    _In_reads_(RuleCount) PATTACK_DETECTION_RULE Rules,
+    _In_ UINT32 RuleCount
+    )
+{
+    UINT32 i;
+    NTSTATUS status = STATUS_SUCCESS;
+
+    PAGED_CODE();
+
+    if (!g_BeState.Initialized) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    if (Rules == NULL || RuleCount == 0) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (!ExAcquireRundownProtection(&g_BeState.RundownRef)) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    if (g_BeState.LoadedRuleCount + RuleCount > BE_MAX_RULES) {
+        ExReleaseRundownProtection(&g_BeState.RundownRef);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    KeEnterCriticalRegion();
+    ExAcquireResourceExclusiveLite(&g_BeState.RuleLock, TRUE);
+
+    for (i = 0; i < RuleCount; i++) {
+        PBE_LOADED_RULE loadedRule;
+
+        loadedRule = (PBE_LOADED_RULE)ExAllocatePool2(
+            POOL_FLAG_NON_PAGED,
+            sizeof(BE_LOADED_RULE),
+            BE_POOL_TAG_RULE
+            );
+
+        if (loadedRule == NULL) {
+            status = STATUS_INSUFFICIENT_RESOURCES;
+            break;
+        }
+
+        RtlZeroMemory(loadedRule, sizeof(BE_LOADED_RULE));
+        RtlCopyMemory(&loadedRule->RuleData, &Rules[i], sizeof(ATTACK_DETECTION_RULE));
+
+        {
+            LARGE_INTEGER currentTime;
+            KeQuerySystemTime(&currentTime);
+            loadedRule->LoadTime = (UINT64)(currentTime.QuadPart / 10000);
+        }
+
+        loadedRule->IsEnabled = (Rules[i].Flags & RULE_FLAG_ENABLED) != 0;
+
+        InsertTailList(&g_BeState.LoadedRuleList, &loadedRule->ListEntry);
+        g_BeState.LoadedRuleCount++;
+
+        if (loadedRule->IsEnabled) {
+            g_BeState.EnabledRuleCount++;
+        }
+    }
+
+    ExReleaseResourceLite(&g_BeState.RuleLock);
+    KeLeaveCriticalRegion();
+    ExReleaseRundownProtection(&g_BeState.RundownRef);
+    return status;
+}
+
+/**
+ * @brief Enable or disable rule.
+ */
+_IRQL_requires_max_(APC_LEVEL)
+NTSTATUS
+BeEngineSetRuleEnabled(
+    _In_ UINT32 RuleId,
+    _In_ BOOLEAN Enable
+    )
+{
+    PLIST_ENTRY entry;
+    PBE_LOADED_RULE rule;
+    NTSTATUS status = STATUS_NOT_FOUND;
+
+    if (!g_BeState.Initialized) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    if (!ExAcquireRundownProtection(&g_BeState.RundownRef)) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    KeEnterCriticalRegion();
+    ExAcquireResourceExclusiveLite(&g_BeState.RuleLock, TRUE);
+
+    for (entry = g_BeState.LoadedRuleList.Flink;
+         entry != &g_BeState.LoadedRuleList;
+         entry = entry->Flink) {
+
+        rule = CONTAINING_RECORD(entry, BE_LOADED_RULE, ListEntry);
+
+        if (rule->RuleData.RuleId == RuleId) {
+            if (rule->IsEnabled != Enable) {
+                rule->IsEnabled = Enable;
+
+                if (Enable) {
+                    g_BeState.EnabledRuleCount++;
+                } else {
+                    g_BeState.EnabledRuleCount--;
+                }
+            }
+            status = STATUS_SUCCESS;
+            break;
+        }
+    }
+
+    ExReleaseResourceLite(&g_BeState.RuleLock);
+    KeLeaveCriticalRegion();
+    ExReleaseRundownProtection(&g_BeState.RundownRef);
+    return status;
+}
+
+/**
+ * @brief Get rule match statistics.
+ */
+_IRQL_requires_max_(APC_LEVEL)
+NTSTATUS
+BeEngineGetRuleStats(
+    _In_ UINT32 RuleId,
+    _Out_ PUINT32 TotalMatches,
+    _Out_ PUINT64 LastMatchTime
+    )
+{
+    PLIST_ENTRY entry;
+    PBE_LOADED_RULE rule;
+    NTSTATUS status = STATUS_NOT_FOUND;
+
+    if (TotalMatches == NULL || LastMatchTime == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (!g_BeState.Initialized) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    if (!ExAcquireRundownProtection(&g_BeState.RundownRef)) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    KeEnterCriticalRegion();
+    ExAcquireResourceSharedLite(&g_BeState.RuleLock, TRUE);
+
+    for (entry = g_BeState.LoadedRuleList.Flink;
+         entry != &g_BeState.LoadedRuleList;
+         entry = entry->Flink) {
+
+        rule = CONTAINING_RECORD(entry, BE_LOADED_RULE, ListEntry);
+
+        if (rule->RuleData.RuleId == RuleId) {
+            *TotalMatches = rule->TotalMatches;
+            *LastMatchTime = rule->LastMatchTime;
+            status = STATUS_SUCCESS;
+            break;
+        }
+    }
+
+    ExReleaseResourceLite(&g_BeState.RuleLock);
+    KeLeaveCriticalRegion();
+    ExReleaseRundownProtection(&g_BeState.RundownRef);
+    return status;
+}
+
+// ============================================================================
+// PUBLIC API - MITRE ATT&CK
+// ============================================================================
+
+/**
+ * @brief Map event to MITRE ATT&CK technique.
+ */
+_IRQL_requires_max_(DISPATCH_LEVEL)
+NTSTATUS
+BeEngineMapToMitre(
+    _In_ BEHAVIOR_EVENT_TYPE EventType,
+    _In_opt_ PVOID EventData,
+    _Out_ PUINT32 TechniqueId,
+    _Out_ PMITRE_TACTIC Tactic
+    )
+{
+    UINT32 baseThreatScore;
+    THREAT_SEVERITY baseSeverity;
+
+    UNREFERENCED_PARAMETER(EventData);
+
+    if (TechniqueId == NULL || Tactic == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    return BepMapEventToMitre(EventType, TechniqueId, Tactic, &baseThreatScore, &baseSeverity);
+}
+
+/**
+ * @brief Get observed techniques for process.
+ */
+_IRQL_requires_max_(APC_LEVEL)
+NTSTATUS
+BeEngineGetProcessTechniques(
+    _In_ UINT32 ProcessId,
+    _Out_writes_to_(MaxTechniques, *TechniqueCount) PUINT32 TechniqueIds,
+    _In_ UINT32 MaxTechniques,
+    _Out_ PUINT32 TechniqueCount
+    )
+{
+    PBE_PROCESS_CONTEXT context;
+    NTSTATUS status;
+    UINT32 count;
+
+    if (TechniqueIds == NULL || TechniqueCount == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    *TechniqueCount = 0;
+
+    if (!g_BeState.Initialized) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    if (!ExAcquireRundownProtection(&g_BeState.RundownRef)) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    status = BeEngineGetProcessContext(ProcessId, &context);
+    if (!NT_SUCCESS(status)) {
+        ExReleaseRundownProtection(&g_BeState.RundownRef);
+        return status;
+    }
+
+    count = min(context->ObservedTechniqueCount, MaxTechniques);
+    if (count > RTL_NUMBER_OF(context->ObservedTechniques)) {
+        count = RTL_NUMBER_OF(context->ObservedTechniques);
+    }
+    if (count > 0) {
+        RtlCopyMemory(TechniqueIds, context->ObservedTechniques, count * sizeof(UINT32));
+    }
+    *TechniqueCount = count;
+
+    BeEngineReleaseProcessContext(context);
+    ExReleaseRundownProtection(&g_BeState.RundownRef);
+    return STATUS_SUCCESS;
+}
+
+// ============================================================================
+// PUBLIC API - STATISTICS
+// ============================================================================
+
+/**
+ * @brief Get behavioral engine statistics (SAFE VERSION).
+ *
+ * Returns only safe-to-expose statistics. Use this for user-mode
+ * IOCTL responses to avoid kernel information disclosure.
+ */
+_IRQL_requires_max_(APC_LEVEL)
+NTSTATUS
+BeEngineGetStatisticsSafe(
+    _Out_ PBEHAVIOR_ENGINE_STATISTICS Stats
+    )
+{
+    LARGE_INTEGER currentTime;
+
+    if (Stats == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    RtlZeroMemory(Stats, sizeof(BEHAVIOR_ENGINE_STATISTICS));
+
+    if (!g_BeState.Initialized) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    if (!ExAcquireRundownProtection(&g_BeState.RundownRef)) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    Stats->Initialized = g_BeState.Initialized;
+    Stats->Enabled = g_BeState.Enabled;
+
+    Stats->ChainTimeoutMs = g_BeState.ChainTimeoutMs;
+    Stats->MaxActiveChains = g_BeState.MaxActiveChains;
+    Stats->MaxEventsPerChain = g_BeState.MaxEventsPerChain;
+    Stats->CorrelationWindowMs = g_BeState.CorrelationWindowMs;
+    Stats->HighThreatThreshold = g_BeState.HighThreatThreshold;
+    Stats->CriticalThreshold = g_BeState.CriticalThreshold;
+
+    Stats->ActiveChainCount = g_BeState.ActiveChainCount;
+    Stats->ProcessContextCount = g_BeState.ProcessContextCount;
+    Stats->LoadedRuleCount = g_BeState.LoadedRuleCount;
+    Stats->EnabledRuleCount = g_BeState.EnabledRuleCount;
+    Stats->PendingEventCount = g_BeState.PendingEventCount;
+    Stats->MaxPendingEvents = g_BeState.MaxPendingEvents;
+
+    Stats->TotalEventsProcessed = InterlockedCompareExchange64(&g_BeState.TotalEventsProcessed, 0, 0);
+    Stats->TotalEventsCorrelated = InterlockedCompareExchange64(&g_BeState.TotalEventsCorrelated, 0, 0);
+    Stats->TotalChainsCreated = InterlockedCompareExchange64(&g_BeState.TotalChainsCreated, 0, 0);
+    Stats->TotalRuleMatches = InterlockedCompareExchange64(&g_BeState.TotalRuleMatches, 0, 0);
+    Stats->TotalThreatsDetected = InterlockedCompareExchange64(&g_BeState.TotalThreatsDetected, 0, 0);
+    Stats->TotalThreatsBlocked = InterlockedCompareExchange64(&g_BeState.TotalThreatsBlocked, 0, 0);
+    Stats->EventsDropped = InterlockedCompareExchange64(&g_BeState.EventsDropped, 0, 0);
+
+    Stats->LastChainCleanupTime = g_BeState.LastChainCleanupTime;
+    Stats->LastStatisticsReportTime = g_BeState.LastStatisticsReportTime;
+
+    KeQuerySystemTime(&currentTime);
+    Stats->EngineUptimeMs = (UINT64)(currentTime.QuadPart / 10000) - g_BeState.LastStatisticsReportTime;
+
+    ExReleaseRundownProtection(&g_BeState.RundownRef);
+    return STATUS_SUCCESS;
+}
+
+/**
+ * @brief Get behavioral engine statistics (INTERNAL ONLY).
+ *
+ * WARNING: Exposes internal counter snapshots and configuration values.
+ * MUST NOT be exposed to user-mode (use BeEngineGetStatisticsSafe).
+ *
+ * SECURITY: We deliberately do NOT memcpy the entire BEHAVIOR_ENGINE_GLOBALS
+ * struct. The struct embeds ERESOURCE / NPAGED_LOOKASIDE_LIST / KEVENT /
+ * LIST_ENTRY / EX_RUNDOWN_REF objects whose internal pointers reference
+ * the live engine. A caller using a memcpy'd copy as an actual lock or
+ * list head would corrupt those objects and BugCheck the system.
+ *
+ * Instead we copy only the safe scalar fields and zero the embedded
+ * synchronization primitives in the destination so that it is obvious
+ * the copy must not be used as a live BEHAVIOR_ENGINE_GLOBALS instance.
+ */
+_IRQL_requires_max_(APC_LEVEL)
+NTSTATUS
+BeEngineGetStatistics(
+    _Out_ PBEHAVIOR_ENGINE_GLOBALS Stats
+    )
+{
+    if (Stats == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    if (!g_BeState.Initialized) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    if (!ExAcquireRundownProtection(&g_BeState.RundownRef)) {
+        return STATUS_DEVICE_NOT_READY;
+    }
+
+    //
+    // Zero the destination first so any field we don't explicitly copy
+    // (locks, lookasides, list heads, events, worker handle, rundown ref)
+    // is left in a zeroed state — never holds stale pointers from
+    // g_BeState.
+    //
+    RtlZeroMemory(Stats, sizeof(BEHAVIOR_ENGINE_GLOBALS));
+
+    //
+    // Configuration (immutable after Initialize, safe to read without lock).
+    //
+    Stats->Initialized = g_BeState.Initialized;
+    Stats->Enabled = g_BeState.Enabled;
+    Stats->ChainTimeoutMs = g_BeState.ChainTimeoutMs;
+    Stats->MaxActiveChains = g_BeState.MaxActiveChains;
+    Stats->MaxEventsPerChain = g_BeState.MaxEventsPerChain;
+    Stats->CorrelationWindowMs = g_BeState.CorrelationWindowMs;
+    Stats->HighThreatThreshold = g_BeState.HighThreatThreshold;
+    Stats->CriticalThreshold = g_BeState.CriticalThreshold;
+    Stats->MaxPendingEvents = g_BeState.MaxPendingEvents;
+
+    //
+    // Counters protected by their respective locks — racy reads here are
+    // acceptable for diagnostics; values may be slightly stale.
+    //
+    Stats->ActiveChainCount = g_BeState.ActiveChainCount;
+    Stats->ProcessContextCount = g_BeState.ProcessContextCount;
+    Stats->LoadedRuleCount = g_BeState.LoadedRuleCount;
+    Stats->EnabledRuleCount = g_BeState.EnabledRuleCount;
+    Stats->PendingEventCount = g_BeState.PendingEventCount;
+
+    //
+    // Atomic 64-bit counters.
+    //
+    Stats->TotalEventsProcessed = InterlockedCompareExchange64(&g_BeState.TotalEventsProcessed, 0, 0);
+    Stats->TotalEventsCorrelated = InterlockedCompareExchange64(&g_BeState.TotalEventsCorrelated, 0, 0);
+    Stats->TotalChainsCreated = InterlockedCompareExchange64(&g_BeState.TotalChainsCreated, 0, 0);
+    Stats->TotalRuleMatches = InterlockedCompareExchange64(&g_BeState.TotalRuleMatches, 0, 0);
+    Stats->TotalThreatsDetected = InterlockedCompareExchange64(&g_BeState.TotalThreatsDetected, 0, 0);
+    Stats->TotalThreatsBlocked = InterlockedCompareExchange64(&g_BeState.TotalThreatsBlocked, 0, 0);
+    Stats->EventsDropped = InterlockedCompareExchange64(&g_BeState.EventsDropped, 0, 0);
+
+    Stats->LastChainCleanupTime = g_BeState.LastChainCleanupTime;
+    Stats->LastStatisticsReportTime = g_BeState.LastStatisticsReportTime;
+
+    ExReleaseRundownProtection(&g_BeState.RundownRef);
+    return STATUS_SUCCESS;
+}
+
+// ============================================================================
+// PRIVATE FUNCTIONS - INITIALIZATION
+// ============================================================================
+
+/**
+ * @brief Initialize hash tables.
+ */
+static NTSTATUS
+BepInitializeHashTables(
+    VOID
+    )
+{
+    ULONG i;
+
+    //
+    // Initialize process hash table
+    //
+    for (i = 0; i < BE_PROCESS_HASH_BUCKETS; i++) {
+        InitializeListHead(&g_ProcessHashTable[i]);
+    }
+    ExInitializePushLock(&g_ProcessHashLock);
+
+    //
+    // Initialize chain hash table
+    //
+    for (i = 0; i < BE_CHAIN_HASH_BUCKETS; i++) {
+        InitializeListHead(&g_ChainHashTable[i]);
+    }
+    ExInitializePushLock(&g_ChainHashLock);
+
+    return STATUS_SUCCESS;
+}
+
+/**
+ * @brief Cleanup hash tables.
+ *
+ * Drains BOTH hash tables, freeing every BE_PROCESS_HASH_ENTRY and
+ * BE_CHAIN_HASH_ENTRY allocation. Called from BeEngineShutdown BEFORE
+ * the chain/context structs themselves are freed so that no concurrent
+ * BeEngineGetChain / BeEngineGetProcessContext call can find a dangling
+ * pointer in the hash table.
+ *
+ * Also called on the init-failure cleanup path; in that case the buckets
+ * may already be empty but the drain is still safe (IsListEmpty short-circuit).
+ *
+ * SAFETY: Must run with no other readers/writers active. Either:
+ *  (a) BeEngineShutdown has stopped the worker and waited on the rundown ref, or
+ *  (b) BeEngineInitialize is unwinding before publishing g_BeState.Initialized=TRUE
+ *      so no public-API caller can have a reference yet.
+ */
+static VOID
+BepCleanupHashTables(
+    VOID
+    )
+{
+    ULONG i;
+
+    //
+    // Drain process context hash table.
+    //
+    for (i = 0; i < BE_PROCESS_HASH_BUCKETS; i++) {
+        while (!IsListEmpty(&g_ProcessHashTable[i])) {
+            PLIST_ENTRY entry = RemoveHeadList(&g_ProcessHashTable[i]);
+            PBE_PROCESS_HASH_ENTRY hashEntry =
+                CONTAINING_RECORD(entry, BE_PROCESS_HASH_ENTRY, HashListEntry);
+            ExFreePoolWithTag(hashEntry, BE_POOL_TAG_GENERAL);
+        }
+    }
+
+    //
+    // Drain chain hash table.
+    //
+    for (i = 0; i < BE_CHAIN_HASH_BUCKETS; i++) {
+        while (!IsListEmpty(&g_ChainHashTable[i])) {
+            PLIST_ENTRY entry = RemoveHeadList(&g_ChainHashTable[i]);
+            PBE_CHAIN_HASH_ENTRY hashEntry =
+                CONTAINING_RECORD(entry, BE_CHAIN_HASH_ENTRY, HashListEntry);
+            ExFreePoolWithTag(hashEntry, BE_POOL_TAG_CHAIN);
+        }
+    }
+}
+
+/**
+ * @brief Initialize lookaside lists.
+ */
+static NTSTATUS
+BepInitializeLookasideLists(
+    VOID
+    )
+{
+    ExInitializeNPagedLookasideList(
+        &g_BeState.EventLookaside,
+        NULL,
+        NULL,
+        POOL_NX_ALLOCATION,
+        sizeof(BE_PENDING_EVENT) + 1024,  // Allow for event data
+        BE_POOL_TAG_EVENT,
+        BE_EVENT_LOOKASIDE_DEPTH
+        );
+
+    ExInitializeNPagedLookasideList(
+        &g_BeState.ChainLookaside,
+        NULL,
+        NULL,
+        POOL_NX_ALLOCATION,
+        sizeof(BE_ATTACK_CHAIN),
+        BE_POOL_TAG_CHAIN,
+        BE_CHAIN_LOOKASIDE_DEPTH
+        );
+
+    ExInitializeNPagedLookasideList(
+        &g_BeState.EntryLookaside,
+        NULL,
+        NULL,
+        POOL_NX_ALLOCATION,
+        sizeof(BE_CHAIN_ENTRY),
+        BE_POOL_TAG_CHAIN,
+        BE_ENTRY_LOOKASIDE_DEPTH
+        );
+
+    ExInitializeNPagedLookasideList(
+        &g_BeState.ContextLookaside,
+        NULL,
+        NULL,
+        POOL_NX_ALLOCATION,
+        sizeof(BE_PROCESS_CONTEXT),
+        BE_POOL_TAG_GENERAL,
+        BE_CONTEXT_LOOKASIDE_DEPTH
+        );
+
+    return STATUS_SUCCESS;
+}
+
+/**
+ * @brief Cleanup lookaside lists.
+ */
+static VOID
+BepCleanupLookasideLists(
+    VOID
+    )
+{
+    ExDeleteNPagedLookasideList(&g_BeState.EventLookaside);
+    ExDeleteNPagedLookasideList(&g_BeState.ChainLookaside);
+    ExDeleteNPagedLookasideList(&g_BeState.EntryLookaside);
+    ExDeleteNPagedLookasideList(&g_BeState.ContextLookaside);
+}
+
+// ============================================================================
+// PRIVATE FUNCTIONS - WORKER THREAD
+// ============================================================================
+
+/**
+ * @brief Worker thread routine.
+ */
+static VOID
+BepWorkerThread(
+    _In_ PVOID StartContext
+    )
+{
+    PVOID waitObjects[2];
+    LARGE_INTEGER timeout;
+    NTSTATUS waitStatus;
+    LARGE_INTEGER currentTime;
+    UINT64 currentTimeMs;
+
+    UNREFERENCED_PARAMETER(StartContext);
+
+    waitObjects[0] = &g_BeState.WorkerStopEvent;
+    waitObjects[1] = &g_BeState.WorkerWakeEvent;
+
+    timeout.QuadPart = -((LONGLONG)BE_WORKER_WAKE_INTERVAL_MS * 10000);
+
+    while (!g_BeState.WorkerStopping) {
+        //
+        // Wait for work or timeout
+        //
+        waitStatus = KeWaitForMultipleObjects(
+            2,
+            waitObjects,
+            WaitAny,
+            Executive,
+            KernelMode,
+            FALSE,
+            &timeout,
+            NULL
+            );
+
+        //
+        // Check for stop signal
+        //
+        if (waitStatus == STATUS_WAIT_0 || g_BeState.WorkerStopping) {
+            break;
+        }
+
+        //
+        // Process pending events
+        //
+        BepProcessEventBatch();
+
+        //
+        // Periodic cleanup
+        //
+        KeQuerySystemTime(&currentTime);
+        currentTimeMs = (UINT64)(currentTime.QuadPart / 10000);
+
+        if (currentTimeMs - g_BeState.LastChainCleanupTime > BE_CHAIN_CLEANUP_INTERVAL_MS) {
+            BepCleanupStaleChains();
+            BepCleanupStaleProcessContexts();
+
+            //
+            // Run ThreatScoring maintenance on the driver-wide engine.
+            // This handles factor decay (scores age over time) and purging
+            // contexts for processes that have terminated, preventing
+            // unbounded memory growth on long-running systems.
+            //
+            {
+                PTS_SCORING_ENGINE tsEngine = (PTS_SCORING_ENGINE)ShadowStrikeGetThreatScoringEngine();
+                if (tsEngine != NULL) {
+                    TsRunMaintenancePass(tsEngine);
+                    TsPurgeStaleContexts(tsEngine, NULL);
+                }
+            }
+
+            g_BeState.LastChainCleanupTime = currentTimeMs;
+        }
+    }
+
+    PsTerminateSystemThread(STATUS_SUCCESS);
+}
+
+/**
+ * @brief Process a batch of pending events.
+ */
+static VOID
+BepProcessEventBatch(
+    VOID
+    )
+{
+    KIRQL oldIrql;
+    PBE_PENDING_EVENT event;
+    PLIST_ENTRY entry;
+    UINT32 processed = 0;
+    LIST_ENTRY batchList;
+
+    InitializeListHead(&batchList);
+
+    //
+    // Dequeue batch of events
+    //
+    KeAcquireSpinLock(&g_BeState.EventQueueLock, &oldIrql);
+
+    while (!IsListEmpty(&g_BeState.PendingEventQueue) && processed < BE_EVENTS_PER_BATCH) {
+        entry = RemoveHeadList(&g_BeState.PendingEventQueue);
+        g_BeState.PendingEventCount--;
+        InsertTailList(&batchList, entry);
+        processed++;
+    }
+
+    KeReleaseSpinLock(&g_BeState.EventQueueLock, oldIrql);
+
+    //
+    // Process batch at PASSIVE_LEVEL
+    //
+    while (!IsListEmpty(&batchList)) {
+        entry = RemoveHeadList(&batchList);
+        event = CONTAINING_RECORD(entry, BE_PENDING_EVENT, ListEntry);
+
+        BepProcessSingleEvent(event);
+        BepFreeEvent(event);
+    }
+}
+
+/**
+ * @brief Map BehaviorEngine event type to PatternMatcher event type.
+ *
+ * Translates the sparse BEHAVIOR_EVENT_TYPE enum (hex ranges) to the dense
+ * PM_EVENT_TYPE enum for pattern index lookup. Returns PmEvent_Custom for
+ * events that have no specific behavioral pattern mapping (indexed and
+ * processed normally as custom events).
+ */
+static PM_EVENT_TYPE
+BepMapToPmEventType(
+    _In_ BEHAVIOR_EVENT_TYPE BeType
+    )
+{
+    switch (BeType) {
+    case BehaviorEvent_ProcessCreate:
+    case BehaviorEvent_ChildProcessSpawn:
+        return PmEvent_ProcessCreate;
+
+    case BehaviorEvent_ProcessTerminate:
+        return PmEvent_ProcessTerminate;
+
+    case BehaviorEvent_RemoteThreadCreate:
+    case BehaviorEvent_ThreadExecutionHijack:
+    case BehaviorEvent_EarlyBirdInjection:
+        return PmEvent_ThreadCreate;
+
+    case BehaviorEvent_DriverLoad:
+    case BehaviorEvent_ReflectiveDLLLoad:
+    case BehaviorEvent_ModuleStomping:
+        return PmEvent_ImageLoad;
+
+    case BehaviorEvent_RansomwareBehavior:
+    case BehaviorEvent_MassFileEncryption:
+    case BehaviorEvent_HiddenFileCreation:
+    case BehaviorEvent_StartupFolderDrop:
+    case BehaviorEvent_AlternateDataStream:
+        return PmEvent_FileCreate;
+
+    case BehaviorEvent_MassFileDeletion:
+    case BehaviorEvent_BackupDeletion:
+    case BehaviorEvent_VSSDestruction:
+    case BehaviorEvent_LogDeletion:
+        return PmEvent_FileDelete;
+
+    case BehaviorEvent_RegistryRunKey:
+    case BehaviorEvent_ServicePersistence:
+    case BehaviorEvent_WMISubscription:
+    case BehaviorEvent_ImageFilePersistence:
+    case BehaviorEvent_COMHijacking:
+        return PmEvent_RegistryWrite;
+
+    case BehaviorEvent_ScheduledTaskPersistence:
+    case BehaviorEvent_ScheduledTaskCreate:
+        return PmEvent_RegistryCreate;
+
+    case BehaviorEvent_C2Communication:
+    case BehaviorEvent_DNSTunneling:
+    case BehaviorEvent_DGADomain:
+    case BehaviorEvent_Beaconing:
+    case BehaviorEvent_ReverseShell:
+    case BehaviorEvent_DataExfiltration:
+    case BehaviorEvent_TorConnection:
+        return PmEvent_NetworkConnect;
+
+    case BehaviorEvent_PortScanning:
+        return PmEvent_NetworkListen;
+
+    case BehaviorEvent_SuspiciousAllocation:
+    case BehaviorEvent_RWXMemory:
+    case BehaviorEvent_UnbackedExecutable:
+    case BehaviorEvent_HeapSprayDetected:
+        return PmEvent_MemoryAllocate;
+
+    case BehaviorEvent_MemoryProtectionChange:
+    case BehaviorEvent_DEPViolation:
+        return PmEvent_MemoryProtect;
+
+    case BehaviorEvent_ProcessHollowing:
+    case BehaviorEvent_ProcessDoppelganging:
+        return PmEvent_HandleDuplicate;
+
+    default:
+        return PmEvent_Custom;
+    }
+}
+
+/**
+ * @brief Pattern match completion callback.
+ *
+ * Routes completed behavioral pattern matches into the logging and stats pipeline.
+ * Runs at PASSIVE_LEVEL from PmpCheckPatternComplete â†’ PmpNotifyCallback.
+ */
+static VOID
+BepPatternMatchCallback(
+    _In_ PPM_PATTERN Pattern,
+    _In_ PPM_MATCH_STATE State,
+    _In_opt_ PVOID Context
+    )
+{
+    UNREFERENCED_PARAMETER(Context);
+
+    if (Pattern == NULL || State == NULL) {
+        return;
+    }
+
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
+        "[ShadowStrike:BehaviorEngine] PatternMatch: id='%s' name='%s' PID=%p score=%lu events=%lu/%lu MITRE=%s\n",
+        Pattern->PatternId,
+        Pattern->PatternName,
+        State->ProcessId,
+        Pattern->ThreatScore,
+        State->MatchedEvents,
+        Pattern->EventCount,
+        Pattern->MITRETechnique);
+
+    InterlockedIncrement64(&Pattern->MatchCount);
+    InterlockedIncrement64(&g_BeState.TotalThreatsDetected);
+    InterlockedIncrement64(&g_BeState.TotalRuleMatches);
+}
+
+/**
+ * @brief Callback for AttackChainTracker chain alerts.
+ *
+ * Called when a new event is correlated into an attack chain. Updates
+ * global detection stats and logs the chain progression.
+ */
+static VOID
+BepAttackChainCallback(
+    _In_ PACT_ATTACK_CHAIN Chain,
+    _In_ PACT_CHAIN_EVENT NewEvent,
+    _In_opt_ PVOID Context
+    )
+{
+    UNREFERENCED_PARAMETER(Context);
+
+    if (Chain == NULL || NewEvent == NULL) {
+        return;
+    }
+
+    InterlockedIncrement64(&g_BeState.TotalThreatsDetected);
+
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
+        "[ShadowStrike:BehaviorEngine] ChainAlert: PID=%p "
+        "events=%ld score=%lu confirmed=%s\n",
+        Chain->RootProcessId,
+        Chain->EventCount,
+        Chain->ConfidenceScore,
+        Chain->IsConfirmedAttack ? "YES" : "no");
+}
+
+/**
+ * @brief Process a single event.
+ */
+static NTSTATUS
+BepProcessSingleEvent(
+    _In_ PBE_PENDING_EVENT Event
+    )
+{
+    PBE_PROCESS_CONTEXT processContext = NULL;
+    PBE_ATTACK_CHAIN chain = NULL;
+    NTSTATUS status;
+    UINT32 threatScore;
+
+    //
+    // Get or create process context
+    //
+    status = BepGetOrCreateProcessContext(Event->ProcessId, &processContext);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    //
+    // Calculate threat score
+    //
+    threatScore = BepCalculateEventThreatScore(Event, processContext, Event->InitialThreatScore);
+
+    //
+    // Update process context
+    //
+    BepUpdateProcessContext(processContext, Event, threatScore);
+
+    //
+    // === MITRE ATT&CK Detection Recording ===
+    // Record every event with a mapped technique ID into the MITRE mapper.
+    // This enables: MITRE coverage dashboards, detection-to-technique attribution,
+    // recent-detections queries, and SE Labs / MITRE Eval scoring.
+    //
+    if (Event->MitreAttackId != 0 && g_MitreMapper != NULL) {
+        UNICODE_STRING procName;
+
+        processContext->ImagePath[MAX_FILE_PATH_LENGTH - 1] = L'\0';
+        RtlInitUnicodeString(&procName, processContext->ImagePath);
+
+        (VOID)MmRecordDetection(
+            g_MitreMapper,
+            Event->MitreAttackId,
+            ULongToHandle(Event->ProcessId),
+            &procName,
+            (threatScore > 100) ? 100 : threatScore / 10
+        );
+    }
+
+    //
+    // === Attack Chain Tracker Submission ===
+    // Feed technique-level detections into the multi-stage attack chain tracker
+    // when threat score meets medium threshold. This enables:
+    // - Multi-technique correlation (e.g., recon + execution + persistence)
+    // - Combo bonus detection from g_DangerousCombos table
+    // - Chain-level scoring that exceeds individual event scores
+    //
+    // IRQL: BepProcessSingleEvent runs at PASSIVE_LEVEL (worker thread or sync path).
+    // ActSubmitEvent requires <= APC_LEVEL â€” always satisfied here.
+    //
+    if (Event->MitreAttackId != 0 &&
+        g_AttackChainTracker != NULL &&
+        (threatScore >= BE_SEVERITY_MEDIUM_THRESHOLD ||
+         (Event->Flags & BE_EVENT_FLAG_REQUIRES_CHAIN))) {
+
+        UNICODE_STRING procName;
+
+        processContext->ImagePath[MAX_FILE_PATH_LENGTH - 1] = L'\0';
+        RtlInitUnicodeString(&procName, processContext->ImagePath);
+
+        (VOID)ActSubmitEvent(
+            g_AttackChainTracker,
+            Event->MitreAttackId,
+            ULongToHandle(Event->ProcessId),
+            &procName,
+            Event->EventData,
+            Event->EventDataSize
+        );
+    }
+
+    //
+    // === Behavioral Pattern Matcher Submission ===
+    // Feed every event to the PatternMatcher for multi-event behavioral sequence
+    // detection. PatternMatcher correlates temporal event chains (e.g., create â†’
+    // inject â†’ execute â†’ encrypt) into high-confidence attack patterns with
+    // configurable time windows and per-process state tracking.
+    //
+    // IRQL: PASSIVE_LEVEL (worker thread) â€” PmSubmitEvent requires <= PASSIVE_LEVEL.
+    //
+    if (g_PatternMatcher != NULL) {
+        PM_EVENT_TYPE pmType = BepMapToPmEventType(Event->EventType);
+
+        if (pmType < PmEvent_MaxType) {
+            UNICODE_STRING procName;
+
+            processContext->ImagePath[MAX_FILE_PATH_LENGTH - 1] = L'\0';
+            RtlInitUnicodeString(&procName, processContext->ImagePath);
+
+            (VOID)PmSubmitEvent(
+                g_PatternMatcher,
+                pmType,
+                ULongToHandle(Event->ProcessId),
+                &procName,
+                NULL
+            );
+        }
+    }
+
+    //
+    // === Anomaly Detector Statistical Analysis ===
+    // Feed every event to the AnomalyDetector for per-process statistical
+    // baseline building and deviation detection. Each event type maps to
+    // an AD metric category. The detector builds Z-score + MAD baselines
+    // per process and flags statistically anomalous activity bursts.
+    //
+    // IRQL: PASSIVE_LEVEL â€” AdCheckForAnomaly requires <= APC_LEVEL.
+    //
+    if (g_AnomalyDetector != NULL) {
+        AD_METRIC_TYPE adMetric;
+        BOOLEAN isAnomaly = FALSE;
+        UINT16 eventCategory = (UINT16)(Event->EventType >> 8);
+
+        switch (eventCategory) {
+            case 0x00: adMetric = AdMetric_ProcessCreation; break;
+            case 0x01: adMetric = AdMetric_ThreadCreation;  break;
+            case 0x02: adMetric = AdMetric_MemoryUsage;     break;
+            case 0x03: adMetric = AdMetric_PrivilegeUse;    break;
+            case 0x04: adMetric = AdMetric_RegistryOperations; break;
+            case 0x05: adMetric = AdMetric_DLLLoads;        break;
+            case 0x06: adMetric = AdMetric_HandleCount;     break;
+            case 0x07: adMetric = AdMetric_NetworkConnections; break;
+            case 0x08: adMetric = AdMetric_FileOperations;  break;
+            default:   adMetric = AdMetric_Custom;          break;
+        }
+
+        (VOID)AdCheckForAnomaly(
+            g_AnomalyDetector,
+            ULongToHandle(Event->ProcessId),
+            adMetric,
+            (DOUBLE)threatScore,
+            &isAnomaly,
+            NULL
+        );
+
+        if (isAnomaly) {
+            //
+            // Anomalous behavior burst detected â€” boost threat score
+            // to reflect statistical deviation from baseline.
+            //
+            threatScore += BE_ANOMALY_SCORE_BOOST;
+            processContext->Flags |= BE_PROC_FLAG_ANOMALOUS;
+            InterlockedIncrement64(&g_BeState.TotalThreatsDetected);
+        }
+    }
+
+    //
+    // === Rule Engine Evaluation ===
+    // Evaluate user-configured detection rules (loaded via MessageHandler from
+    // user-mode). Rules match on process name, command line, file path, registry
+    // path, threat score, MITRE technique, etc. and produce actions (Block,
+    // Alert, Quarantine, Log). Stack-allocated result avoids pool pressure.
+    //
+    // IRQL: PASSIVE_LEVEL â€” ReEvaluateInPlace requires <= APC_LEVEL.
+    //
+    if (g_RuleEngine != NULL) {
+        RE_EVALUATION_CONTEXT ruleCtx;
+        RE_EVALUATION_RESULT ruleResult;
+        UNICODE_STRING procNameStr;
+        UNICODE_STRING cmdLineStr;
+
+        RtlZeroMemory(&ruleCtx, sizeof(ruleCtx));
+
+        ruleCtx.ProcessId = ULongToHandle(Event->ProcessId);
+        ruleCtx.ParentProcessId = ULongToHandle(Event->ParentProcessId);
+        ruleCtx.ThreatScore = threatScore;
+        ruleCtx.BehaviorFlags = processContext->Flags;
+        KeQuerySystemTimePrecise(&ruleCtx.CurrentTime);
+
+        processContext->ImagePath[MAX_FILE_PATH_LENGTH - 1] = L'\0';
+        RtlInitUnicodeString(&procNameStr, processContext->ImagePath);
+        ruleCtx.ProcessName = &procNameStr;
+
+        if (processContext->CommandLine[0] != L'\0') {
+            processContext->CommandLine[MAX_COMMAND_LINE_LENGTH - 1] = L'\0';
+            RtlInitUnicodeString(&cmdLineStr, processContext->CommandLine);
+            ruleCtx.CommandLine = &cmdLineStr;
+        }
+
+        if (NT_SUCCESS(ReEvaluateInPlace(g_RuleEngine, &ruleCtx, &ruleResult)) &&
+            ruleResult.RuleMatched) {
+
+            DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
+                "[ShadowStrike:BehaviorEngine] Rule matched: '%s' (action=%u) for PID %u\n",
+                ruleResult.MatchedRuleId,
+                (ULONG)ruleResult.PrimaryAction,
+                Event->ProcessId);
+
+            if (ruleResult.PrimaryAction == ReAction_Block) {
+                Event->Flags |= BE_EVENT_FLAG_BLOCKING;
+                InterlockedIncrement64(&g_BeState.TotalThreatsDetected);
+            }
+        }
+    }
+
+    //
+    // Check if event should be correlated to attack chain
+    //
+    if (threatScore >= BE_SEVERITY_MEDIUM_THRESHOLD ||
+        (Event->Flags & BE_EVENT_FLAG_REQUIRES_CHAIN)) {
+
+        status = BepGetOrCreateChain(Event->ProcessId, &chain);
+        if (NT_SUCCESS(status)) {
+            BepCorrelateEventToChain(Event, processContext, chain);
+            BeEngineReleaseChain(chain);
+        }
+
+        Event->Flags |= BE_EVENT_FLAG_CORRELATED;
+        InterlockedIncrement64(&g_BeState.TotalEventsCorrelated);
+    }
+
+    //
+    // Check for threat detection
+    //
+    if (threatScore >= g_BeState.HighThreatThreshold) {
+        InterlockedIncrement64(&g_BeState.TotalThreatsDetected);
+
+        //
+        // Emit behavioral alert telemetry for SIEM consumers.
+        // Only fires for high-threat detections to avoid telemetry flood.
+        //
+        TeLogBehaviorAlert(
+            Event->ProcessId,
+            Event->EventType,
+            Event->Category,
+            threatScore,
+            0,
+            NULL
+        );
+
+        //
+        // Propagate behavioral engine's correlated verdict to composite
+        // ThreatScoring. Individual callbacks feed technique-level signals;
+        // this feeds the engine's AGGREGATE assessment after pattern matching,
+        // anomaly detection, and attack chain correlation.
+        //
+        if (KeGetCurrentIrql() == PASSIVE_LEVEL) {
+            PTS_SCORING_ENGINE tsEngine = (PTS_SCORING_ENGINE)ShadowStrikeGetThreatScoringEngine();
+            if (tsEngine != NULL) {
+                TsAddFactor(
+                    tsEngine,
+                    (HANDLE)(ULONG_PTR)Event->ProcessId,
+                    TsFactor_Behavioral,
+                    "BehavioralEngineVerdict",
+                    (LONG)(threatScore / 10),
+                    "Behavioral engine correlated high-threat detection"
+                    );
+            }
+        }
+    }
+
+    //
+    // === ETW Telemetry Emission ===
+    // Emit behavioral detection events via ETW for SIEM consumers, Windows
+    // Event Log, and real-time diagnostics. This is the SINGLE telemetry
+    // funnel â€” every behavioral event that passes through BepProcessSingleEvent
+    // gets ETW visibility.
+    //
+    // Two emission paths:
+    // 1. ETW_LOG_BEHAVIOR: Every processed event (informational+detection)
+    // 2. ETW_LOG_SECURITY: High-threat events that crossed the alert threshold
+    //
+    // IRQL: PASSIVE_LEVEL (worker thread) â€” EtwWrite requires <= DISPATCH_LEVEL.
+    //
+    {
+        WCHAR etwDescription[128];
+        NTSTATUS etwFmtStatus;
+
+        //
+        // Format a bounded description for the ETW event.
+        // Use process image path truncated to last component if available.
+        //
+        etwFmtStatus = RtlStringCchPrintfW(
+            etwDescription,
+            RTL_NUMBER_OF(etwDescription),
+            L"Score=%u Flags=0x%08X",
+            threatScore,
+            processContext->Flags
+        );
+        if (!NT_SUCCESS(etwFmtStatus)) {
+            etwDescription[0] = L'\0';
+        }
+
+        //
+        // Emit behavioral event for all processed events
+        //
+        ETW_LOG_BEHAVIOR(
+            EtwEventId_BehaviorAlert,
+            Event->ProcessId,
+            (UINT32)Event->EventType,
+            (UINT32)Event->Category,
+            Event->CorrelationId.SequenceNumber,
+            Event->MitreAttackId,
+            (UINT32)0,
+            threatScore,
+            (threatScore > 100) ? 100 : threatScore,
+            etwDescription
+        );
+
+        //
+        // Emit security alert for high-threat events (SIEM critical path)
+        //
+        if (threatScore >= g_BeState.HighThreatThreshold) {
+            WCHAR alertTitle[64];
+            PCWSTR procPath = processContext->ImagePath;
+            UINT32 responseAction = 0;
+
+            if (Event->Flags & BE_EVENT_FLAG_BLOCKING) {
+                responseAction = 1;
+            }
+
+            (VOID)RtlStringCchPrintfW(
+                alertTitle,
+                RTL_NUMBER_OF(alertTitle),
+                L"Threat T%04X PID %u",
+                Event->MitreAttackId,
+                Event->ProcessId
+            );
+
+            ETW_LOG_SECURITY(
+                (UINT32)EtwEventId_TamperAttempt + (UINT32)(Event->Category & 0x0F),
+                (threatScore >= g_BeState.CriticalThreshold) ? 1u : 2u,
+                Event->ProcessId,
+                Event->CorrelationId.SequenceNumber,
+                alertTitle,
+                etwDescription,
+                procPath,
+                NULL,
+                threatScore,
+                responseAction
+            );
+        }
+    }
+
+    Event->Flags |= BE_EVENT_FLAG_PROCESSED;
+
+    BeEngineReleaseProcessContext(processContext);
+    return STATUS_SUCCESS;
+}
+
+// ============================================================================
+// PRIVATE FUNCTIONS - MEMORY MANAGEMENT
+// ============================================================================
+
+/**
+ * @brief Allocate pending event.
+ */
+static PBE_PENDING_EVENT
+BepAllocateEvent(
+    _In_ UINT32 EventDataSize
+    )
+{
+    PBE_PENDING_EVENT event;
+    SIZE_T totalSize = sizeof(BE_PENDING_EVENT) + EventDataSize;
+
+    if (EventDataSize <= 1024) {
+        event = (PBE_PENDING_EVENT)ExAllocateFromNPagedLookasideList(
+            &g_BeState.EventLookaside
+            );
+    } else {
+        event = (PBE_PENDING_EVENT)ExAllocatePool2(
+            POOL_FLAG_NON_PAGED,
+            totalSize,
+            BE_POOL_TAG_EVENT
+            );
+    }
+
+    if (event != NULL) {
+        RtlZeroMemory(event, totalSize);
+    }
+
+    return event;
+}
+
+/**
+ * @brief Free pending event.
+ */
+static VOID
+BepFreeEvent(
+    _In_ PBE_PENDING_EVENT Event
+    )
+{
+    if (Event == NULL) {
+        return;
+    }
+
+    if (Event->EventDataSize <= 1024) {
+        ExFreeToNPagedLookasideList(&g_BeState.EventLookaside, Event);
+    } else {
+        ExFreePoolWithTag(Event, BE_POOL_TAG_EVENT);
+    }
+}
+
+/**
+ * @brief Allocate attack chain.
+ */
+static PBE_ATTACK_CHAIN
+BepAllocateChain(
+    VOID
+    )
+{
+    PBE_ATTACK_CHAIN chain;
+
+    chain = (PBE_ATTACK_CHAIN)ExAllocateFromNPagedLookasideList(
+        &g_BeState.ChainLookaside
+        );
+
+    if (chain != NULL) {
+        RtlZeroMemory(chain, sizeof(BE_ATTACK_CHAIN));
+        chain->RefCount = 1;
+        InitializeListHead(&chain->EntryList);
+        KeInitializeSpinLock(&chain->Lock);
+    }
+
+    return chain;
+}
+
+/**
+ * @brief Free attack chain.
+ */
+static VOID
+BepFreeChain(
+    _In_ PBE_ATTACK_CHAIN Chain
+    )
+{
+    if (Chain != NULL) {
+        ExFreeToNPagedLookasideList(&g_BeState.ChainLookaside, Chain);
+    }
+}
+
+/**
+ * @brief Allocate chain entry.
+ */
+static PBE_CHAIN_ENTRY
+BepAllocateChainEntry(
+    VOID
+    )
+{
+    PBE_CHAIN_ENTRY entry;
+
+    entry = (PBE_CHAIN_ENTRY)ExAllocateFromNPagedLookasideList(
+        &g_BeState.EntryLookaside
+        );
+
+    if (entry != NULL) {
+        RtlZeroMemory(entry, sizeof(BE_CHAIN_ENTRY));
+    }
+
+    return entry;
+}
+
+/**
+ * @brief Free chain entry.
+ */
+static VOID
+BepFreeChainEntry(
+    _In_ PBE_CHAIN_ENTRY Entry
+    )
+{
+    if (Entry != NULL) {
+        ExFreeToNPagedLookasideList(&g_BeState.EntryLookaside, Entry);
+    }
+}
+
+/**
+ * @brief Allocate process context.
+ */
+static PBE_PROCESS_CONTEXT
+BepAllocateProcessContext(
+    VOID
+    )
+{
+    PBE_PROCESS_CONTEXT context;
+
+    context = (PBE_PROCESS_CONTEXT)ExAllocateFromNPagedLookasideList(
+        &g_BeState.ContextLookaside
+        );
+
+    if (context != NULL) {
+        RtlZeroMemory(context, sizeof(BE_PROCESS_CONTEXT));
+        context->RefCount = 1;
+    }
+
+    return context;
+}
+
+/**
+ * @brief Free process context.
+ */
+static VOID
+BepFreeProcessContext(
+    _In_ PBE_PROCESS_CONTEXT Context
+    )
+{
+    if (Context != NULL) {
+        ExFreeToNPagedLookasideList(&g_BeState.ContextLookaside, Context);
+    }
+}
+
+// ============================================================================
+// PRIVATE FUNCTIONS - HASHING
+// ============================================================================
+
+/**
+ * @brief Hash process ID for lookup using multiply-shift hash.
+ *
+ * Uses a proper multiplicative hash to avoid clustering since
+ * Windows PIDs are typically multiples of 4.
+ */
+static UINT32
+BepHashProcessId(
+    _In_ UINT32 ProcessId
+    )
+{
+    //
+    // Knuth multiplicative hash - good distribution for sequential/aligned values
+    //
+    UINT32 hash = ProcessId * 2654435761u;
+    return (hash >> (32 - 10)) & (BE_PROCESS_HASH_BUCKETS - 1);
+}
+
+/**
+ * @brief Hash chain ID for lookup using multiply-shift hash.
+ */
+static UINT32
+BepHashChainId(
+    _In_ UINT64 ChainId
+    )
+{
+    //
+    // FNV-1a inspired hash for 64-bit values
+    //
+    UINT64 hash = ChainId * 0x100000001B3ULL;
+    hash ^= (hash >> 33);
+    hash *= 0xFF51AFD7ED558CCDULL;
+    return (UINT32)(hash & (BE_CHAIN_HASH_BUCKETS - 1));
+}
+
+// ============================================================================
+// PRIVATE FUNCTIONS - CONTEXT MANAGEMENT
+// ============================================================================
+
+/**
+ * @brief Insert process context into tracking.
+ */
+static NTSTATUS
+BepInsertProcessContext(
+    _In_ PBE_PROCESS_CONTEXT Context
+    )
+{
+    UINT32 hashIndex;
+    PBE_PROCESS_HASH_ENTRY hashEntry;
+
+    hashEntry = (PBE_PROCESS_HASH_ENTRY)ExAllocatePool2(
+        POOL_FLAG_NON_PAGED,
+        sizeof(BE_PROCESS_HASH_ENTRY),
+        BE_POOL_TAG_GENERAL
+        );
+
+    if (hashEntry == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    hashEntry->Context = Context;
+    hashIndex = BepHashProcessId(Context->ProcessId);
+
+    //
+    // Insert into main list
+    //
+    KeEnterCriticalRegion();
+    ExAcquireResourceExclusiveLite(&g_BeState.ProcessLock, TRUE);
+    InsertTailList(&g_BeState.ProcessContextList, &Context->ListEntry);
+    g_BeState.ProcessContextCount++;
+    ExReleaseResourceLite(&g_BeState.ProcessLock);
+    KeLeaveCriticalRegion();
+
+    //
+    // Insert into hash
+    //
+    FltAcquirePushLockExclusive(&g_ProcessHashLock);
+    InsertTailList(&g_ProcessHashTable[hashIndex], &hashEntry->HashListEntry);
+    FltReleasePushLock(&g_ProcessHashLock);
+
+    return STATUS_SUCCESS;
+}
+
+/**
+ * @brief Remove process context from tracking.
+ */
+static VOID
+BepRemoveProcessContext(
+    _In_ PBE_PROCESS_CONTEXT Context
+    )
+{
+    UINT32 hashIndex;
+    PLIST_ENTRY entry;
+    PBE_PROCESS_HASH_ENTRY hashEntry = NULL;
+
+    //
+    // Remove from main list
+    //
+    KeEnterCriticalRegion();
+    ExAcquireResourceExclusiveLite(&g_BeState.ProcessLock, TRUE);
+    RemoveEntryList(&Context->ListEntry);
+    g_BeState.ProcessContextCount--;
+    ExReleaseResourceLite(&g_BeState.ProcessLock);
+    KeLeaveCriticalRegion();
+
+    //
+    // Remove from hash
+    //
+    hashIndex = BepHashProcessId(Context->ProcessId);
+
+    FltAcquirePushLockExclusive(&g_ProcessHashLock);
+
+    for (entry = g_ProcessHashTable[hashIndex].Flink;
+         entry != &g_ProcessHashTable[hashIndex];
+         entry = entry->Flink) {
+
+        PBE_PROCESS_HASH_ENTRY current = CONTAINING_RECORD(entry, BE_PROCESS_HASH_ENTRY, HashListEntry);
+        if (current->Context == Context) {
+            RemoveEntryList(&current->HashListEntry);
+            hashEntry = current;
+            break;
+        }
+    }
+
+    FltReleasePushLock(&g_ProcessHashLock);
+
+    if (hashEntry != NULL) {
+        ExFreePoolWithTag(hashEntry, BE_POOL_TAG_GENERAL);
+    }
+}
+
+/**
+ * @brief Get or create process context (TOCTOU-SAFE).
+ *
+ * SECURITY: This function uses atomic lookup-and-insert to prevent
+ * race conditions where two threads could create duplicate contexts
+ * for the same process ID.
+ *
+ * The lock is held across the entire lookup-allocate-insert sequence
+ * to ensure atomicity.
+ */
+static NTSTATUS
+BepGetOrCreateProcessContext(
+    _In_ UINT32 ProcessId,
+    _Out_ PBE_PROCESS_CONTEXT* Context
+    )
+{
+    UINT32 hashIndex;
+    PLIST_ENTRY entry;
+    PBE_PROCESS_HASH_ENTRY hashEntry;
+    PBE_PROCESS_CONTEXT newContext = NULL;
+    PBE_PROCESS_HASH_ENTRY newHashEntry = NULL;
+
+    PAGED_CODE();
+
+    if (Context == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    *Context = NULL;
+    hashIndex = BepHashProcessId(ProcessId);
+
+    //
+    // CRITICAL: Hold exclusive lock across lookup AND insert to prevent TOCTOU.
+    // This ensures no two threads can create contexts for the same PID.
+    //
+    FltAcquirePushLockExclusive(&g_ProcessHashLock);
+
+    //
+    // First, check if context already exists
+    //
+    for (entry = g_ProcessHashTable[hashIndex].Flink;
+         entry != &g_ProcessHashTable[hashIndex];
+         entry = entry->Flink) {
+
+        hashEntry = CONTAINING_RECORD(entry, BE_PROCESS_HASH_ENTRY, HashListEntry);
+
+        if (hashEntry->Context->ProcessId == ProcessId) {
+            //
+            // Found existing context - increment refcount and return
+            //
+            InterlockedIncrement(&hashEntry->Context->RefCount);
+            *Context = hashEntry->Context;
+            FltReleasePushLock(&g_ProcessHashLock);
+            return STATUS_SUCCESS;
+        }
+    }
+
+    //
+    // Context doesn't exist - allocate new one while holding lock.
+    // We allocate while holding the lock to ensure atomicity.
+    // This is acceptable because allocations are fast (lookaside list).
+    //
+    newContext = BepAllocateProcessContext();
+    if (newContext == NULL) {
+        FltReleasePushLock(&g_ProcessHashLock);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    newHashEntry = (PBE_PROCESS_HASH_ENTRY)ExAllocatePool2(
+        POOL_FLAG_NON_PAGED,
+        sizeof(BE_PROCESS_HASH_ENTRY),
+        BE_POOL_TAG_GENERAL
+        );
+
+    if (newHashEntry == NULL) {
+        BepFreeProcessContext(newContext);
+        FltReleasePushLock(&g_ProcessHashLock);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    //
+    // Initialize context
+    //
+    newContext->ProcessId = ProcessId;
+    newContext->RefCount = 1;
+    InitializeListHead(&newContext->ChainList);
+
+    //
+    // Insert into hash table
+    //
+    newHashEntry->Context = newContext;
+    InsertTailList(&g_ProcessHashTable[hashIndex], &newHashEntry->HashListEntry);
+
+    FltReleasePushLock(&g_ProcessHashLock);
+
+    //
+    // Insert into main list (separate lock, follows lock hierarchy)
+    //
+    KeEnterCriticalRegion();
+    ExAcquireResourceExclusiveLite(&g_BeState.ProcessLock, TRUE);
+    InsertTailList(&g_BeState.ProcessContextList, &newContext->ListEntry);
+    g_BeState.ProcessContextCount++;
+    ExReleaseResourceLite(&g_BeState.ProcessLock);
+    KeLeaveCriticalRegion();
+
+    *Context = newContext;
+    return STATUS_SUCCESS;
+}
+
+/**
+ * @brief Insert chain into tracking.
+ */
+static NTSTATUS
+BepInsertChain(
+    _In_ PBE_ATTACK_CHAIN Chain
+    )
+{
+    UINT32 hashIndex;
+    PBE_CHAIN_HASH_ENTRY hashEntry;
+
+    hashEntry = (PBE_CHAIN_HASH_ENTRY)ExAllocatePool2(
+        POOL_FLAG_NON_PAGED,
+        sizeof(BE_CHAIN_HASH_ENTRY),
+        BE_POOL_TAG_CHAIN
+        );
+
+    if (hashEntry == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    hashEntry->Chain = Chain;
+    hashIndex = BepHashChainId(Chain->ChainId);
+
+    //
+    // Insert into main list
+    //
+    KeEnterCriticalRegion();
+    ExAcquireResourceExclusiveLite(&g_BeState.ChainLock, TRUE);
+    InsertTailList(&g_BeState.ActiveChainList, &Chain->ListEntry);
+    g_BeState.ActiveChainCount++;
+    ExReleaseResourceLite(&g_BeState.ChainLock);
+    KeLeaveCriticalRegion();
+
+    //
+    // Insert into hash
+    //
+    FltAcquirePushLockExclusive(&g_ChainHashLock);
+    InsertTailList(&g_ChainHashTable[hashIndex], &hashEntry->HashListEntry);
+    FltReleasePushLock(&g_ChainHashLock);
+
+    InterlockedIncrement64(&g_BeState.TotalChainsCreated);
+
+    return STATUS_SUCCESS;
+}
+
+/**
+ * @brief Remove chain from hash table only.
+ *
+ * Used by reference counting cleanup when chain refcount hits zero.
+ * Only removes from the hash table â€” caller is responsible for main list removal
+ * to prevent double-RemoveEntryList corruption.
+ */
+static VOID
+BepRemoveChainFromHash(
+    _In_ PBE_ATTACK_CHAIN Chain
+    )
+{
+    UINT32 hashIndex;
+    PLIST_ENTRY entry;
+    PBE_CHAIN_HASH_ENTRY hashEntry = NULL;
+
+    hashIndex = BepHashChainId(Chain->ChainId);
+
+    FltAcquirePushLockExclusive(&g_ChainHashLock);
+
+    for (entry = g_ChainHashTable[hashIndex].Flink;
+         entry != &g_ChainHashTable[hashIndex];
+         entry = entry->Flink) {
+
+        PBE_CHAIN_HASH_ENTRY current = CONTAINING_RECORD(entry, BE_CHAIN_HASH_ENTRY, HashListEntry);
+        if (current->Chain == Chain) {
+            RemoveEntryList(&current->HashListEntry);
+            hashEntry = current;
+            break;
+        }
+    }
+
+    FltReleasePushLock(&g_ChainHashLock);
+
+    if (hashEntry != NULL) {
+        ExFreePoolWithTag(hashEntry, BE_POOL_TAG_CHAIN);
+    }
+}
+
+/**
+ * @brief Remove process context from hash table only.
+ *
+ * Only removes from the hash table â€” caller is responsible for main list
+ * removal to prevent double-RemoveEntryList corruption.
+ */
+static VOID
+BepRemoveProcessContextFromHash(
+    _In_ PBE_PROCESS_CONTEXT Context
+    )
+{
+    UINT32 hashIndex;
+    PLIST_ENTRY entry;
+    PBE_PROCESS_HASH_ENTRY hashEntry = NULL;
+
+    hashIndex = BepHashProcessId(Context->ProcessId);
+
+    FltAcquirePushLockExclusive(&g_ProcessHashLock);
+
+    for (entry = g_ProcessHashTable[hashIndex].Flink;
+         entry != &g_ProcessHashTable[hashIndex];
+         entry = entry->Flink) {
+
+        PBE_PROCESS_HASH_ENTRY current = CONTAINING_RECORD(entry, BE_PROCESS_HASH_ENTRY, HashListEntry);
+        if (current->Context == Context) {
+            RemoveEntryList(&current->HashListEntry);
+            hashEntry = current;
+            break;
+        }
+    }
+
+    FltReleasePushLock(&g_ProcessHashLock);
+
+    if (hashEntry != NULL) {
+        ExFreePoolWithTag(hashEntry, BE_POOL_TAG_GENERAL);
+    }
+}
+
+/**
+ * @brief Remove chain from tracking.
+ */
+static VOID
+BepRemoveChain(
+    _In_ PBE_ATTACK_CHAIN Chain
+    )
+{
+    UINT32 hashIndex;
+    PLIST_ENTRY entry;
+    PBE_CHAIN_HASH_ENTRY hashEntry = NULL;
+
+    //
+    // Remove from main list
+    //
+    KeEnterCriticalRegion();
+    ExAcquireResourceExclusiveLite(&g_BeState.ChainLock, TRUE);
+    RemoveEntryList(&Chain->ListEntry);
+    g_BeState.ActiveChainCount--;
+    ExReleaseResourceLite(&g_BeState.ChainLock);
+    KeLeaveCriticalRegion();
+
+    //
+    // Remove from hash
+    //
+    hashIndex = BepHashChainId(Chain->ChainId);
+
+    FltAcquirePushLockExclusive(&g_ChainHashLock);
+
+    for (entry = g_ChainHashTable[hashIndex].Flink;
+         entry != &g_ChainHashTable[hashIndex];
+         entry = entry->Flink) {
+
+        PBE_CHAIN_HASH_ENTRY current = CONTAINING_RECORD(entry, BE_CHAIN_HASH_ENTRY, HashListEntry);
+        if (current->Chain == Chain) {
+            RemoveEntryList(&current->HashListEntry);
+            hashEntry = current;
+            break;
+        }
+    }
+
+    FltReleasePushLock(&g_ChainHashLock);
+
+    if (hashEntry != NULL) {
+        ExFreePoolWithTag(hashEntry, BE_POOL_TAG_CHAIN);
+    }
+}
+
+/**
+ * @brief Get or create attack chain for process (TOCTOU-SAFE).
+ *
+ * SECURITY: This function holds appropriate locks during the
+ * lookup-create-insert sequence to prevent race conditions.
+ */
+static NTSTATUS
+BepGetOrCreateChain(
+    _In_ UINT32 ProcessId,
+    _Out_ PBE_ATTACK_CHAIN* Chain
+    )
+{
+    PBE_PROCESS_CONTEXT context = NULL;
+    NTSTATUS status;
+    LARGE_INTEGER currentTime;
+    PBE_ATTACK_CHAIN newChain = NULL;
+
+    PAGED_CODE();
+
+    if (Chain == NULL) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    *Chain = NULL;
+
+    //
+    // Get process context first - we need it for linking
+    //
+    status = BepGetOrCreateProcessContext(ProcessId, &context);
+    if (!NT_SUCCESS(status)) {
+        return status;
+    }
+
+    //
+    // CRITICAL: Hold ProcessLock while checking and modifying chain list
+    // to prevent TOCTOU race where two threads create chains for same process.
+    //
+    KeEnterCriticalRegion();
+    ExAcquireResourceExclusiveLite(&g_BeState.ProcessLock, TRUE);
+
+    //
+    // Check if process already has an active chain
+    //
+    if (context->ChainCount > 0 && !IsListEmpty(&context->ChainList)) {
+        //
+        // Return existing chain
+        //
+        PLIST_ENTRY entry = context->ChainList.Flink;
+        *Chain = CONTAINING_RECORD(entry, BE_ATTACK_CHAIN, ProcessListEntry);
+
+        //
+        // Safely increment refcount - check it's not being freed
+        //
+        if (InterlockedIncrement(&(*Chain)->RefCount) > 1) {
+            ExReleaseResourceLite(&g_BeState.ProcessLock);
+            KeLeaveCriticalRegion();
+            BeEngineReleaseProcessContext(context);
+            return STATUS_SUCCESS;
+        } else {
+            //
+            // Chain was at 0 refcount (being freed) - decrement and create new
+            //
+            InterlockedDecrement(&(*Chain)->RefCount);
+            *Chain = NULL;
+        }
+    }
+
+    //
+    // Check chain limit
+    //
+    if (g_BeState.ActiveChainCount >= g_BeState.MaxActiveChains) {
+        ExReleaseResourceLite(&g_BeState.ProcessLock);
+        KeLeaveCriticalRegion();
+        BeEngineReleaseProcessContext(context);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    //
+    // Create new chain while holding lock
+    //
+    newChain = BepAllocateChain();
+    if (newChain == NULL) {
+        ExReleaseResourceLite(&g_BeState.ProcessLock);
+        KeLeaveCriticalRegion();
+        BeEngineReleaseProcessContext(context);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    KeQuerySystemTime(&currentTime);
+
+    newChain->ChainId = (UINT64)InterlockedIncrement64(&g_BeState.NextChainId);
+    newChain->CreateTime = (UINT64)(currentTime.QuadPart / 10000);
+    newChain->LastUpdateTime = newChain->CreateTime;
+    newChain->PrimaryProcessId = ProcessId;
+    newChain->IsActive = TRUE;
+    newChain->MaxEntries = g_BeState.MaxEventsPerChain;
+    newChain->RefCount = 1;
+
+    //
+    // Link to process context (we already hold ProcessLock)
+    //
+    InsertTailList(&context->ChainList, &newChain->ProcessListEntry);
+    context->ChainCount++;
+
+    //
+    // Copy process path to chain
+    //
+    RtlCopyMemory(newChain->PrimaryImagePath, context->ImagePath,
+                  sizeof(newChain->PrimaryImagePath));
+
+    ExReleaseResourceLite(&g_BeState.ProcessLock);
+    KeLeaveCriticalRegion();
+
+    //
+    // Insert into chain tracking (separate locks, follows hierarchy)
+    //
+    status = BepInsertChain(newChain);
+    if (!NT_SUCCESS(status)) {
+        //
+        // Remove from process context on failure
+        //
+        KeEnterCriticalRegion();
+        ExAcquireResourceExclusiveLite(&g_BeState.ProcessLock, TRUE);
+        RemoveEntryList(&newChain->ProcessListEntry);
+        context->ChainCount--;
+        ExReleaseResourceLite(&g_BeState.ProcessLock);
+        KeLeaveCriticalRegion();
+
+        BepFreeChain(newChain);
+        BeEngineReleaseProcessContext(context);
+        return status;
+    }
+
+    BeEngineReleaseProcessContext(context);
+    *Chain = newChain;
+    return STATUS_SUCCESS;
+}
+
+// ============================================================================
+// PRIVATE FUNCTIONS - EVENT PROCESSING
+// ============================================================================
+
+/**
+ * @brief Correlate event to attack chain.
+ */
+static NTSTATUS
+BepCorrelateEventToChain(
+    _In_ PBE_PENDING_EVENT Event,
+    _In_ PBE_PROCESS_CONTEXT ProcessContext,
+    _Inout_ PBE_ATTACK_CHAIN Chain
+    )
+{
+    PBE_CHAIN_ENTRY entry;
+    MITRE_TACTIC tactic;
+    ATTACK_CHAIN_STAGE stage;
+    KIRQL oldIrql;
+
+    UNREFERENCED_PARAMETER(ProcessContext);
+
+    //
+    // Check chain entry limit
+    //
+    if (Chain->EntryCount >= Chain->MaxEntries) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    //
+    // Allocate chain entry
+    //
+    entry = BepAllocateChainEntry();
+    if (entry == NULL) {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    //
+    // Initialize entry
+    //
+    entry->EntryIndex = Chain->EntryCount;
+    entry->EventType = Event->EventType;
+    entry->MitreAttackId = Event->MitreAttackId;
+    entry->Timestamp = Event->ReceiveTime;
+    entry->ProcessId = Event->ProcessId;
+    entry->ThreatScore = Event->InitialThreatScore;
+
+    //
+    // Calculate time since previous
+    //
+    if (Chain->EntryCount > 0) {
+        entry->TimeSincePreviousMs = (UINT32)(Event->ReceiveTime - Chain->LastUpdateTime);
+    }
+
+    //
+    // Determine stage from tactic
+    //
+    tactic = Tactic_None;
+    BepMapEventToMitre(Event->EventType, &entry->MitreAttackId, &tactic, NULL, NULL);
+    stage = BepTacticToStage(tactic);
+    entry->Stage = stage;
+
+    //
+    // Update chain state
+    //
+    KeAcquireSpinLock(&Chain->Lock, &oldIrql);
+
+    InsertTailList(&Chain->EntryList, &entry->ListEntry);
+    Chain->EntryCount++;
+    Chain->LastUpdateTime = Event->ReceiveTime;
+
+    BepUpdateChainState(Chain, entry);
+
+    KeReleaseSpinLock(&Chain->Lock, oldIrql);
+
+    return STATUS_SUCCESS;
+}
+
+/**
+ * @brief Map event type to MITRE technique.
+ */
+static NTSTATUS
+BepMapEventToMitre(
+    _In_ BEHAVIOR_EVENT_TYPE EventType,
+    _Out_ PUINT32 TechniqueId,
+    _Out_ PMITRE_TACTIC Tactic,
+    _Out_opt_ PUINT32 BaseThreatScore,
+    _Out_opt_ PTHREAT_SEVERITY BaseSeverity
+    )
+{
+    const BE_EVENT_MITRE_MAP* entry = g_EventMitreMap;
+
+    while (entry->EventType != 0) {
+        if (entry->EventType == EventType) {
+            if (TechniqueId != NULL) {
+                *TechniqueId = entry->MitreTechnique;
+            }
+            if (Tactic != NULL) {
+                *Tactic = entry->PrimaryTactic;
+            }
+            if (BaseThreatScore != NULL) {
+                *BaseThreatScore = entry->BaseThreatScore;
+            }
+            if (BaseSeverity != NULL) {
+                *BaseSeverity = entry->BaseSeverity;
+            }
+            return STATUS_SUCCESS;
+        }
+        entry++;
+    }
+
+    //
+    // Default mapping for unknown events
+    //
+    if (TechniqueId != NULL) {
+        *TechniqueId = 0;
+    }
+    if (Tactic != NULL) {
+        *Tactic = Tactic_None;
+    }
+    if (BaseThreatScore != NULL) {
+        *BaseThreatScore = 100;
+    }
+    if (BaseSeverity != NULL) {
+        *BaseSeverity = ThreatSeverity_Informational;
+    }
+
+    return STATUS_NOT_FOUND;
+}
+
+/**
+ * @brief Convert MITRE tactic to attack chain stage.
+ */
+static ATTACK_CHAIN_STAGE
+BepTacticToStage(
+    _In_ MITRE_TACTIC Tactic
+    )
+{
+    switch (Tactic) {
+        case Tactic_Reconnaissance:
+            return AttackStage_Reconnaissance;
+        case Tactic_ResourceDevelopment:
+            return AttackStage_Weaponization;
+        case Tactic_InitialAccess:
+            return AttackStage_Delivery;
+        case Tactic_Execution:
+            return AttackStage_Exploitation;
+        case Tactic_Persistence:
+            return AttackStage_Installation;
+        case Tactic_PrivilegeEscalation:
+            return AttackStage_Installation;
+        case Tactic_DefenseEvasion:
+            return AttackStage_Installation;
+        case Tactic_CredentialAccess:
+            return AttackStage_Actions;
+        case Tactic_Discovery:
+            return AttackStage_Reconnaissance;
+        case Tactic_LateralMovement:
+            return AttackStage_Actions;
+        case Tactic_Collection:
+            return AttackStage_Actions;
+        case Tactic_CommandAndControl:
+            return AttackStage_CommandControl;
+        case Tactic_Exfiltration:
+            return AttackStage_Actions;
+        case Tactic_Impact:
+            return AttackStage_Actions;
+        default:
+            return AttackStage_None;
+    }
+}
+
+/**
+ * @brief Calculate event threat score.
+ */
+static UINT32
+BepCalculateEventThreatScore(
+    _In_ PBE_PENDING_EVENT Event,
+    _In_ PBE_PROCESS_CONTEXT ProcessContext,
+    _In_ UINT32 BaseThreatScore
+    )
+{
+    UINT32 score = BaseThreatScore;
+
+    //
+    // Adjust based on process flags
+    //
+    if (ProcessContext->Flags & BE_PROC_FLAG_LOLBIN) {
+        score = (score * 120) / 100;  // 20% increase for LOLBins
+    }
+
+    if (ProcessContext->Flags & BE_PROC_FLAG_SCRIPT_HOST) {
+        score = (score * 115) / 100;  // 15% increase for script hosts
+    }
+
+    if (ProcessContext->Flags & BE_PROC_FLAG_HIGH_RISK) {
+        score = (score * 130) / 100;  // 30% increase for high-risk processes
+    }
+
+    //
+    // Adjust based on process history
+    //
+    if (ProcessContext->SuspiciousEventCount > 5) {
+        score = (score * 125) / 100;  // 25% increase for repeat offenders
+    }
+
+    //
+    // Cap at 1000
+    //
+    if (score > 1000) {
+        score = 1000;
+    }
+
+    UNREFERENCED_PARAMETER(Event);
+
+    return score;
+}
+
+/**
+ * @brief Convert threat score to severity.
+ */
+static THREAT_SEVERITY
+BepScoreToSeverity(
+    _In_ UINT32 ThreatScore
+    )
+{
+    if (ThreatScore >= BE_SEVERITY_CRITICAL_THRESHOLD) {
+        return ThreatSeverity_Critical;
+    } else if (ThreatScore >= BE_SEVERITY_HIGH_THRESHOLD) {
+        return ThreatSeverity_High;
+    } else if (ThreatScore >= BE_SEVERITY_MEDIUM_THRESHOLD) {
+        return ThreatSeverity_Medium;
+    } else if (ThreatScore >= BE_SEVERITY_LOW_THRESHOLD) {
+        return ThreatSeverity_Low;
+    } else {
+        return ThreatSeverity_Informational;
+    }
+}
+
+/**
+ * @brief Determine response action for event.
+ */
+static BEHAVIOR_RESPONSE_ACTION
+BepDetermineResponse(
+    _In_ PBE_PENDING_EVENT Event,
+    _In_ PBE_ATTACK_CHAIN Chain,
+    _In_ UINT32 ThreatScore
+    )
+{
+    UNREFERENCED_PARAMETER(Event);
+    UNREFERENCED_PARAMETER(Chain);
+
+    if (ThreatScore >= g_BeState.CriticalThreshold) {
+        return BehaviorResponse_Block;
+    } else if (ThreatScore >= g_BeState.HighThreatThreshold) {
+        return BehaviorResponse_Alert;
+    } else {
+        return BehaviorResponse_Allow;
+    }
+}
+
+/**
+ * @brief Update process context with event.
+ */
+static VOID
+BepUpdateProcessContext(
+    _In_ PBE_PROCESS_CONTEXT Context,
+    _In_ PBE_PENDING_EVENT Event,
+    _In_ UINT32 ThreatScore
+    )
+{
+    UINT32 index;
+
+    //
+    // Update behavior score
+    //
+    Context->BehaviorScore += ThreatScore / 10;
+    if (Context->BehaviorScore > Context->PeakBehaviorScore) {
+        Context->PeakBehaviorScore = Context->BehaviorScore;
+    }
+
+    //
+    // Track suspicious events
+    //
+    if (ThreatScore >= BE_SEVERITY_MEDIUM_THRESHOLD) {
+        Context->SuspiciousEventCount++;
+    }
+
+    //
+    // Add to recent events ring buffer
+    //
+    index = Context->RecentEventIndex % 32;
+    Context->RecentEvents[index] = Event->EventType;
+    Context->RecentEventTimes[index] = Event->ReceiveTime;
+    Context->RecentEventIndex++;
+    if (Context->RecentEventCount < 32) {
+        Context->RecentEventCount++;
+    }
+
+    //
+    // Track observed techniques
+    //
+    if (Event->MitreAttackId != 0 && Context->ObservedTechniqueCount < 64) {
+        UINT32 i;
+        BOOLEAN found = FALSE;
+
+        for (i = 0; i < Context->ObservedTechniqueCount; i++) {
+            if (Context->ObservedTechniques[i] == Event->MitreAttackId) {
+                found = TRUE;
+                break;
+            }
+        }
+
+        if (!found) {
+            Context->ObservedTechniques[Context->ObservedTechniqueCount++] = Event->MitreAttackId;
+        }
+    }
+
+    //
+    // Set high-risk flag if appropriate
+    //
+    if (Context->BehaviorScore >= 500 || Context->SuspiciousEventCount >= 10) {
+        Context->Flags |= BE_PROC_FLAG_HIGH_RISK;
+    }
+}
+
+/**
+ * @brief Update chain state with new entry.
+ */
+static VOID
+BepUpdateChainState(
+    _In_ PBE_ATTACK_CHAIN Chain,
+    _In_ PBE_CHAIN_ENTRY Entry
+    )
+{
+    //
+    // Update stage tracking
+    //
+    if (Entry->Stage != AttackStage_None) {
+        Chain->StageFlags |= (1 << Entry->Stage);
+
+        if (Entry->Stage > Chain->CurrentStage) {
+            Chain->CurrentStage = Entry->Stage;
+        }
+        if (Entry->Stage > Chain->HighestStage) {
+            Chain->HighestStage = Entry->Stage;
+        }
+    }
+
+    //
+    // Update technique tracking
+    //
+    if (Entry->MitreAttackId != 0 && Chain->TechniqueCount < 64) {
+        Chain->TechniqueIds[Chain->TechniqueCount++] = Entry->MitreAttackId;
+    }
+
+    //
+    // Update threat score
+    //
+    Chain->CumulativeThreatScore += Entry->ThreatScore;
+    if (Entry->ThreatScore > Chain->PeakThreatScore) {
+        Chain->PeakThreatScore = Entry->ThreatScore;
+    }
+
+    //
+    // Update severity
+    //
+    THREAT_SEVERITY entrySeverity = BepScoreToSeverity(Entry->ThreatScore);
+    if (entrySeverity > Chain->HighestSeverity) {
+        Chain->HighestSeverity = entrySeverity;
+    }
+
+    //
+    // Set chain flags based on patterns
+    //
+    if (Chain->CumulativeThreatScore >= 3000) {
+        Chain->Flags |= BE_CHAIN_FLAG_APT_LIKELY;
+    }
+}
+
+// ============================================================================
+// PRIVATE FUNCTIONS - CLEANUP
+// ============================================================================
+
+/**
+ * @brief Cleanup stale attack chains.
+ */
+static VOID
+BepCleanupStaleChains(
+    VOID
+    )
+{
+    PLIST_ENTRY entry;
+    PLIST_ENTRY nextEntry;
+    PBE_ATTACK_CHAIN chain;
+    LARGE_INTEGER currentTime;
+    UINT64 currentTimeMs;
+    LIST_ENTRY staleList;
+
+    InitializeListHead(&staleList);
+    KeQuerySystemTime(&currentTime);
+    currentTimeMs = (UINT64)(currentTime.QuadPart / 10000);
+
+    KeEnterCriticalRegion();
+    ExAcquireResourceExclusiveLite(&g_BeState.ChainLock, TRUE);
+
+    for (entry = g_BeState.ActiveChainList.Flink;
+         entry != &g_BeState.ActiveChainList;
+         entry = nextEntry) {
+
+        nextEntry = entry->Flink;
+        chain = CONTAINING_RECORD(entry, BE_ATTACK_CHAIN, ListEntry);
+
+        //
+        // Check if chain is stale — either explicitly inactive, or last
+        // update was long enough ago to be considered expired. We then
+        // ATOMICALLY claim the chain by transitioning RefCount to a
+        // sentinel value (0). This closes a UAF race window where a
+        // concurrent BeEngineGetChain holding only the chain hash lock
+        // could bump RefCount between a non-atomic "<= 1" check and
+        // BepRemoveChainFromHash, then dereference freed memory.
+        //
+        // BeEngineGetChain uses CmpXchg(RefCount, oldRef+1, oldRef) with
+        // a guard "oldRef > 0" — once we set RefCount to 0 first, the
+        // reader's CmpXchg fails, retries, sees 0, gives up. If the
+        // reader wins the race instead, RefCount goes from 1 to 2 and
+        // our claim CmpXchg(1->0) fails — we skip this chain and let
+        // the next cleanup pass catch it after the reader releases.
+        //
+        {
+            LONG currentRef;
+            BOOLEAN expired;
+            BOOLEAN claimed = FALSE;
+
+            currentRef = ReadNoFence(&chain->RefCount);
+            expired = (currentTimeMs - chain->LastUpdateTime > g_BeState.ChainTimeoutMs);
+
+            if (!chain->IsActive || expired) {
+                if (currentRef == 0) {
+                    //
+                    // Already abandoned by BeEngineReleaseChain at
+                    // DISPATCH_LEVEL (it set IsActive=FALSE and left
+                    // the freeing to us). Claim ownership.
+                    //
+                    claimed = TRUE;
+                } else if (currentRef == 1) {
+                    //
+                    // Try to atomically claim by transitioning 1->0.
+                    // On success no reader can resurrect the refcount.
+                    //
+                    if (InterlockedCompareExchange(&chain->RefCount, 0, 1) == 1) {
+                        claimed = TRUE;
+                    }
+                }
+                //
+                // currentRef > 1 (live readers): leave for next pass.
+                //
+            }
+
+            if (!claimed) {
+                continue;
+            }
+        }
+
+        RemoveEntryList(&chain->ListEntry);
+        g_BeState.ActiveChainCount--;
+
+        //
+        // Remove from hash table while still holding ChainLock.
+        // This prevents concurrent hash lookups from acquiring
+        // a reference to a chain we're about to free.
+        //
+        BepRemoveChainFromHash(chain);
+
+        //
+        // Remove from process context's chain list.
+        // KeEnterCriticalRegion nests safely — we already entered above.
+        //
+        KeEnterCriticalRegion();
+        ExAcquireResourceExclusiveLite(&g_BeState.ProcessLock, TRUE);
+        RemoveEntryList(&chain->ProcessListEntry);
+        ExReleaseResourceLite(&g_BeState.ProcessLock);
+        KeLeaveCriticalRegion();
+
+        InsertTailList(&staleList, &chain->ListEntry);
+    }
+
+    ExReleaseResourceLite(&g_BeState.ChainLock);
+    KeLeaveCriticalRegion();
+
+    //
+    // Free stale chains â€” already removed from all lists and hash tables,
+    // so no concurrent access is possible.
+    //
+    while (!IsListEmpty(&staleList)) {
+        entry = RemoveHeadList(&staleList);
+        chain = CONTAINING_RECORD(entry, BE_ATTACK_CHAIN, ListEntry);
+
+        //
+        // Free chain entries
+        //
+        while (!IsListEmpty(&chain->EntryList)) {
+            PLIST_ENTRY entryEntry = RemoveHeadList(&chain->EntryList);
+            PBE_CHAIN_ENTRY chainEntry = CONTAINING_RECORD(entryEntry, BE_CHAIN_ENTRY, ListEntry);
+            BepFreeChainEntry(chainEntry);
+        }
+
+        BepFreeChain(chain);
+    }
+}
+
+/**
+ * @brief Cleanup stale process contexts.
+ */
+static VOID
+BepCleanupStaleProcessContexts(
+    VOID
+    )
+{
+    PLIST_ENTRY entry;
+    PLIST_ENTRY nextEntry;
+    PBE_PROCESS_CONTEXT context;
+    LIST_ENTRY staleList;
+
+    InitializeListHead(&staleList);
+
+    KeEnterCriticalRegion();
+    ExAcquireResourceExclusiveLite(&g_BeState.ProcessLock, TRUE);
+
+    for (entry = g_BeState.ProcessContextList.Flink;
+         entry != &g_BeState.ProcessContextList;
+         entry = nextEntry) {
+
+        nextEntry = entry->Flink;
+        context = CONTAINING_RECORD(entry, BE_PROCESS_CONTEXT, ListEntry);
+
+        //
+        // Skip contexts not yet eligible for cleanup. We require:
+        //   - process explicitly terminated
+        //   - cleanup not already done by BeEngineReleaseProcessContext
+        //   - no live external references
+        //
+        // The RefCount==1 case must be claimed atomically: a concurrent
+        // BeEngineGetProcessContext holding only g_ProcessHashLock could
+        // bump RefCount between a non-atomic "<= 1" check and BepRemove
+        // ProcessContextFromHash, then dereference freed memory after we
+        // free. The CmpXchg(1->0) closes that race exactly the same way
+        // BepCleanupStaleChains does for chains.
+        //
+        if (!(context->Flags & BE_PROC_FLAG_TERMINATED) ||
+            (context->Flags & BE_PROC_FLAG_CLEANUP_DONE)) {
+            continue;
+        }
+
+        {
+            LONG currentRef = ReadNoFence(&context->RefCount);
+            BOOLEAN claimed = FALSE;
+
+            if (currentRef == 0) {
+                //
+                // Already abandoned by BeEngineReleaseProcessContext at
+                // DISPATCH_LEVEL — claim it.
+                //
+                claimed = TRUE;
+            } else if (currentRef == 1) {
+                if (InterlockedCompareExchange(&context->RefCount, 0, 1) == 1) {
+                    claimed = TRUE;
+                }
+            }
+            //
+            // currentRef > 1: live readers — skip, retry next pass.
+            //
+
+            if (!claimed) {
+                continue;
+            }
+        }
+
+        context->Flags |= BE_PROC_FLAG_CLEANUP_DONE;
+        RemoveEntryList(&context->ListEntry);
+        g_BeState.ProcessContextCount--;
+
+        //
+        // Remove from hash table while still holding ProcessLock.
+        // This prevents a concurrent hash lookup from acquiring a
+        // reference to a context we're about to free.
+        //
+        BepRemoveProcessContextFromHash(context);
+
+        InsertTailList(&staleList, &context->ListEntry);
+    }
+
+    ExReleaseResourceLite(&g_BeState.ProcessLock);
+    KeLeaveCriticalRegion();
+
+    //
+    // Free stale contexts â€” already removed from both main list and
+    // hash table, so no concurrent access is possible.
+    //
+    while (!IsListEmpty(&staleList)) {
+        entry = RemoveHeadList(&staleList);
+        context = CONTAINING_RECORD(entry, BE_PROCESS_CONTEXT, ListEntry);
+        BepFreeProcessContext(context);
+    }
+}
+
+// ============================================================================
+// PRIVATE FUNCTIONS - UTILITY
+// ============================================================================
+
+/**
+ * @brief Check if process is a LOLBin.
+ */
+static BOOLEAN
+BepIsLolBin(
+    _In_ PCWSTR ImagePath
+    )
+{
+    static const PCWSTR lolbins[] = {
+        L"\\cmd.exe",
+        L"\\powershell.exe",
+        L"\\pwsh.exe",
+        L"\\wscript.exe",
+        L"\\cscript.exe",
+        L"\\mshta.exe",
+        L"\\rundll32.exe",
+        L"\\regsvr32.exe",
+        L"\\certutil.exe",
+        L"\\msbuild.exe",
+        L"\\installutil.exe",
+        L"\\regasm.exe",
+        L"\\regsvcs.exe",
+        L"\\cmstp.exe",
+        L"\\msiexec.exe",
+        L"\\wmic.exe",
+        L"\\bitsadmin.exe",
+        L"\\esentutl.exe",
+        L"\\expand.exe",
+        L"\\extrac32.exe",
+        L"\\findstr.exe",
+        L"\\forfiles.exe",
+        L"\\hh.exe",
+        L"\\ie4uinit.exe",
+        L"\\infdefaultinstall.exe",
+        L"\\makecab.exe",
+        L"\\mavinject.exe",
+        L"\\mmc.exe",
+        L"\\msconfig.exe",
+        L"\\msdeploy.exe",
+        L"\\msdt.exe",
+        L"\\odbcconf.exe",
+        L"\\pcalua.exe",
+        L"\\pcwrun.exe",
+        L"\\presentationhost.exe",
+        L"\\pubprn.vbs",
+        L"\\replace.exe",
+        L"\\rpcping.exe",
+        L"\\schtasks.exe",
+        L"\\scriptrunner.exe",
+        L"\\syncappvpublishingserver.exe",
+        L"\\verclsid.exe",
+        L"\\xwizard.exe",
+        NULL
+    };
+
+    if (ImagePath == NULL) {
+        return FALSE;
+    }
+
+    {
+        const SIZE_T pathLen = wcslen(ImagePath);
+
+        for (UINT32 i = 0; lolbins[i] != NULL; i++) {
+            SIZE_T patLen = wcslen(lolbins[i]);
+            if (pathLen >= patLen &&
+                _wcsnicmp(ImagePath + pathLen - patLen, lolbins[i], patLen) == 0) {
+                return TRUE;
+            }
+        }
+    }
+
+    return FALSE;
+}
+
+/**
+ * @brief Check if process is a script host.
+ */
+static BOOLEAN
+BepIsScriptHost(
+    _In_ PCWSTR ImagePath
+    )
+{
+    static const PCWSTR scriptHosts[] = {
+        L"\\powershell.exe",
+        L"\\pwsh.exe",
+        L"\\wscript.exe",
+        L"\\cscript.exe",
+        L"\\mshta.exe",
+        L"\\python.exe",
+        L"\\pythonw.exe",
+        L"\\perl.exe",
+        L"\\ruby.exe",
+        L"\\node.exe",
+        L"\\java.exe",
+        L"\\javaw.exe",
+        NULL
+    };
+
+    if (ImagePath == NULL) {
+        return FALSE;
+    }
+
+    {
+        const SIZE_T pathLen = wcslen(ImagePath);
+
+        for (UINT32 i = 0; scriptHosts[i] != NULL; i++) {
+            SIZE_T patLen = wcslen(scriptHosts[i]);
+            if (pathLen >= patLen &&
+                _wcsnicmp(ImagePath + pathLen - patLen, scriptHosts[i], patLen) == 0) {
+                return TRUE;
+            }
+        }
+    }
+
+    return FALSE;
+}
+
+/**
+ * @brief Extract process name from full path.
+ */
+static VOID
+BepGetProcessName(
+    _In_ PCWSTR ImagePath,
+    _Out_writes_(MaxLength) PWCHAR ProcessName,
+    _In_ ULONG MaxLength
+    )
+{
+    PCWSTR lastSlash;
+    SIZE_T nameLen;
+
+    ProcessName[0] = L'\0';
+
+    if (ImagePath == NULL || MaxLength == 0) {
+        return;
+    }
+
+    lastSlash = wcsrchr(ImagePath, L'\\');
+    if (lastSlash != NULL) {
+        lastSlash++;
+    } else {
+        lastSlash = ImagePath;
+    }
+
+    nameLen = wcslen(lastSlash);
+    if (nameLen >= MaxLength) {
+        nameLen = MaxLength - 1;
+    }
+
+    RtlCopyMemory(ProcessName, lastSlash, nameLen * sizeof(WCHAR));
+    ProcessName[nameLen] = L'\0';
+}
+
+// ============================================================================
+// MODULE ACCESSOR FUNCTIONS
+// ============================================================================
+//
+// These accessors expose internal module instances to the MessageHandler
+// data push layer. The instances are initialized during BeEngineInitialize()
+// and remain valid until BeEngineShutdown().
+//
+
+PIOM_MATCHER
+BeGetIocMatcher(
+    VOID
+    )
+{
+    return g_IocMatcher;
+}
+
+PRE_ENGINE
+BeGetRuleEngine(
+    VOID
+    )
+{
+    return g_RuleEngine;
+}
+
+PMM_MAPPER
+BeGetMitreMapper(
+    VOID
+    )
+{
+    return g_MitreMapper;
+}
+
+PACT_TRACKER
+BeGetAttackChainTracker(
+    VOID
+    )
+{
+    return g_AttackChainTracker;
+}
+
+PPM_MATCHER
+BeGetPatternMatcher(
+    VOID
+    )
+{
+    return g_PatternMatcher;
+}
+
+PVOID
+BeEngineGetInstance(
+    VOID
+    )
+{
+    return g_BeState.Initialized ? (PVOID)&g_BeState : NULL;
+}

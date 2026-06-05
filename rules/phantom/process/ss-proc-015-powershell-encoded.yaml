@@ -1,0 +1,41 @@
+id: ss-proc-015
+detection_name: "Win32/PS.EncodedCommand"
+description: "PowerShell executed with base64-encoded command — commonly used to obfuscate malicious scripts."
+scope: process
+severity: high
+status: stable
+source: native
+confidence: 0.72
+weight: 2.0
+version: 1
+attack:
+  - tactic: TA0002
+    technique: T1059
+    sub_technique: T1059.001
+    name: "Command and Scripting Interpreter: PowerShell"
+  - tactic: TA0005
+    technique: T1027
+    name: "Obfuscated Files or Information"
+logic:
+  and:
+    - field_in:
+        field: process.name
+        values: [powershell.exe, pwsh.exe, PowerShell_ISE.exe]
+        case_insensitive: true
+    - or:
+        - field_regex:
+            field: process.command_line
+            value: "(?i)-(e|ec|en|enc|enco|encod|encode|encoded).{1,5}[A-Za-z0-9+/]{40,}"
+        - field_contains:
+            field: process.command_line
+            value: "-EncodedCommand"
+        - field_contains:
+            field: process.command_line
+            value: "-enc "
+        - field_contains:
+            field: process.command_line
+            value: "FromBase64String"
+fp_guard:
+  notes:
+    - "Some enterprise automation tools encode PowerShell commands for safe transmission."
+    - "Require parent to be non-interactive (not explorer.exe, Terminal.exe) or execution from temp dir."

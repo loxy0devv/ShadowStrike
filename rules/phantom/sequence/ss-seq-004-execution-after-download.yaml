@@ -1,0 +1,46 @@
+id: ss-seq-004
+detection_name: "Win32/Loader.DownloadExec"
+description: "A LOLBin or scripting process downloaded content and then executed a child process — loader chain."
+scope: sequence
+severity: high
+status: stable
+source: native
+confidence: 0.80
+weight: 2.5
+version: 1
+attack:
+  - tactic: TA0011
+    technique: T1105
+    name: "Ingress Tool Transfer"
+  - tactic: TA0002
+    technique: T1059
+    name: "Command and Scripting Interpreter"
+logic:
+  sequence:
+    - and:
+        - field_in:
+            field: process.name
+            values:
+              - certutil.exe
+              - bitsadmin.exe
+              - powershell.exe
+              - pwsh.exe
+              - mshta.exe
+              - wscript.exe
+              - cscript.exe
+            case_insensitive: true
+        - or:
+            - field_contains:
+                field: network.destination.ip
+                value: "."
+            - field_exists:
+                field: network.destination.host
+    - and:
+        - field_in:
+            field: process.name
+            values: [cmd.exe, powershell.exe, rundll32.exe, regsvr32.exe, mshta.exe]
+            case_insensitive: true
+fp_guard:
+  notes:
+    - "Legitimate update mechanisms use certutil/bitsadmin to download before executing."
+    - "Suppress if the download target is a known vendor URL or HTTPS to Microsoft/Akamai CDN."

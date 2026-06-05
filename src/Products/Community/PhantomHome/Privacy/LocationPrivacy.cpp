@@ -1,0 +1,2242 @@
+﻿/*
+ * ShadowStrike - Enterprise NGAV/EDR Platform
+ * Copyright (C) 2026 ShadowStrike Security
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+/**
+ * ============================================================================
+ * ShadowStrike NGAV - LOCATION PRIVACY IMPLEMENTATION
+ * ============================================================================
+ *
+ * @file LocationPrivacy.cpp
+ * @brief Enterprise-grade location privacy protection engine
+ *
+ * @author ShadowStrike Security Team
+ * @version 3.0.0
+ * @date 2026
+ * @copyright (c) 2026 ShadowStrike Security. All rights reserved.
+ *
+ * LICENSE: Proprietary - ShadowStrike Enterprise License
+ * ============================================================================
+ */
+
+#include "pch.h"
+#include "LocationPrivacy.hpp"
+#include "../Utils/Logger.hpp"
+#include "../Utils/SystemUtils.hpp"
+#include "../Utils/ProcessUtils.hpp"
+#include "../Utils/FileUtils.hpp"
+#include "../Utils/StringUtils.hpp"
+#include "../Utils/NetworkUtils.hpp"
+
+#include <Windows.h>
+#include <algorithm>
+#include <random>
+#include <sstream>
+#include <iomanip>
+#include <fstream>
+#include <filesystem>
+#include <nlohmann/json.hpp>
+#include <cmath>
+#include <thread>
+#include <vector>
+
+namespace fs = std::filesystem;
+using json = nlohmann::json;
+
+namespace ShadowStrike {
+namespace Privacy {
+
+// ============================================================================
+// STATIC MEMBER INITIALIZATION
+// ============================================================================
+
+std::atomic<bool> LocationPrivacy::s_instanceCreated{false};
+
+// ============================================================================
+// INTERNAL STRUCTURES & HELPERS
+// ============================================================================
+
+namespace {
+template<typename T>
+[[nodiscard]] T AtomicValueLoadRelaxed(const T& value) noexcept {
+    return std::atomic_ref<T>(const_cast<T&>(value)).load(std::memory_order_relaxed);
+}
+
+template<typename T>
+void AtomicValueStoreRelaxed(T& target, const T& value) noexcept {
+    std::atomic_ref<T>(target).store(value, std::memory_order_relaxed);
+}
+
+/// @brief Generate unique event ID
+uint64_t GenerateEventId() {
+    static std::atomic<uint64_t> counter{0};
+    return counter.fetch_add(1);
+}
+
+/// @brief Generate unique region ID
+std::string GenerateRegionId() {
+    static std::atomic<uint64_t> counter{0};
+    auto now = std::chrono::system_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+
+    std::ostringstream oss;
+    oss << "GEO-" << std::hex << std::setw(12) << std::setfill('0') << ms
+        << "-" << std::setw(6) << std::setfill('0') << counter.fetch_add(1);
+    return oss.str();
+}
+
+/// @brief Convert degrees to radians
+constexpr double ToRadians(double degrees) noexcept {
+    return degrees * 3.14159265358979323846 / 180.0;
+}
+
+/// @brief Convert radians to degrees
+constexpr double ToDegrees(double radians) noexcept {
+    return radians * 180.0 / 3.14159265358979323846;
+}
+
+/// @brief Random number generator
+std::mt19937& GetRNG() {
+    thread_local std::random_device rd;
+    thread_local std::mt19937 gen(rd());
+    return gen;
+}
+
+struct RegKeyGuard {
+    RegKeyGuard() = default;
+    HKEY key = nullptr;
+    ~RegKeyGuard() {
+        if (key != nullptr) {
+            ::RegCloseKey(key);
+        }
+    }
+    RegKeyGuard(const RegKeyGuard&) = delete;
+    RegKeyGuard& operator=(const RegKeyGuard&) = delete;
+};
+
+/// @brief Known IP geolocation services
+const std::vector<std::string> IP_GEOLOCATION_DOMAINS = {
+    "ip-api.com",
+    "ipapi.co",
+    "ipgeolocation.io",
+    "ipinfo.io",
+    "geoip.maxmind.com",
+    "freegeoip.app",
+    "ipstack.com",
+    "ipdata.co",
+    "geolocation-db.com",
+    "api.iplocation.net"
+};
+
+// Hostile-input caps. These are independent of header-exposed limits to allow
+// in-cpp tightening without ABI breakage.
+constexpr size_t MAX_BLOCKED_DOMAINS = 4096;     // Cap blocked-domain set
+constexpr size_t MAX_WHITELIST_ENTRIES = 1024;   // Cap whitelist size
+constexpr size_t MAX_ROUTES = 256;               // Cap stored routes
+constexpr size_t MAX_STRING_ID_LEN = 128;        // Cap user-supplied IDs
+constexpr size_t MAX_STRING_NAME_LEN = 256;      // Cap user-supplied names
+constexpr size_t MAX_PROCESS_PATTERN_LEN = 260;  // Cap process patterns
+
+/// @brief Reject strings containing embedded NULs or non-printable control chars.
+[[nodiscard]] bool IsSafePrintableNarrow(const std::string& s) noexcept {
+    for (unsigned char c : s) {
+        if (c == 0) return false;
+        // Allow tab (0x09); reject other ASCII control codes.
+        if (c < 0x20 && c != 0x09) return false;
+        if (c == 0x7F) return false;
+    }
+    return true;
+}
+
+} // anonymous namespace
+
+// ============================================================================
+// GEOLOCATION STRUCTURE IMPLEMENTATIONS
+// ============================================================================
+
+bool GeoLocation::IsValid() const noexcept {
+    if (latitude < -90.0 || latitude > 90.0) return false;
+    if (longitude < -180.0 || longitude > 180.0) return false;
+    if (accuracy < 0.0) return false;
+    if (altitude.has_value() && *altitude < -500.0) return false;  // Below Dead Sea
+    if (speed.has_value() && *speed < 0.0) return false;
+    if (heading.has_value() && (*heading < 0.0 || *heading >= 360.0)) return false;
+    return true;
+}
+
+double GeoLocation::DistanceTo(const GeoLocation& other) const noexcept {
+    return CalculateDistance(latitude, longitude, other.latitude, other.longitude);
+}
+
+std::string GeoLocation::ToJson() const {
+    json j;
+    j["latitude"] = latitude;
+    j["longitude"] = longitude;
+
+    if (altitude.has_value()) {
+        j["altitude"] = *altitude;
+    }
+
+    j["accuracy"] = accuracy;
+
+    if (speed.has_value()) {
+        j["speed"] = *speed;
+    }
+
+    if (heading.has_value()) {
+        j["heading"] = *heading;
+    }
+
+    j["timestamp"] = std::chrono::duration_cast<std::chrono::milliseconds>(
+        timestamp.time_since_epoch()).count();
+    j["source"] = static_cast<int>(source);
+
+    return j.dump();
+}
+
+bool GeofenceRegion::Contains(const GeoLocation& location) const {
+    if (shape == GeofenceShape::Circle) {
+        double distance = center.DistanceTo(location);
+        return distance * 1000.0 <= radiusMeters;  // Convert km to meters
+    } else if (shape == GeofenceShape::Polygon) {
+        return PointInPolygon(location, boundaries);
+    } else if (shape == GeofenceShape::Rectangle) {
+        // Rectangle defined by first two boundary points (opposite corners)
+        if (boundaries.size() >= 2) {
+            double minLat = std::min(boundaries[0].latitude, boundaries[1].latitude);
+            double maxLat = std::max(boundaries[0].latitude, boundaries[1].latitude);
+            double minLon = std::min(boundaries[0].longitude, boundaries[1].longitude);
+            double maxLon = std::max(boundaries[0].longitude, boundaries[1].longitude);
+
+            return location.latitude >= minLat && location.latitude <= maxLat &&
+                   location.longitude >= minLon && location.longitude <= maxLon;
+        }
+    }
+
+    return false;
+}
+
+std::string GeofenceRegion::ToJson() const {
+    json j;
+    j["regionId"] = regionId;
+    j["name"] = name;
+    j["description"] = description;
+    j["shape"] = static_cast<int>(shape);
+    j["center"] = json::parse(center.ToJson());
+    j["radiusMeters"] = radiusMeters;
+
+    json boundariesArray = json::array();
+    for (const auto& boundary : boundaries) {
+        boundariesArray.push_back(json::parse(boundary.ToJson()));
+    }
+    j["boundaries"] = boundariesArray;
+
+    j["action"] = static_cast<int>(action);
+    j["enabled"] = enabled;
+
+    if (mockLocation.has_value()) {
+        j["mockLocation"] = json::parse(mockLocation->ToJson());
+    }
+
+    return j.dump();
+}
+
+std::string LocationAccessEvent::ToJson() const {
+    json j;
+    j["eventId"] = eventId;
+    j["processId"] = processId;
+    j["processName"] = processName;
+    j["processPath"] = processPath.string();
+    j["userName"] = userName;
+    j["sourceRequested"] = static_cast<int>(sourceRequested);
+    j["decision"] = static_cast<int>(decision);
+
+    if (realLocation.has_value()) {
+        j["realLocation"] = json::parse(realLocation->ToJson());
+    }
+
+    if (providedLocation.has_value()) {
+        j["providedLocation"] = json::parse(providedLocation->ToJson());
+    }
+
+    j["wasMocked"] = wasMocked;
+    j["timestamp"] = std::chrono::duration_cast<std::chrono::milliseconds>(
+        timestamp.time_since_epoch()).count();
+    j["notes"] = notes;
+
+    return j.dump();
+}
+
+GeoLocation MockRoute::GetCurrentLocation() const {
+    if (waypoints.empty() || !isActive) {
+        return GeoLocation{};
+    }
+
+    if (currentIndex >= waypoints.size()) {
+        if (isLoop) {
+            // Wrap around
+            return waypoints[currentIndex % waypoints.size()];
+        } else {
+            // Return last waypoint
+            return waypoints.back();
+        }
+    }
+
+    return waypoints[currentIndex];
+}
+
+std::string MockRoute::ToJson() const {
+    json j;
+    j["routeId"] = routeId;
+    j["name"] = name;
+
+    json waypointsArray = json::array();
+    for (const auto& waypoint : waypoints) {
+        waypointsArray.push_back(json::parse(waypoint.ToJson()));
+    }
+    j["waypoints"] = waypointsArray;
+
+    j["isLoop"] = isLoop;
+    j["speedMps"] = speedMps;
+    j["currentIndex"] = currentIndex;
+    j["isActive"] = isActive;
+    j["startTime"] = std::chrono::duration_cast<std::chrono::milliseconds>(
+        startTime.time_since_epoch()).count();
+
+    return j.dump();
+}
+
+std::string LocationWhitelistEntry::ToJson() const {
+    json j;
+    j["entryId"] = entryId;
+    j["processPattern"] = processPattern;
+    j["enabled"] = enabled;
+    j["allowRealLocation"] = allowRealLocation;
+    j["allowBackground"] = allowBackground;
+
+    if (mockLocation.has_value()) {
+        j["mockLocation"] = json::parse(mockLocation->ToJson());
+    }
+
+    if (allowFromHour.has_value()) {
+        j["allowFromHour"] = *allowFromHour;
+    }
+
+    if (allowToHour.has_value()) {
+        j["allowToHour"] = *allowToHour;
+    }
+
+    j["reason"] = reason;
+    j["addedBy"] = addedBy;
+    j["addedTime"] = std::chrono::duration_cast<std::chrono::milliseconds>(
+        addedTime.time_since_epoch()).count();
+
+    return j.dump();
+}
+
+void LocationStatistics::Reset() noexcept {
+    totalAccessAttempts = 0;
+    accessAllowed = 0;
+    accessBlocked = 0;
+    accessMocked = 0;
+    whitelistHits = 0;
+    geofenceTriggered = 0;
+    ipGeolocationBlocked = 0;
+    wifiPositioningBlocked = 0;
+    backgroundAccessBlocked = 0;
+
+    for (auto& count : bySource) {
+        count = 0;
+    }
+
+    AtomicValueStoreRelaxed(startTime, Clock::now());
+}
+
+std::string LocationStatistics::ToJson() const {
+    auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
+        Clock::now() - AtomicValueLoadRelaxed(startTime)).count();
+
+    json j;
+    j["uptimeSeconds"] = uptime;
+    j["totalAccessAttempts"] = totalAccessAttempts.load();
+    j["accessAllowed"] = accessAllowed.load();
+    j["accessBlocked"] = accessBlocked.load();
+    j["accessMocked"] = accessMocked.load();
+    j["whitelistHits"] = whitelistHits.load();
+    j["geofenceTriggered"] = geofenceTriggered.load();
+    j["ipGeolocationBlocked"] = ipGeolocationBlocked.load();
+    j["wifiPositioningBlocked"] = wifiPositioningBlocked.load();
+    j["backgroundAccessBlocked"] = backgroundAccessBlocked.load();
+
+    return j.dump();
+}
+
+LocationStatisticsSnapshot LocationStatistics::Snapshot() const noexcept {
+    LocationStatisticsSnapshot snap;
+    snap.totalAccessAttempts = totalAccessAttempts.load(std::memory_order_relaxed);
+    snap.accessAllowed = accessAllowed.load(std::memory_order_relaxed);
+    snap.accessBlocked = accessBlocked.load(std::memory_order_relaxed);
+    snap.accessMocked = accessMocked.load(std::memory_order_relaxed);
+    snap.whitelistHits = whitelistHits.load(std::memory_order_relaxed);
+    snap.geofenceTriggered = geofenceTriggered.load(std::memory_order_relaxed);
+    snap.ipGeolocationBlocked = ipGeolocationBlocked.load(std::memory_order_relaxed);
+    snap.wifiPositioningBlocked = wifiPositioningBlocked.load(std::memory_order_relaxed);
+    snap.backgroundAccessBlocked = backgroundAccessBlocked.load(std::memory_order_relaxed);
+    for (size_t i = 0; i < bySource.size(); ++i) {
+        snap.bySource[i] = bySource[i].load(std::memory_order_relaxed);
+    }
+    snap.uptimeSeconds = std::chrono::duration_cast<std::chrono::seconds>(
+        Clock::now() - AtomicValueLoadRelaxed(startTime)).count();
+    return snap;
+}
+
+std::string LocationStatisticsSnapshot::ToJson() const {
+    json j;
+    j["uptimeSeconds"] = uptimeSeconds;
+    j["totalAccessAttempts"] = totalAccessAttempts;
+    j["accessAllowed"] = accessAllowed;
+    j["accessBlocked"] = accessBlocked;
+    j["accessMocked"] = accessMocked;
+    j["whitelistHits"] = whitelistHits;
+    j["geofenceTriggered"] = geofenceTriggered;
+    j["ipGeolocationBlocked"] = ipGeolocationBlocked;
+    j["wifiPositioningBlocked"] = wifiPositioningBlocked;
+    j["backgroundAccessBlocked"] = backgroundAccessBlocked;
+    return j.dump();
+}
+
+bool LocationConfiguration::IsValid() const noexcept {
+    if (enableFuzzing && fuzzingRadiusMeters <= 0.0) {
+        return false;
+    }
+
+    if (defaultMockLocation.has_value() && !defaultMockLocation->IsValid()) {
+        return false;
+    }
+
+    if (geofences.size() > LocationConstants::MAX_GEOFENCE_REGIONS) {
+        return false;
+    }
+
+    return true;
+}
+
+// ============================================================================
+// PIMPL IMPLEMENTATION CLASS
+// ============================================================================
+
+class LocationPrivacyImpl final {
+public:
+    LocationPrivacyImpl();
+    ~LocationPrivacyImpl();
+
+    // Lifecycle
+    bool Initialize(const LocationConfiguration& config);
+    void Shutdown();
+    bool IsInitialized() const noexcept { return m_isActive; }
+    ModuleStatus GetStatus() const noexcept { return m_status; }
+    bool UpdateConfiguration(const LocationConfiguration& config);
+    LocationConfiguration GetConfiguration() const;
+
+    // Protection control
+    void SetProtectionMode(LocationProtectionMode mode);
+    LocationProtectionMode GetProtectionMode() const noexcept { return m_protectionMode; }
+    bool SetLocationEnabled(bool enabled);
+    bool IsLocationEnabled() const noexcept { return m_locationEnabled; }
+
+    // Mock location
+    void SetMockLocation(const GeoLocation& loc);
+    std::optional<GeoLocation> GetMockLocation() const;
+    void ClearMockLocation();
+    bool SetRandomMockLocation(const GeofenceRegion& region);
+    GeoLocation FuzzLocation(const GeoLocation& location, double radiusMeters);
+
+    // Mock routes
+    bool AddRoute(const MockRoute& route);
+    bool RemoveRoute(const std::string& routeId);
+    bool StartRoute(const std::string& routeId);
+    void StopRoute();
+    std::optional<MockRoute> GetActiveRoute() const;
+    std::vector<MockRoute> GetRoutes() const;
+
+    // Geofencing
+    bool AddGeofence(const GeofenceRegion& region);
+    bool RemoveGeofence(const std::string& regionId);
+    bool UpdateGeofence(const GeofenceRegion& region);
+    std::vector<GeofenceRegion> GetGeofences() const;
+    std::vector<GeofenceRegion> CheckGeofences(const GeoLocation& location);
+
+    // Access control
+    LocationAccessDecision EvaluateAccess(uint32_t processId, LocationSource source);
+    GeoLocation GetLocationToProvide(const GeoLocation& realLocation, uint32_t processId);
+
+    // Whitelist
+    bool AddToWhitelist(const LocationWhitelistEntry& entry);
+    bool RemoveFromWhitelist(const std::string& entryId);
+    bool IsProcessWhitelisted(const std::string& processName);
+    std::vector<LocationWhitelistEntry> GetWhitelist() const;
+
+    // IP geolocation blocking
+    bool BlockIPGeolocation(bool block);
+    bool IsIPGeolocationBlocked() const noexcept { return m_blockIPGeolocation; }
+    bool AddBlockedGeolocationDomain(const std::string& domain);
+    std::vector<std::string> GetBlockedGeolocationDomains() const;
+
+    // Event history
+    std::vector<LocationAccessEvent> GetRecentEvents(
+        size_t limit,
+        std::optional<SystemTimePoint> since);
+    void ClearEventHistory();
+
+    // Callbacks
+    void RegisterAccessCallback(AccessEventCallback callback);
+    void RegisterGeofenceCallback(GeofenceCallback callback);
+    void RegisterLocationCallback(LocationCallback callback);
+    void RegisterErrorCallback(ErrorCallback callback);
+    void UnregisterCallbacks();
+
+    // Statistics
+    LocationStatisticsSnapshot GetStatistics() const;
+    void ResetStatistics();
+    bool SelfTest();
+
+private:
+    // Internal methods
+    void RouteSimulationThreadFunc();
+    void MonitoringThreadFunc();
+    LocationAccessDecision EvaluateAccessInternal(
+        uint32_t processId,
+        const std::string& processName,
+        LocationSource source);
+    void RecordAccessEvent(const LocationAccessEvent& event);
+    void NotifyAccessEvent(const LocationAccessEvent& event);
+    void NotifyGeofenceEvent(const GeofenceRegion& region, bool entered);
+    void NotifyError(const std::string& message, int code);
+    bool CheckWhitelistTimeRestriction(const LocationWhitelistEntry& entry) const;
+    bool IsProcessWhitelistedNoLock(const std::string& processName) const;
+    std::string GetProcessNameFromPid(uint32_t pid);
+
+    // Member variables
+    mutable std::shared_mutex m_mutex;
+    std::atomic<bool> m_isActive{false};
+    std::atomic<ModuleStatus> m_status{ModuleStatus::Uninitialized};
+    LocationConfiguration m_config;
+
+    // Protection state
+    std::atomic<LocationProtectionMode> m_protectionMode{LocationProtectionMode::WhitelistOnly};
+    std::atomic<bool> m_locationEnabled{true};
+    std::atomic<bool> m_blockIPGeolocation{true};
+
+    // Mock location
+    std::optional<GeoLocation> m_mockLocation;
+
+    // Mock routes
+    std::vector<MockRoute> m_routes;
+    std::optional<MockRoute> m_activeRoute;
+
+    // Geofences
+    std::vector<GeofenceRegion> m_geofences;
+
+    // Whitelist
+    std::vector<LocationWhitelistEntry> m_whitelist;
+
+    // Blocked geolocation domains
+    std::unordered_set<std::string> m_blockedDomains;
+
+    // Event history
+    std::vector<LocationAccessEvent> m_eventHistory;
+
+    // Threads
+    std::unique_ptr<std::thread> m_routeThread;
+    std::atomic<bool> m_stopRouteThread{false};
+
+    std::unique_ptr<std::thread> m_monitorThread;
+    std::atomic<bool> m_stopMonitoring{false};
+
+    // Callbacks
+    AccessEventCallback m_accessCallback;
+    GeofenceCallback m_geofenceCallback;
+    LocationCallback m_locationCallback;
+    ErrorCallback m_errorCallback;
+
+    // Statistics
+    LocationStatistics m_stats;
+
+    // Last known location (for geofence monitoring)
+    std::optional<GeoLocation> m_lastLocation;
+};
+
+// ============================================================================
+// PIMPL CONSTRUCTOR/DESTRUCTOR
+// ============================================================================
+
+LocationPrivacyImpl::LocationPrivacyImpl() {
+    Utils::Logger::Info("LocationPrivacyImpl constructed");
+}
+
+LocationPrivacyImpl::~LocationPrivacyImpl() {
+    Shutdown();
+    Utils::Logger::Info("LocationPrivacyImpl destroyed");
+}
+
+// ============================================================================
+// LIFECYCLE IMPLEMENTATION
+// ============================================================================
+
+bool LocationPrivacyImpl::Initialize(const LocationConfiguration& config) {
+    std::unique_lock lock(m_mutex);
+
+    try {
+        if (m_isActive) {
+            Utils::Logger::Warn("LocationPrivacy already initialized");
+            return false;
+        }
+
+        m_status = ModuleStatus::Initializing;
+
+        // Validate configuration
+        if (!config.IsValid()) {
+            Utils::Logger::Error("Invalid LocationPrivacy configuration");
+            m_status = ModuleStatus::Error;
+            return false;
+        }
+
+        m_config = config;
+        m_protectionMode = config.mode;
+        m_blockIPGeolocation = config.blockIPGeolocation;
+
+        // Load geofences from config
+        m_geofences = config.geofences;
+
+        // Load routes from config
+        m_routes = config.routes;
+
+        // Initialize blocked domains with known IP geolocation services
+        for (const auto& domain : IP_GEOLOCATION_DOMAINS) {
+            m_blockedDomains.insert(domain);
+        }
+
+        // Initialize statistics
+        m_stats.Reset();
+
+        // Start route simulation thread
+        m_stopRouteThread = false;
+        m_routeThread = std::make_unique<std::thread>(
+            &LocationPrivacyImpl::RouteSimulationThreadFunc, this);
+
+        // Start monitoring thread
+        m_stopMonitoring = false;
+        try {
+            m_monitorThread = std::make_unique<std::thread>(
+                &LocationPrivacyImpl::MonitoringThreadFunc, this);
+        } catch (...) {
+            // Clean up route thread if monitor thread creation fails
+            m_stopRouteThread = true;
+            lock.unlock();
+            if (m_routeThread && m_routeThread->joinable()) {
+                m_routeThread->join();
+            }
+            lock.lock();
+            m_routeThread.reset();
+            m_status = ModuleStatus::Error;
+            Utils::Logger::Error("LocationPrivacy: failed to start monitoring thread");
+            return false;
+        }
+
+        m_isActive = true;
+        m_status = ModuleStatus::Running;
+
+        Utils::Logger::Info("LocationPrivacy initialized successfully");
+        return true;
+
+    } catch (const std::exception& e) {
+        // Clean up any started threads on unexpected failure
+        m_stopRouteThread = true;
+        m_stopMonitoring = true;
+        lock.unlock();
+        if (m_routeThread && m_routeThread->joinable()) {
+            m_routeThread->join();
+        }
+        if (m_monitorThread && m_monitorThread->joinable()) {
+            m_monitorThread->join();
+        }
+        lock.lock();
+        m_routeThread.reset();
+        m_monitorThread.reset();
+        Utils::Logger::Error("LocationPrivacy initialization failed: {}", e.what());
+        m_status = ModuleStatus::Error;
+        return false;
+    }
+}
+
+void LocationPrivacyImpl::Shutdown() {
+    std::unique_ptr<std::thread> routeThread;
+    std::unique_ptr<std::thread> monitorThread;
+
+    {
+        std::unique_lock lock(m_mutex);
+        if (!m_isActive) {
+            return;
+        }
+
+        // Mark inactive immediately to prevent concurrent re-entry
+        m_isActive = false;
+        m_status = ModuleStatus::Stopping;
+        m_stopRouteThread = true;
+        m_stopMonitoring = true;
+
+        // Move threads to locals so we can join without holding the lock
+        routeThread = std::move(m_routeThread);
+        monitorThread = std::move(m_monitorThread);
+    }
+
+    // Join threads outside the lock to avoid deadlocks
+    try {
+        if (routeThread && routeThread->joinable()) {
+            routeThread->join();
+        }
+        if (monitorThread && monitorThread->joinable()) {
+            monitorThread->join();
+        }
+    } catch (const std::exception& e) {
+        Utils::Logger::Error("Shutdown thread join error: {}", e.what());
+    }
+
+    {
+        std::unique_lock lock(m_mutex);
+        m_status = ModuleStatus::Stopped;
+    }
+
+    Utils::Logger::Info("LocationPrivacy shutdown complete");
+}
+
+bool LocationPrivacyImpl::UpdateConfiguration(const LocationConfiguration& config) {
+    std::unique_lock lock(m_mutex);
+
+    try {
+        if (!config.IsValid()) {
+            Utils::Logger::Error("Invalid configuration");
+            return false;
+        }
+
+        m_config = config;
+        m_protectionMode = config.mode;
+        m_blockIPGeolocation = config.blockIPGeolocation;
+        m_geofences = config.geofences;
+        m_routes = config.routes;
+
+        if (config.defaultMockLocation.has_value()) {
+            m_mockLocation = config.defaultMockLocation;
+        }
+
+        Utils::Logger::Info("Configuration updated");
+        return true;
+
+    } catch (const std::exception& e) {
+        Utils::Logger::Error("UpdateConfiguration failed: {}", e.what());
+        return false;
+    }
+}
+
+LocationConfiguration LocationPrivacyImpl::GetConfiguration() const {
+    std::shared_lock lock(m_mutex);
+    return m_config;
+}
+
+// ============================================================================
+// PROTECTION CONTROL IMPLEMENTATION
+// ============================================================================
+
+void LocationPrivacyImpl::SetProtectionMode(LocationProtectionMode mode) {
+    std::unique_lock lock(m_mutex);
+    m_protectionMode = mode;
+    m_config.mode = mode;
+    Utils::Logger::Info("Protection mode set to: {}", static_cast<int>(mode));
+}
+
+bool LocationPrivacyImpl::SetLocationEnabled(bool enabled) {
+    try {
+        std::unique_lock lock(m_mutex);
+
+        // Modify Windows location consent for the current user only.
+        constexpr wchar_t LOCATION_CONSENT_KEY[] =
+            L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\"
+            L"CapabilityAccessManager\\ConsentStore\\location";
+
+        RegKeyGuard keyGuard;
+        LONG regResult = ::RegCreateKeyExW(
+            HKEY_CURRENT_USER, LOCATION_CONSENT_KEY,
+            0, nullptr, REG_OPTION_NON_VOLATILE,
+            KEY_QUERY_VALUE | KEY_SET_VALUE,
+            nullptr, &keyGuard.key, nullptr);
+
+        if (regResult != ERROR_SUCCESS || keyGuard.key == nullptr) {
+            Utils::Logger::Error(
+                "Failed to open HKCU location consent registry key (error={})",
+                regResult);
+            return false;
+        }
+
+        const wchar_t* value = enabled ? L"Allow" : L"Deny";
+        const DWORD valueSize = static_cast<DWORD>((wcslen(value) + 1) * sizeof(wchar_t));
+        regResult = ::RegSetValueExW(keyGuard.key, L"Value", 0, REG_SZ,
+            reinterpret_cast<const BYTE*>(value), valueSize);
+        if (regResult != ERROR_SUCCESS) {
+            Utils::Logger::Error(
+                "Failed to write HKCU location consent registry value (error={})",
+                regResult);
+            return false;
+        }
+
+        m_locationEnabled = enabled;
+        Utils::Logger::Info("Location services {} for the current user", enabled ? "enabled" : "disabled");
+        return true;
+
+    } catch (const std::exception& e) {
+        Utils::Logger::Error("SetLocationEnabled failed: {}", e.what());
+        return false;
+    }
+}
+
+// ============================================================================
+// MOCK LOCATION IMPLEMENTATION
+// ============================================================================
+
+void LocationPrivacyImpl::SetMockLocation(const GeoLocation& loc) {
+    std::unique_lock lock(m_mutex);
+
+    if (!loc.IsValid()) {
+        Utils::Logger::Warn("Invalid mock location provided");
+        return;
+    }
+
+    m_mockLocation = loc;
+    Utils::Logger::Info("Mock location updated");
+}
+
+std::optional<GeoLocation> LocationPrivacyImpl::GetMockLocation() const {
+    std::shared_lock lock(m_mutex);
+    return m_mockLocation;
+}
+
+void LocationPrivacyImpl::ClearMockLocation() {
+    std::unique_lock lock(m_mutex);
+    m_mockLocation.reset();
+    Utils::Logger::Info("Mock location cleared");
+}
+
+bool LocationPrivacyImpl::SetRandomMockLocation(const GeofenceRegion& region) {
+    try {
+        std::unique_lock lock(m_mutex);
+
+        if (region.shape == GeofenceShape::Circle) {
+            GeoLocation randomLoc = GenerateRandomLocation(region.center, region.radiusMeters);
+            randomLoc.source = LocationSource::Manual;
+            randomLoc.timestamp = std::chrono::system_clock::now();
+
+            m_mockLocation = randomLoc;
+
+            Utils::Logger::Info("Random mock location updated for configured region");
+            return true;
+        }
+
+        Utils::Logger::Error("Random mock location only supported for circular regions");
+        return false;
+
+    } catch (const std::exception& e) {
+        Utils::Logger::Error("SetRandomMockLocation failed: {}", e.what());
+        return false;
+    }
+}
+
+GeoLocation LocationPrivacyImpl::FuzzLocation(const GeoLocation& location, double radiusMeters) {
+    try {
+        GeoLocation fuzzed = GenerateRandomLocation(location, radiusMeters);
+        fuzzed.source = location.source;
+        fuzzed.timestamp = std::chrono::system_clock::now();
+        fuzzed.accuracy = location.accuracy + radiusMeters;
+
+        return fuzzed;
+
+    } catch (const std::exception& e) {
+        Utils::Logger::Error("FuzzLocation failed: {}", e.what());
+        return location;
+    }
+}
+
+// ============================================================================
+// MOCK ROUTES IMPLEMENTATION
+// ============================================================================
+
+bool LocationPrivacyImpl::AddRoute(const MockRoute& route) {
+    std::unique_lock lock(m_mutex);
+
+    try {
+        if (route.routeId.empty()) {
+            Utils::Logger::Error("Route ID cannot be empty");
+            return false;
+        }
+
+        if (route.routeId.size() > MAX_STRING_ID_LEN ||
+            route.name.size() > MAX_STRING_NAME_LEN) {
+            Utils::Logger::Error(
+                "Route rejected: routeId/name exceeds length cap "
+                "(id={}, name={})",
+                route.routeId.size(), route.name.size());
+            return false;
+        }
+
+        if (!IsSafePrintableNarrow(route.routeId) ||
+            !IsSafePrintableNarrow(route.name)) {
+            Utils::Logger::Error(
+                "Route rejected: routeId/name contains control characters");
+            return false;
+        }
+
+        if (route.waypoints.empty()) {
+            Utils::Logger::Error("Route must have waypoints");
+            return false;
+        }
+
+        if (route.waypoints.size() > LocationConstants::MAX_ROUTE_POINTS) {
+            Utils::Logger::Error("Route exceeds maximum waypoints");
+            return false;
+        }
+
+        // Validate every waypoint to prevent NaN/out-of-range injection.
+        for (const auto& wp : route.waypoints) {
+            if (!wp.IsValid()) {
+                Utils::Logger::Error("Route rejected: invalid waypoint");
+                return false;
+            }
+        }
+
+        // Check if route already exists
+        auto it = std::find_if(m_routes.begin(), m_routes.end(),
+            [&route](const MockRoute& r) { return r.routeId == route.routeId; });
+
+        if (it != m_routes.end()) {
+            *it = route;
+        } else {
+            if (m_routes.size() >= MAX_ROUTES) {
+                Utils::Logger::Error(
+                    "AddRoute rejected: route table at capacity ({})",
+                    MAX_ROUTES);
+                return false;
+            }
+            m_routes.push_back(route);
+        }
+
+        Utils::Logger::Info("Route added ({} waypoints)", route.waypoints.size());
+        return true;
+
+    } catch (const std::exception& e) {
+        Utils::Logger::Error("AddRoute failed: {}", e.what());
+        return false;
+    }
+}
+
+bool LocationPrivacyImpl::RemoveRoute(const std::string& routeId) {
+    std::unique_lock lock(m_mutex);
+
+    try {
+        auto it = std::remove_if(m_routes.begin(), m_routes.end(),
+            [&routeId](const MockRoute& r) { return r.routeId == routeId; });
+
+        if (it != m_routes.end()) {
+            m_routes.erase(it, m_routes.end());
+            Utils::Logger::Info("Route removed");
+            return true;
+        }
+
+        return false;
+
+    } catch (const std::exception& e) {
+        Utils::Logger::Error("RemoveRoute failed: {}", e.what());
+        return false;
+    }
+}
+
+bool LocationPrivacyImpl::StartRoute(const std::string& routeId) {
+    std::unique_lock lock(m_mutex);
+
+    try {
+        auto it = std::find_if(m_routes.begin(), m_routes.end(),
+            [&routeId](const MockRoute& r) { return r.routeId == routeId; });
+
+        if (it == m_routes.end()) {
+            Utils::Logger::Error("Route not found");
+            return false;
+        }
+
+        MockRoute activeRoute = *it;
+        activeRoute.isActive = true;
+        activeRoute.currentIndex = 0;
+        activeRoute.startTime = std::chrono::system_clock::now();
+
+        m_activeRoute = activeRoute;
+
+        Utils::Logger::Info("Route started");
+        return true;
+
+    } catch (const std::exception& e) {
+        Utils::Logger::Error("StartRoute failed: {}", e.what());
+        return false;
+    }
+}
+
+void LocationPrivacyImpl::StopRoute() {
+    std::unique_lock lock(m_mutex);
+    m_activeRoute.reset();
+    Utils::Logger::Info("Route stopped");
+}
+
+std::optional<MockRoute> LocationPrivacyImpl::GetActiveRoute() const {
+    std::shared_lock lock(m_mutex);
+    return m_activeRoute;
+}
+
+std::vector<MockRoute> LocationPrivacyImpl::GetRoutes() const {
+    std::shared_lock lock(m_mutex);
+    return m_routes;
+}
+
+// ============================================================================
+// GEOFENCING IMPLEMENTATION
+// ============================================================================
+
+bool LocationPrivacyImpl::AddGeofence(const GeofenceRegion& region) {
+    std::unique_lock lock(m_mutex);
+
+    try {
+        if (region.regionId.empty()) {
+            Utils::Logger::Error("Region ID cannot be empty");
+            return false;
+        }
+
+        if (region.regionId.size() > MAX_STRING_ID_LEN ||
+            region.name.size() > MAX_STRING_NAME_LEN ||
+            region.description.size() > MAX_STRING_NAME_LEN) {
+            Utils::Logger::Error(
+                "Geofence rejected: id/name/description exceeds length cap");
+            return false;
+        }
+
+        if (!IsSafePrintableNarrow(region.regionId) ||
+            !IsSafePrintableNarrow(region.name) ||
+            !IsSafePrintableNarrow(region.description)) {
+            Utils::Logger::Error(
+                "Geofence rejected: id/name/description contains control characters");
+            return false;
+        }
+
+        // Validate geometry to prevent NaN/inf or out-of-range coords.
+        if (!region.center.IsValid()) {
+            Utils::Logger::Error("Geofence rejected: invalid center coordinate");
+            return false;
+        }
+        if (region.shape == GeofenceShape::Circle) {
+            if (!std::isfinite(region.radiusMeters) ||
+                region.radiusMeters <= 0.0 ||
+                region.radiusMeters > 20'037'500.0 /* half Earth circumference */) {
+                Utils::Logger::Error(
+                    "Geofence rejected: invalid radius ({} m)",
+                    region.radiusMeters);
+                return false;
+            }
+        }
+        for (const auto& boundary : region.boundaries) {
+            if (!boundary.IsValid()) {
+                Utils::Logger::Error("Geofence rejected: invalid boundary point");
+                return false;
+            }
+        }
+
+        // Check if region already exists - updates are always permitted.
+        auto it = std::find_if(m_geofences.begin(), m_geofences.end(),
+            [&region](const GeofenceRegion& r) { return r.regionId == region.regionId; });
+
+        if (it != m_geofences.end()) {
+            *it = region;
+        } else {
+            // Capacity check applies only to new inserts so existing entries
+            // remain editable when the table is at capacity.
+            if (m_geofences.size() >= LocationConstants::MAX_GEOFENCE_REGIONS) {
+                Utils::Logger::Error(
+                    "Maximum geofence regions reached ({})",
+                    LocationConstants::MAX_GEOFENCE_REGIONS);
+                return false;
+            }
+            m_geofences.push_back(region);
+        }
+
+        Utils::Logger::Info("Geofence added");
+        return true;
+
+    } catch (const std::exception& e) {
+        Utils::Logger::Error("AddGeofence failed: {}", e.what());
+        return false;
+    }
+}
+
+bool LocationPrivacyImpl::RemoveGeofence(const std::string& regionId) {
+    std::unique_lock lock(m_mutex);
+
+    try {
+        auto it = std::remove_if(m_geofences.begin(), m_geofences.end(),
+            [&regionId](const GeofenceRegion& r) { return r.regionId == regionId; });
+
+        if (it != m_geofences.end()) {
+            m_geofences.erase(it, m_geofences.end());
+            Utils::Logger::Info("Geofence removed");
+            return true;
+        }
+
+        return false;
+
+    } catch (const std::exception& e) {
+        Utils::Logger::Error("RemoveGeofence failed: {}", e.what());
+        return false;
+    }
+}
+
+bool LocationPrivacyImpl::UpdateGeofence(const GeofenceRegion& region) {
+    std::unique_lock lock(m_mutex);
+
+    try {
+        auto it = std::find_if(m_geofences.begin(), m_geofences.end(),
+            [&region](const GeofenceRegion& r) { return r.regionId == region.regionId; });
+
+        if (it != m_geofences.end()) {
+            *it = region;
+            Utils::Logger::Info("Geofence updated");
+            return true;
+        }
+
+        Utils::Logger::Error("Geofence not found");
+        return false;
+
+    } catch (const std::exception& e) {
+        Utils::Logger::Error("UpdateGeofence failed: {}", e.what());
+        return false;
+    }
+}
+
+std::vector<GeofenceRegion> LocationPrivacyImpl::GetGeofences() const {
+    std::shared_lock lock(m_mutex);
+    return m_geofences;
+}
+
+std::vector<GeofenceRegion> LocationPrivacyImpl::CheckGeofences(const GeoLocation& location) {
+    if (!location.IsValid()) {
+        Utils::Logger::Warn("CheckGeofences called with invalid location");
+        return {};
+    }
+
+    struct TriggeredInfo {
+        GeofenceRegion region;
+        bool entered = false;
+    };
+
+    std::vector<TriggeredInfo> notifications;
+    std::vector<GeofenceRegion> triggered;
+
+    try {
+        // unique_lock required because we update m_lastLocation
+        std::unique_lock lock(m_mutex);
+
+        for (const auto& geofence : m_geofences) {
+            if (!geofence.enabled) continue;
+
+            bool isInside = geofence.Contains(location);
+            bool wasInside = m_lastLocation.has_value() &&
+                             geofence.Contains(*m_lastLocation);
+            bool stateChanged = (isInside != wasInside);
+
+            bool shouldTrigger = false;
+            switch (geofence.action) {
+                case GeofenceAction::AllowInside:
+                case GeofenceAction::BlockInside:
+                case GeofenceAction::MockOutside:
+                    shouldTrigger = isInside;
+                    break;
+
+                case GeofenceAction::AlertOnExit:
+                    shouldTrigger = stateChanged && !isInside && wasInside;
+                    break;
+
+                case GeofenceAction::AlertOnEnter:
+                    shouldTrigger = stateChanged && isInside && !wasInside;
+                    break;
+
+                default:
+                    break;
+            }
+
+            if (shouldTrigger) {
+                triggered.push_back(geofence);
+                notifications.push_back({geofence, isInside});
+                m_stats.geofenceTriggered.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+
+        m_lastLocation = location;
+
+    } catch (const std::exception& e) {
+        Utils::Logger::Error("CheckGeofences failed: {}", e.what());
+    }
+
+    // Notify outside the lock to prevent deadlocks and iterator invalidation
+    for (const auto& info : notifications) {
+        NotifyGeofenceEvent(info.region, info.entered);
+    }
+
+    return triggered;
+}
+
+// ============================================================================
+// ACCESS CONTROL IMPLEMENTATION
+// ============================================================================
+
+LocationAccessDecision LocationPrivacyImpl::EvaluateAccess(
+    uint32_t processId,
+    LocationSource source) {
+
+    try {
+        std::string processName = GetProcessNameFromPid(processId);
+        return EvaluateAccessInternal(processId, processName, source);
+
+    } catch (const std::exception& e) {
+        Utils::Logger::Error("EvaluateAccess failed: {}", e.what());
+        return LocationAccessDecision::Block;
+    }
+}
+
+LocationAccessDecision LocationPrivacyImpl::EvaluateAccessInternal(
+    uint32_t processId,
+    const std::string& processName,
+    LocationSource source) {
+
+    std::shared_lock lock(m_mutex);
+
+    m_stats.totalAccessAttempts.fetch_add(1, std::memory_order_relaxed);
+
+    auto sourceIdx = static_cast<size_t>(source);
+    if (sourceIdx < m_stats.bySource.size()) {
+        m_stats.bySource[sourceIdx].fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // Check protection mode
+    switch (m_protectionMode.load(std::memory_order_acquire)) {
+        case LocationProtectionMode::Disabled:
+            m_stats.accessAllowed.fetch_add(1, std::memory_order_relaxed);
+            return LocationAccessDecision::Allow;
+
+        case LocationProtectionMode::BlockAll:
+            m_stats.accessBlocked.fetch_add(1, std::memory_order_relaxed);
+            return LocationAccessDecision::Block;
+
+        case LocationProtectionMode::MockLocation:
+            m_stats.accessMocked.fetch_add(1, std::memory_order_relaxed);
+            return LocationAccessDecision::Mock;
+
+        case LocationProtectionMode::Monitor:
+            m_stats.accessAllowed.fetch_add(1, std::memory_order_relaxed);
+            return LocationAccessDecision::Allow;
+
+        case LocationProtectionMode::Prompt:
+            return LocationAccessDecision::Prompt;
+
+        case LocationProtectionMode::WhitelistOnly:
+            // Use lock-free version — shared_lock already held
+            if (IsProcessWhitelistedNoLock(processName)) {
+                m_stats.whitelistHits.fetch_add(1, std::memory_order_relaxed);
+                m_stats.accessAllowed.fetch_add(1, std::memory_order_relaxed);
+                return LocationAccessDecision::Allow;
+            }
+            m_stats.accessBlocked.fetch_add(1, std::memory_order_relaxed);
+            return LocationAccessDecision::Block;
+
+        default:
+            m_stats.accessBlocked.fetch_add(1, std::memory_order_relaxed);
+            return LocationAccessDecision::Block;
+    }
+}
+
+GeoLocation LocationPrivacyImpl::GetLocationToProvide(
+    const GeoLocation& realLocation,
+    uint32_t processId) {
+
+    try {
+        auto decision = EvaluateAccess(processId, realLocation.source);
+
+        if (decision == LocationAccessDecision::Allow) {
+            return realLocation;
+        }
+
+        if (decision == LocationAccessDecision::Mock) {
+            std::shared_lock lock(m_mutex);
+
+            // Check if active route
+            if (m_activeRoute.has_value() && m_activeRoute->isActive) {
+                GeoLocation routeLoc = m_activeRoute->GetCurrentLocation();
+                routeLoc.timestamp = std::chrono::system_clock::now();
+                return routeLoc;
+            }
+
+            // Check if mock location set
+            if (m_mockLocation.has_value()) {
+                GeoLocation mockLoc = *m_mockLocation;
+                mockLoc.timestamp = std::chrono::system_clock::now();
+
+                // Apply fuzzing if enabled
+                if (m_config.enableFuzzing) {
+                    mockLoc = FuzzLocation(mockLoc, m_config.fuzzingRadiusMeters);
+                }
+
+                return mockLoc;
+            }
+
+            // Use default mock location from config
+            if (m_config.defaultMockLocation.has_value()) {
+                GeoLocation mockLoc = *m_config.defaultMockLocation;
+                mockLoc.timestamp = std::chrono::system_clock::now();
+                return mockLoc;
+            }
+        }
+
+        // Block - return zeroed location indicating no data
+        GeoLocation blocked;
+        blocked.latitude = 0.0;
+        blocked.longitude = 0.0;
+        blocked.accuracy = 0.0;
+        blocked.source = LocationSource::Unknown;
+        blocked.timestamp = std::chrono::system_clock::now();
+        return blocked;
+
+    } catch (const std::exception& e) {
+        Utils::Logger::Error("GetLocationToProvide failed: {}", e.what());
+        // Fail closed: never leak real location on error
+        GeoLocation errorLoc;
+        errorLoc.latitude = 0.0;
+        errorLoc.longitude = 0.0;
+        errorLoc.accuracy = 0.0;
+        errorLoc.source = LocationSource::Unknown;
+        errorLoc.timestamp = std::chrono::system_clock::now();
+        return errorLoc;
+    }
+}
+
+// ============================================================================
+// WHITELIST IMPLEMENTATION
+// ============================================================================
+
+bool LocationPrivacyImpl::AddToWhitelist(const LocationWhitelistEntry& entry) {
+    std::unique_lock lock(m_mutex);
+
+    try {
+        if (entry.entryId.empty() || entry.processPattern.empty()) {
+            Utils::Logger::Error("Invalid whitelist entry: empty ID or pattern");
+            return false;
+        }
+
+        if (entry.entryId.size() > MAX_STRING_ID_LEN ||
+            entry.processPattern.size() > MAX_PROCESS_PATTERN_LEN ||
+            entry.reason.size() > MAX_STRING_NAME_LEN ||
+            entry.addedBy.size() > MAX_STRING_NAME_LEN) {
+            Utils::Logger::Error(
+                "Whitelist entry rejected: a field exceeds the length cap");
+            return false;
+        }
+
+        if (!IsSafePrintableNarrow(entry.entryId) ||
+            !IsSafePrintableNarrow(entry.processPattern) ||
+            !IsSafePrintableNarrow(entry.reason) ||
+            !IsSafePrintableNarrow(entry.addedBy)) {
+            Utils::Logger::Error(
+                "Whitelist entry rejected: control characters in input");
+            return false;
+        }
+
+        // Validate time restriction hours
+        if (entry.allowFromHour.has_value() &&
+            (*entry.allowFromHour < 0 || *entry.allowFromHour > 23)) {
+            Utils::Logger::Error("Invalid whitelist entry: allowFromHour out of range [0,23]");
+            return false;
+        }
+        if (entry.allowToHour.has_value() &&
+            (*entry.allowToHour < 0 || *entry.allowToHour > 23)) {
+            Utils::Logger::Error("Invalid whitelist entry: allowToHour out of range [0,23]");
+            return false;
+        }
+
+        // Check if entry already exists
+        auto it = std::find_if(m_whitelist.begin(), m_whitelist.end(),
+            [&entry](const LocationWhitelistEntry& e) { return e.entryId == entry.entryId; });
+
+        if (it != m_whitelist.end()) {
+            *it = entry;
+        } else {
+            if (m_whitelist.size() >= MAX_WHITELIST_ENTRIES) {
+                Utils::Logger::Error(
+                    "AddToWhitelist rejected: whitelist at capacity ({})",
+                    MAX_WHITELIST_ENTRIES);
+                return false;
+            }
+            m_whitelist.push_back(entry);
+        }
+
+        Utils::Logger::Info("Whitelist entry added");
+        return true;
+
+    } catch (const std::exception& e) {
+        Utils::Logger::Error("AddToWhitelist failed: {}", e.what());
+        return false;
+    }
+}
+
+bool LocationPrivacyImpl::RemoveFromWhitelist(const std::string& entryId) {
+    std::unique_lock lock(m_mutex);
+
+    try {
+        auto it = std::remove_if(m_whitelist.begin(), m_whitelist.end(),
+            [&entryId](const LocationWhitelistEntry& e) { return e.entryId == entryId; });
+
+        if (it != m_whitelist.end()) {
+            m_whitelist.erase(it, m_whitelist.end());
+            Utils::Logger::Info("Whitelist entry removed");
+            return true;
+        }
+
+        return false;
+
+    } catch (const std::exception& e) {
+        Utils::Logger::Error("RemoveFromWhitelist failed: {}", e.what());
+        return false;
+    }
+}
+
+bool LocationPrivacyImpl::IsProcessWhitelisted(const std::string& processName) {
+    std::shared_lock lock(m_mutex);
+    return IsProcessWhitelistedNoLock(processName);
+}
+
+bool LocationPrivacyImpl::IsProcessWhitelistedNoLock(const std::string& processName) const {
+    for (const auto& entry : m_whitelist) {
+        if (!entry.enabled) continue;
+
+        // Case-insensitive exact match to prevent spoofing via substring
+        if (_stricmp(processName.c_str(), entry.processPattern.c_str()) == 0) {
+            if (!CheckWhitelistTimeRestriction(entry)) {
+                continue;
+            }
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::vector<LocationWhitelistEntry> LocationPrivacyImpl::GetWhitelist() const {
+    std::shared_lock lock(m_mutex);
+    return m_whitelist;
+}
+
+// ============================================================================
+// IP GEOLOCATION BLOCKING IMPLEMENTATION
+// ============================================================================
+
+bool LocationPrivacyImpl::BlockIPGeolocation(bool block) {
+    std::unique_lock lock(m_mutex);
+    m_blockIPGeolocation = block;
+    m_config.blockIPGeolocation = block;
+
+    Utils::Logger::Info("IP geolocation blocking: {}", block ? "enabled" : "disabled");
+    return true;
+}
+
+bool LocationPrivacyImpl::AddBlockedGeolocationDomain(const std::string& domain) {
+    std::unique_lock lock(m_mutex);
+
+    // SanitizeDomain enforces length cap (253), rejects NUL/path-traversal,
+    // lowercases and strips leading/trailing dots. Returns empty on rejection.
+    std::string normalized = SanitizeDomain(domain);
+    if (normalized.empty()) {
+        Utils::Logger::Error(
+            "AddBlockedGeolocationDomain rejected: input failed sanitization");
+        return false;
+    }
+
+    if (m_blockedDomains.size() >= MAX_BLOCKED_DOMAINS &&
+        m_blockedDomains.find(normalized) == m_blockedDomains.end()) {
+        Utils::Logger::Error(
+            "AddBlockedGeolocationDomain rejected: domain table at capacity ({})",
+            MAX_BLOCKED_DOMAINS);
+        return false;
+    }
+
+    m_blockedDomains.insert(std::move(normalized));
+    Utils::Logger::Info("Blocked geolocation domain added");
+    return true;
+}
+
+std::vector<std::string> LocationPrivacyImpl::GetBlockedGeolocationDomains() const {
+    std::shared_lock lock(m_mutex);
+    return std::vector<std::string>(m_blockedDomains.begin(), m_blockedDomains.end());
+}
+
+// ============================================================================
+// EVENT HISTORY IMPLEMENTATION
+// ============================================================================
+
+std::vector<LocationAccessEvent> LocationPrivacyImpl::GetRecentEvents(
+    size_t limit,
+    std::optional<SystemTimePoint> since) {
+
+    std::shared_lock lock(m_mutex);
+
+    std::vector<LocationAccessEvent> filtered;
+
+    for (const auto& event : m_eventHistory) {
+        if (since.has_value() && event.timestamp < *since) {
+            continue;
+        }
+        filtered.push_back(event);
+    }
+
+    // Sort by timestamp (newest first)
+    std::sort(filtered.begin(), filtered.end(),
+        [](const LocationAccessEvent& a, const LocationAccessEvent& b) {
+            return a.timestamp > b.timestamp;
+        });
+
+    // Limit results
+    if (filtered.size() > limit) {
+        filtered.resize(limit);
+    }
+
+    return filtered;
+}
+
+void LocationPrivacyImpl::ClearEventHistory() {
+    std::unique_lock lock(m_mutex);
+    m_eventHistory.clear();
+    Utils::Logger::Info("Event history cleared");
+}
+
+// ============================================================================
+// CALLBACKS
+// ============================================================================
+
+void LocationPrivacyImpl::RegisterAccessCallback(AccessEventCallback callback) {
+    std::unique_lock lock(m_mutex);
+    m_accessCallback = std::move(callback);
+}
+
+void LocationPrivacyImpl::RegisterGeofenceCallback(GeofenceCallback callback) {
+    std::unique_lock lock(m_mutex);
+    m_geofenceCallback = std::move(callback);
+}
+
+void LocationPrivacyImpl::RegisterLocationCallback(LocationCallback callback) {
+    std::unique_lock lock(m_mutex);
+    m_locationCallback = std::move(callback);
+}
+
+void LocationPrivacyImpl::RegisterErrorCallback(ErrorCallback callback) {
+    std::unique_lock lock(m_mutex);
+    m_errorCallback = std::move(callback);
+}
+
+void LocationPrivacyImpl::UnregisterCallbacks() {
+    std::unique_lock lock(m_mutex);
+    m_accessCallback = nullptr;
+    m_geofenceCallback = nullptr;
+    m_locationCallback = nullptr;
+    m_errorCallback = nullptr;
+}
+
+// ============================================================================
+// STATISTICS
+// ============================================================================
+
+LocationStatisticsSnapshot LocationPrivacyImpl::GetStatistics() const {
+    std::shared_lock lock(m_mutex);
+    return m_stats.Snapshot();
+}
+
+void LocationPrivacyImpl::ResetStatistics() {
+    std::unique_lock lock(m_mutex);
+    m_stats.Reset();
+    Utils::Logger::Info("Statistics reset");
+}
+
+bool LocationPrivacyImpl::SelfTest() {
+    Utils::Logger::Info("Running LocationPrivacy self-test...");
+
+    try {
+        // Test 1: GeoLocation validation
+        GeoLocation testLoc;
+        testLoc.latitude = 40.7128;
+        testLoc.longitude = -74.0060;  // New York
+        testLoc.accuracy = 10.0;
+
+        if (!testLoc.IsValid()) {
+            Utils::Logger::Error("Self-test failed: GeoLocation validation");
+            return false;
+        }
+        Utils::Logger::Info("✓ GeoLocation validation test passed");
+
+        // Test 2: Distance calculation
+        GeoLocation loc1;
+        loc1.latitude = 40.7128;
+        loc1.longitude = -74.0060;  // New York
+
+        GeoLocation loc2;
+        loc2.latitude = 34.0522;
+        loc2.longitude = -118.2437;  // Los Angeles
+
+        double distance = loc1.DistanceTo(loc2);
+        if (distance < 3900.0 || distance > 4000.0) {  // Should be ~3935 km
+            Utils::Logger::Error("Self-test failed: Distance calculation ({} km)", distance);
+            return false;
+        }
+        Utils::Logger::Info("✓ Distance calculation test passed ({:.2f} km)", distance);
+
+        // Test 3: Geofence creation
+        GeofenceRegion testRegion;
+        testRegion.regionId = GenerateRegionId();
+        testRegion.name = "Test Region";
+        testRegion.shape = GeofenceShape::Circle;
+        testRegion.center = testLoc;
+        testRegion.radiusMeters = 1000.0;
+        testRegion.action = GeofenceAction::AllowInside;
+
+        if (!AddGeofence(testRegion)) {
+            Utils::Logger::Error("Self-test failed: Geofence creation");
+            return false;
+        }
+        Utils::Logger::Info("✓ Geofence creation test passed");
+
+        // Test 4: Geofence containment
+        GeoLocation insideLoc = testLoc;  // Same as center
+        if (!testRegion.Contains(insideLoc)) {
+            Utils::Logger::Error("Self-test failed: Geofence containment (inside)");
+            return false;
+        }
+
+        GeoLocation outsideLoc = loc2;  // Far away
+        if (testRegion.Contains(outsideLoc)) {
+            Utils::Logger::Error("Self-test failed: Geofence containment (outside)");
+            return false;
+        }
+        Utils::Logger::Info("✓ Geofence containment test passed");
+
+        // Test 5: Mock location
+        SetMockLocation(testLoc);
+        auto mockLoc = GetMockLocation();
+        if (!mockLoc.has_value()) {
+            Utils::Logger::Error("Self-test failed: Mock location");
+            return false;
+        }
+        Utils::Logger::Info("✓ Mock location test passed");
+
+        // Cleanup
+        (void)RemoveGeofence(testRegion.regionId);
+        ClearMockLocation();
+
+        Utils::Logger::Info("All LocationPrivacy self-tests passed!");
+        return true;
+
+    } catch (const std::exception& e) {
+        Utils::Logger::Error("Self-test failed with exception: {}", e.what());
+        return false;
+    }
+}
+
+// ============================================================================
+// PRIVATE METHODS
+// ============================================================================
+
+void LocationPrivacyImpl::RouteSimulationThreadFunc() {
+    Utils::Logger::Info("Route simulation thread started");
+
+    try {
+        while (!m_stopRouteThread.load()) {
+            {
+                std::unique_lock lock(m_mutex);
+
+                if (m_activeRoute.has_value() && m_activeRoute->isActive) {
+                    auto& route = *m_activeRoute;
+
+                    // Advance to next waypoint based on time and speed
+                    auto now = std::chrono::system_clock::now();
+                    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                        now - route.startTime).count();
+
+                    // Calculate distance traveled
+                    double distanceTraveled = route.speedMps * elapsed;
+
+                    // Advance to next waypoint when simulated distance exceeds segment length
+                    if (route.currentIndex < route.waypoints.size() - 1) {
+                        auto currentWaypoint = route.waypoints[route.currentIndex];
+                        auto nextWaypoint = route.waypoints[route.currentIndex + 1];
+
+                        double waypointDistance = currentWaypoint.DistanceTo(nextWaypoint) * 1000.0;  // km to m
+
+                        if (distanceTraveled >= waypointDistance) {
+                            route.currentIndex++;
+                            route.startTime = now;  // Reset timer for next segment
+                        }
+                    } else if (route.isLoop) {
+                        // Loop back to start
+                        route.currentIndex = 0;
+                        route.startTime = now;
+                    } else {
+                        // Route finished
+                        route.isActive = false;
+                    }
+                }
+            }
+
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+
+    } catch (const std::exception& e) {
+        Utils::Logger::Error("Route simulation thread exception: {}", e.what());
+    }
+
+    Utils::Logger::Info("Route simulation thread stopped");
+}
+
+void LocationPrivacyImpl::MonitoringThreadFunc() {
+    Utils::Logger::Info("Location monitoring thread started");
+
+    constexpr wchar_t LOCATION_CONSENT_KEY[] =
+        L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\"
+        L"CapabilityAccessManager\\ConsentStore\\location";
+
+    std::optional<bool> lastKnownLocationState;
+
+    while (!m_stopMonitoring.load(std::memory_order_relaxed)) {
+        try {
+            // Poll Windows Location Service consent registry key
+            RegKeyGuard keyGuard;
+            LONG regResult = ::RegOpenKeyExW(
+                HKEY_CURRENT_USER, LOCATION_CONSENT_KEY,
+                0, KEY_READ, &keyGuard.key);
+
+            if (regResult == ERROR_SUCCESS && keyGuard.key != nullptr) {
+                wchar_t valueData[64] = {};
+                DWORD valueSize = sizeof(valueData) - sizeof(wchar_t);
+                DWORD valueType = 0;
+
+                regResult = ::RegQueryValueExW(keyGuard.key, L"Value", nullptr,
+                    &valueType, reinterpret_cast<LPBYTE>(valueData),
+                    &valueSize);
+
+                if (regResult == ERROR_SUCCESS && valueType == REG_SZ) {
+                    bool isAllowed = (_wcsicmp(valueData, L"Allow") == 0);
+
+                    if (lastKnownLocationState.has_value() &&
+                        *lastKnownLocationState != isAllowed) {
+                        Utils::Logger::Warn(
+                            "Location service state changed externally: {}",
+                            isAllowed ? "enabled" : "disabled");
+
+                        m_locationEnabled.store(isAllowed,
+                                                std::memory_order_release);
+                    }
+
+                    lastKnownLocationState = isAllowed;
+                }
+            }
+
+        } catch (const std::exception& e) {
+            Utils::Logger::Error("Monitoring thread error: {}", e.what());
+        }
+
+        // Sleep in small increments for responsive shutdown
+        for (int i = 0; i < 10 &&
+             !m_stopMonitoring.load(std::memory_order_relaxed); ++i) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+    }
+
+    Utils::Logger::Info("Location monitoring thread stopped");
+}
+
+void LocationPrivacyImpl::RecordAccessEvent(const LocationAccessEvent& event) {
+    std::unique_lock lock(m_mutex);
+
+    m_eventHistory.push_back(event);
+
+    // Trim in batches to avoid O(n) per-event cost
+    constexpr size_t MAX_EVENTS = 10000;
+    constexpr size_t TRIM_BATCH = 1000;
+    if (m_eventHistory.size() > MAX_EVENTS + TRIM_BATCH) {
+        m_eventHistory.erase(m_eventHistory.begin(),
+            m_eventHistory.begin() + static_cast<ptrdiff_t>(TRIM_BATCH));
+    }
+}
+
+void LocationPrivacyImpl::NotifyAccessEvent(const LocationAccessEvent& event) {
+    AccessEventCallback callback;
+    {
+        std::shared_lock lock(m_mutex);
+        callback = m_accessCallback;
+    }
+    if (callback) {
+        try {
+            callback(event);
+        } catch (const std::exception& e) {
+            Utils::Logger::Error("Access callback exception: {}", e.what());
+        }
+    }
+}
+
+void LocationPrivacyImpl::NotifyGeofenceEvent(const GeofenceRegion& region, bool entered) {
+    GeofenceCallback callback;
+    {
+        std::shared_lock lock(m_mutex);
+        callback = m_geofenceCallback;
+    }
+    if (callback) {
+        try {
+            callback(region, entered);
+        } catch (const std::exception& e) {
+            Utils::Logger::Error("Geofence callback exception: {}", e.what());
+        }
+    }
+}
+
+void LocationPrivacyImpl::NotifyError(const std::string& message, int code) {
+    ErrorCallback callback;
+    {
+        std::shared_lock lock(m_mutex);
+        callback = m_errorCallback;
+    }
+    if (callback) {
+        try {
+            callback(message, code);
+        } catch (const std::exception& e) {
+            Utils::Logger::Error("Error callback exception: {}", e.what());
+        }
+    }
+}
+
+bool LocationPrivacyImpl::CheckWhitelistTimeRestriction(const LocationWhitelistEntry& entry) const {
+    if (!entry.allowFromHour.has_value() || !entry.allowToHour.has_value()) {
+        return true;  // No time restriction
+    }
+
+    auto now = std::chrono::system_clock::now();
+    auto time = std::chrono::system_clock::to_time_t(now);
+
+    std::tm localTime;
+    localtime_s(&localTime, &time);
+
+    int currentHour = localTime.tm_hour;
+    int fromHour = *entry.allowFromHour;
+    int toHour = *entry.allowToHour;
+
+    if (fromHour <= toHour) {
+        // Normal range (e.g., 9:00 to 17:00)
+        return currentHour >= fromHour && currentHour < toHour;
+    } else {
+        // Overnight range (e.g., 22:00 to 6:00)
+        return currentHour >= fromHour || currentHour < toHour;
+    }
+}
+
+std::string LocationPrivacyImpl::GetProcessNameFromPid(uint32_t pid) {
+    if (pid == 0) return {};
+
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+                                  static_cast<DWORD>(pid));
+    if (!hProcess) return {};
+
+    // Use UNICODE_STRING_MAX_CHARS (32768) to support \\?\-style long paths.
+    // QueryFullProcessImageNameW writes the actual length to pathSize on success.
+    constexpr DWORD kPathCap = 32768;
+    std::vector<wchar_t> exePath(kPathCap, L'\0');
+    DWORD pathSize = kPathCap;
+    BOOL ok = QueryFullProcessImageNameW(hProcess, 0, exePath.data(), &pathSize);
+    CloseHandle(hProcess);
+
+    if (!ok || pathSize == 0 || pathSize > kPathCap) return {};
+
+    // Extract filename from full path
+    std::wstring_view fullPath(exePath.data(), pathSize);
+    auto pos = fullPath.find_last_of(L"\\/");
+    std::wstring_view fileName = (pos != std::wstring_view::npos)
+                                     ? fullPath.substr(pos + 1)
+                                     : fullPath;
+
+    if (fileName.empty()) return {};
+
+    // Convert wide string to UTF-8
+    int needed = WideCharToMultiByte(CP_UTF8, 0, fileName.data(),
+        static_cast<int>(fileName.size()), nullptr, 0, nullptr, nullptr);
+    if (needed <= 0) return {};
+
+    std::string result(static_cast<size_t>(needed), '\0');
+    int written = WideCharToMultiByte(CP_UTF8, 0, fileName.data(),
+        static_cast<int>(fileName.size()), result.data(), needed,
+        nullptr, nullptr);
+    if (written <= 0) return {};
+
+    return result;
+}
+
+// ============================================================================
+// PUBLIC API IMPLEMENTATION (SINGLETON)
+// ============================================================================
+
+LocationPrivacy& LocationPrivacy::Instance() noexcept {
+    static LocationPrivacy instance;
+    return instance;
+}
+
+bool LocationPrivacy::HasInstance() noexcept {
+    return s_instanceCreated.load();
+}
+
+LocationPrivacy::LocationPrivacy()
+    : m_impl(std::make_unique<LocationPrivacyImpl>()) {
+    s_instanceCreated = true;
+}
+
+LocationPrivacy::~LocationPrivacy() {
+    s_instanceCreated = false;
+}
+
+// Forward all public methods to implementation
+
+bool LocationPrivacy::Initialize(const LocationConfiguration& config) {
+    return m_impl->Initialize(config);
+}
+
+void LocationPrivacy::Shutdown() {
+    m_impl->Shutdown();
+}
+
+bool LocationPrivacy::IsInitialized() const noexcept {
+    return m_impl->IsInitialized();
+}
+
+ModuleStatus LocationPrivacy::GetStatus() const noexcept {
+    return m_impl->GetStatus();
+}
+
+bool LocationPrivacy::UpdateConfiguration(const LocationConfiguration& config) {
+    return m_impl->UpdateConfiguration(config);
+}
+
+LocationConfiguration LocationPrivacy::GetConfiguration() const {
+    return m_impl->GetConfiguration();
+}
+
+void LocationPrivacy::SetProtectionMode(LocationProtectionMode mode) {
+    m_impl->SetProtectionMode(mode);
+}
+
+LocationProtectionMode LocationPrivacy::GetProtectionMode() const noexcept {
+    return m_impl->GetProtectionMode();
+}
+
+bool LocationPrivacy::SetLocationEnabled(bool enabled) {
+    return m_impl->SetLocationEnabled(enabled);
+}
+
+bool LocationPrivacy::IsLocationEnabled() const noexcept {
+    return m_impl->IsLocationEnabled();
+}
+
+void LocationPrivacy::SetMockLocation(const GeoLocation& loc) {
+    m_impl->SetMockLocation(loc);
+}
+
+std::optional<GeoLocation> LocationPrivacy::GetMockLocation() const {
+    return m_impl->GetMockLocation();
+}
+
+void LocationPrivacy::ClearMockLocation() {
+    m_impl->ClearMockLocation();
+}
+
+bool LocationPrivacy::SetRandomMockLocation(const GeofenceRegion& region) {
+    return m_impl->SetRandomMockLocation(region);
+}
+
+GeoLocation LocationPrivacy::FuzzLocation(const GeoLocation& location, double radiusMeters) {
+    return m_impl->FuzzLocation(location, radiusMeters);
+}
+
+bool LocationPrivacy::AddRoute(const MockRoute& route) {
+    return m_impl->AddRoute(route);
+}
+
+bool LocationPrivacy::RemoveRoute(const std::string& routeId) {
+    return m_impl->RemoveRoute(routeId);
+}
+
+bool LocationPrivacy::StartRoute(const std::string& routeId) {
+    return m_impl->StartRoute(routeId);
+}
+
+void LocationPrivacy::StopRoute() {
+    m_impl->StopRoute();
+}
+
+std::optional<MockRoute> LocationPrivacy::GetActiveRoute() const {
+    return m_impl->GetActiveRoute();
+}
+
+std::vector<MockRoute> LocationPrivacy::GetRoutes() const {
+    return m_impl->GetRoutes();
+}
+
+bool LocationPrivacy::AddGeofence(const GeofenceRegion& region) {
+    return m_impl->AddGeofence(region);
+}
+
+bool LocationPrivacy::RemoveGeofence(const std::string& regionId) {
+    return m_impl->RemoveGeofence(regionId);
+}
+
+bool LocationPrivacy::UpdateGeofence(const GeofenceRegion& region) {
+    return m_impl->UpdateGeofence(region);
+}
+
+std::vector<GeofenceRegion> LocationPrivacy::GetGeofences() const {
+    return m_impl->GetGeofences();
+}
+
+std::vector<GeofenceRegion> LocationPrivacy::CheckGeofences(const GeoLocation& location) {
+    return m_impl->CheckGeofences(location);
+}
+
+LocationAccessDecision LocationPrivacy::EvaluateAccess(
+    uint32_t processId,
+    LocationSource source) {
+    return m_impl->EvaluateAccess(processId, source);
+}
+
+GeoLocation LocationPrivacy::GetLocationToProvide(
+    const GeoLocation& realLocation,
+    uint32_t processId) {
+    return m_impl->GetLocationToProvide(realLocation, processId);
+}
+
+bool LocationPrivacy::AddToWhitelist(const LocationWhitelistEntry& entry) {
+    return m_impl->AddToWhitelist(entry);
+}
+
+bool LocationPrivacy::RemoveFromWhitelist(const std::string& entryId) {
+    return m_impl->RemoveFromWhitelist(entryId);
+}
+
+bool LocationPrivacy::IsProcessWhitelisted(const std::string& processName) {
+    return m_impl->IsProcessWhitelisted(processName);
+}
+
+std::vector<LocationWhitelistEntry> LocationPrivacy::GetWhitelist() const {
+    return m_impl->GetWhitelist();
+}
+
+bool LocationPrivacy::BlockIPGeolocation(bool block) {
+    return m_impl->BlockIPGeolocation(block);
+}
+
+bool LocationPrivacy::IsIPGeolocationBlocked() const noexcept {
+    return m_impl->IsIPGeolocationBlocked();
+}
+
+bool LocationPrivacy::AddBlockedGeolocationDomain(const std::string& domain) {
+    return m_impl->AddBlockedGeolocationDomain(domain);
+}
+
+std::vector<std::string> LocationPrivacy::GetBlockedGeolocationDomains() const {
+    return m_impl->GetBlockedGeolocationDomains();
+}
+
+std::vector<LocationAccessEvent> LocationPrivacy::GetRecentEvents(
+    size_t limit,
+    std::optional<SystemTimePoint> since) {
+    return m_impl->GetRecentEvents(limit, since);
+}
+
+void LocationPrivacy::ClearEventHistory() {
+    m_impl->ClearEventHistory();
+}
+
+void LocationPrivacy::RegisterAccessCallback(AccessEventCallback callback) {
+    m_impl->RegisterAccessCallback(std::move(callback));
+}
+
+void LocationPrivacy::RegisterGeofenceCallback(GeofenceCallback callback) {
+    m_impl->RegisterGeofenceCallback(std::move(callback));
+}
+
+void LocationPrivacy::RegisterLocationCallback(LocationCallback callback) {
+    m_impl->RegisterLocationCallback(std::move(callback));
+}
+
+void LocationPrivacy::RegisterErrorCallback(ErrorCallback callback) {
+    m_impl->RegisterErrorCallback(std::move(callback));
+}
+
+void LocationPrivacy::UnregisterCallbacks() {
+    m_impl->UnregisterCallbacks();
+}
+
+LocationStatisticsSnapshot LocationPrivacy::GetStatistics() const {
+    return m_impl->GetStatistics();
+}
+
+void LocationPrivacy::ResetStatistics() {
+    m_impl->ResetStatistics();
+}
+
+bool LocationPrivacy::SelfTest() {
+    return m_impl->SelfTest();
+}
+
+std::string LocationPrivacy::GetVersionString() noexcept {
+    std::ostringstream oss;
+    oss << LocationConstants::VERSION_MAJOR << "."
+        << LocationConstants::VERSION_MINOR << "."
+        << LocationConstants::VERSION_PATCH;
+    return oss.str();
+}
+
+// ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
+
+std::string_view GetProtectionModeName(LocationProtectionMode mode) noexcept {
+    switch (mode) {
+        case LocationProtectionMode::Disabled: return "Disabled";
+        case LocationProtectionMode::Monitor: return "Monitor";
+        case LocationProtectionMode::Prompt: return "Prompt";
+        case LocationProtectionMode::WhitelistOnly: return "WhitelistOnly";
+        case LocationProtectionMode::BlockAll: return "BlockAll";
+        case LocationProtectionMode::MockLocation: return "MockLocation";
+        default: return "Unknown";
+    }
+}
+
+std::string_view GetLocationSourceName(LocationSource source) noexcept {
+    switch (source) {
+        case LocationSource::Unknown: return "Unknown";
+        case LocationSource::GPS: return "GPS";
+        case LocationSource::WiFi: return "WiFi";
+        case LocationSource::CellTower: return "CellTower";
+        case LocationSource::IP: return "IP";
+        case LocationSource::Bluetooth: return "Bluetooth";
+        case LocationSource::Sensor: return "Sensor";
+        case LocationSource::Manual: return "Manual";
+        default: return "Unknown";
+    }
+}
+
+std::string_view GetGeofenceActionName(GeofenceAction action) noexcept {
+    switch (action) {
+        case GeofenceAction::None: return "None";
+        case GeofenceAction::AllowInside: return "AllowInside";
+        case GeofenceAction::BlockInside: return "BlockInside";
+        case GeofenceAction::MockOutside: return "MockOutside";
+        case GeofenceAction::AlertOnExit: return "AlertOnExit";
+        case GeofenceAction::AlertOnEnter: return "AlertOnEnter";
+        default: return "Unknown";
+    }
+}
+
+std::string_view GetDecisionName(LocationAccessDecision decision) noexcept {
+    switch (decision) {
+        case LocationAccessDecision::Allow: return "Allow";
+        case LocationAccessDecision::Block: return "Block";
+        case LocationAccessDecision::Mock: return "Mock";
+        case LocationAccessDecision::Prompt: return "Prompt";
+        case LocationAccessDecision::AllowOnce: return "AllowOnce";
+        default: return "Unknown";
+    }
+}
+
+double CalculateDistance(double lat1, double lon1, double lat2, double lon2) {
+    // Haversine formula
+    double dLat = ToRadians(lat2 - lat1);
+    double dLon = ToRadians(lon2 - lon1);
+
+    lat1 = ToRadians(lat1);
+    lat2 = ToRadians(lat2);
+
+    double a = std::sin(dLat / 2.0) * std::sin(dLat / 2.0) +
+               std::sin(dLon / 2.0) * std::sin(dLon / 2.0) *
+               std::cos(lat1) * std::cos(lat2);
+
+    double c = 2.0 * std::atan2(std::sqrt(a), std::sqrt(1.0 - a));
+
+    return LocationConstants::EARTH_RADIUS_KM * c;
+}
+
+GeoLocation GenerateRandomLocation(const GeoLocation& center, double radiusMeters) {
+    auto& rng = GetRNG();
+    std::uniform_real_distribution<double> angleDist(0.0, 2.0 * 3.14159265358979323846);
+    std::uniform_real_distribution<double> radiusDist(0.0, 1.0);
+
+    // Random angle and distance (sqrt for uniform area distribution)
+    double angle = angleDist(rng);
+    double distance = std::sqrt(radiusDist(rng)) * radiusMeters;
+
+    // Convert distance to degrees (approximate)
+    double distanceKm = distance / 1000.0;
+    double latOffset = (distanceKm / LocationConstants::EARTH_RADIUS_KM) * (180.0 / 3.14159265358979323846);
+    double lonOffset = latOffset / std::cos(ToRadians(center.latitude));
+
+    GeoLocation randomLoc;
+    randomLoc.latitude = center.latitude + latOffset * std::cos(angle);
+    randomLoc.longitude = center.longitude + lonOffset * std::sin(angle);
+    randomLoc.accuracy = center.accuracy;
+    randomLoc.timestamp = std::chrono::system_clock::now();
+    randomLoc.source = LocationSource::Manual;
+
+    return randomLoc;
+}
+
+bool PointInPolygon(const GeoLocation& point, const std::vector<GeoLocation>& polygon) {
+    if (polygon.size() < 3) return false;
+
+    // Ray casting algorithm
+    bool inside = false;
+    size_t j = polygon.size() - 1;
+
+    for (size_t i = 0; i < polygon.size(); i++) {
+        if (((polygon[i].latitude > point.latitude) != (polygon[j].latitude > point.latitude)) &&
+            (point.longitude < (polygon[j].longitude - polygon[i].longitude) *
+                               (point.latitude - polygon[i].latitude) /
+                               (polygon[j].latitude - polygon[i].latitude) + polygon[i].longitude)) {
+            inside = !inside;
+        }
+        j = i;
+    }
+
+    return inside;
+}
+
+}  // namespace Privacy
+}  // namespace ShadowStrike

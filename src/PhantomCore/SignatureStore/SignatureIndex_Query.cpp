@@ -1,0 +1,363 @@
+/*
+ * ShadowStrike - Enterprise NGAV/EDR Platform
+ * Copyright (C) 2026 ShadowStrike Security
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+#include"pch.h"
+#include"SignatureIndex.hpp"
+#include"../Utils/Logger.hpp"
+#include<unordered_set>
+
+namespace ShadowStrike {
+	namespace SignatureStore {
+
+        // ============================================================================
+        // QUERY OPERATIONS (Lock-Free Reads)
+        // ============================================================================
+
+        std::optional<uint64_t> SignatureIndex::Lookup(const HashValue& hash) const noexcept {
+            // SECURITY: Validate hash before computing fast hash
+            if (hash.length == 0 || hash.length > 64) {
+                SS_LOG_WARN(L"SignatureIndex", L"Lookup: Invalid hash length %u", hash.length);
+                return std::nullopt;
+            }
+            return LookupByFastHash(hash.FastHash());
+        }
+
+        // Internal lookup helper - CALLER MUST HOLD LOCK (shared or exclusive)
+        std::optional<uint64_t> SignatureIndex::LookupByFastHashInternal(uint64_t fastHash) const noexcept {
+            // SECURITY: Validate index state before lookup
+            if (!m_baseAddress) {
+                return std::nullopt;
+            }
+
+            // Find leaf node
+            const BPlusTreeNode* leaf = FindLeaf(fastHash);
+            if (!leaf) {
+                return std::nullopt;
+            }
+
+            // SECURITY: Validate leaf node state
+            if (leaf->keyCount > BPlusTreeNode::MAX_KEYS) {
+                SS_LOG_ERROR(L"SignatureIndex",
+                    L"LookupByFastHashInternal: Invalid leaf keyCount %u", leaf->keyCount);
+                return std::nullopt;
+            }
+
+            // Binary search in leaf node
+            uint32_t pos = BinarySearch(leaf->keys, leaf->keyCount, fastHash);
+
+            // Check if key found (bounds-safe)
+            if (pos < leaf->keyCount && leaf->keys[pos] == fastHash) {
+                // SECURITY: Validate child offset before returning
+                uint64_t offset = static_cast<uint64_t>(leaf->children[pos]);
+                return offset;
+            }
+
+            // TRACE: Log when key is not found (not INFO - would flood logs)
+            SS_LOG_TRACE(L"SignatureIndex",
+                L"LookupByFastHashInternal: Key 0x%llX NOT FOUND in leaf (pos=%u, keyCount=%u)",
+                fastHash, pos, leaf->keyCount);
+            if (leaf->keyCount > 0) {
+                SS_LOG_TRACE(L"SignatureIndex",
+                    L"LookupByFastHashInternal: Leaf key[0]=0x%llX, key[last]=0x%llX, key[pos]=0x%llX",
+                    leaf->keys[0], leaf->keys[leaf->keyCount - 1],
+                    pos < leaf->keyCount ? leaf->keys[pos] : 0ULL);
+            }
+
+            return std::nullopt;
+        }
+
+        std::optional<uint64_t> SignatureIndex::LookupByFastHash(uint64_t fastHash) const noexcept {
+            // Performance tracking (relaxed ordering for statistics)
+            m_totalLookups.fetch_add(1, std::memory_order_relaxed);
+
+            // Lock-free read (shared lock allows concurrent readers)
+            std::shared_lock<std::shared_mutex> lock(m_rwLock);
+
+            // SECURITY: Validate index is initialized under lock
+            if (!m_baseAddress || m_indexSize == 0) {
+                return std::nullopt;
+            }
+
+            return LookupByFastHashInternal(fastHash);
+        }
+
+        std::vector<uint64_t> SignatureIndex::RangeQuery(
+            uint64_t minFastHash,
+            uint64_t maxFastHash,
+            uint32_t maxResults
+        ) const noexcept {
+            std::vector<uint64_t> results;
+
+            // SECURITY: Validate range parameters
+            if (minFastHash > maxFastHash) {
+                SS_LOG_WARN(L"SignatureIndex",
+                    L"RangeQuery: Invalid range (min=0x%llX > max=0x%llX)",
+                    minFastHash, maxFastHash);
+                return results;
+            }
+
+            // SECURITY: DoS protection - enforce absolute maximum results
+            constexpr uint32_t ABSOLUTE_MAX_RESULTS = 100000;
+            const uint32_t effectiveMaxResults = (maxResults == 0) ? ABSOLUTE_MAX_RESULTS
+                : std::min(maxResults, ABSOLUTE_MAX_RESULTS);
+
+            // Pre-allocate with reasonable initial size
+            try {
+                results.reserve(std::min(effectiveMaxResults, 1000u));
+            }
+            catch (const std::bad_alloc&) {
+                SS_LOG_ERROR(L"SignatureIndex", L"RangeQuery: Failed to reserve result space");
+                return results;
+            }
+            catch (...) {
+                SS_LOG_ERROR(L"SignatureIndex", L"RangeQuery: Unknown exception during reserve");
+                return results;
+            }
+
+            std::shared_lock<std::shared_mutex> lock(m_rwLock);
+
+            // SECURITY: Validate index state
+            if (!m_baseAddress || m_indexSize == 0) {
+                SS_LOG_WARN(L"SignatureIndex", L"RangeQuery: Index not initialized");
+                return results;
+            }
+
+            // ========================================================================
+            // USE TREE TRAVERSAL INSTEAD OF LINKED LIST (COW-SAFE)
+            // ========================================================================
+            // The linked list (nextLeaf/prevLeaf) can become inconsistent during
+            // COW operations when leaves are cloned and written to new locations.
+            // Tree traversal via children[] is MORE ROBUST because those pointers
+            // ARE properly maintained and validated during COW commits.
+            //
+            // ALGORITHM:
+            // 1. Start from root
+            // 2. Recursively traverse to find all keys in range [min, max]
+            // 3. Use in-order traversal (left, node, right) for sorted results
+            // 4. Early exit when all keys > maxFastHash
+            // ========================================================================
+
+            // SECURITY (v1.1): m_rootOffset is uint64_t to support >4GB indices.
+            // Using uint32_t here truncates and corrupts lookups in large databases.
+            const uint64_t rootOffset = m_rootOffset.load(std::memory_order_acquire);
+            if (rootOffset >= m_indexSize) {
+                SS_LOG_WARN(L"SignatureIndex", L"RangeQuery: Invalid root offset 0x%llX (indexSize=%llu)",
+                    rootOffset, m_indexSize);
+                return results;
+            }
+
+            const BPlusTreeNode* root = GetNode(rootOffset);
+            if (!root) {
+                SS_LOG_DEBUG(L"SignatureIndex", L"RangeQuery: Empty tree");
+                return results;
+            }
+
+            // SECURITY: Track iterations to prevent infinite loop
+            constexpr size_t MAX_ITERATIONS = 1000000;
+            size_t iterations = 0;
+
+            // Track visited nodes to detect cycles
+            // SECURITY (v1.1): Node offsets are 64-bit to support >4GB indices.
+            std::unordered_set<uint64_t> visitedNodes;
+            visitedNodes.reserve(1024);
+
+            // Use stack-based traversal for in-order tree walk
+            struct TraversalFrame {
+                const BPlusTreeNode* node;
+                uint32_t childIndex;  // Current child being processed
+                bool processedKeys;   // For internal nodes: have we processed keys yet?
+            };
+
+            std::vector<TraversalFrame> stack;
+            stack.reserve(64);
+            stack.push_back({root, 0, false});
+            visitedNodes.insert(rootOffset);
+
+            bool rangeExhausted = false;
+
+            while (!stack.empty() && results.size() < effectiveMaxResults && 
+                   iterations < MAX_ITERATIONS && !rangeExhausted) {
+                iterations++;
+                TraversalFrame& frame = stack.back();
+                const BPlusTreeNode* node = frame.node;
+
+                if (!node) {
+                    stack.pop_back();
+                    continue;
+                }
+
+                // SECURITY: Validate keyCount
+                if (node->keyCount > BPlusTreeNode::MAX_KEYS) {
+                    SS_LOG_ERROR(L"SignatureIndex",
+                        L"RangeQuery: Invalid keyCount %u in node", node->keyCount);
+                    stack.pop_back();
+                    continue;
+                }
+
+                if (node->isLeaf) {
+                    // Process keys in this leaf that fall within range
+                    for (uint32_t i = 0; i < node->keyCount && results.size() < effectiveMaxResults; ++i) {
+                        const uint64_t key = node->keys[i];
+
+                        if (key > maxFastHash) {
+                            // Past range - we can stop the entire search
+                            // (keys are sorted, so all subsequent keys will also be > max)
+                            rangeExhausted = true;
+                            break;
+                        }
+
+                        if (key >= minFastHash) {
+                            try {
+                                results.push_back(static_cast<uint64_t>(node->children[i]));
+                            }
+                            catch (const std::bad_alloc&) {
+                                SS_LOG_ERROR(L"SignatureIndex", L"RangeQuery: Memory allocation failed");
+                                return results;
+                            }
+                        }
+                    }
+                    stack.pop_back();
+                }
+                else {
+                    // Internal node - in-order traversal
+                    // For range query, we need to visit children in order but can skip
+                    // children that don't contain keys in our range
+
+                    if (frame.childIndex <= node->keyCount) {
+                        // SECURITY (v1.1): children[] is uint64_t; truncating to uint32_t
+                        // corrupts offsets in databases > 4GB.
+                        const uint64_t childOffset = node->children[frame.childIndex];
+
+                        // Range pruning: stop descending once the separator key to our
+                        // left exceeds maxFastHash. Internal-node keys[i-1] is the upper
+                        // bound on the subtree rooted at children[i-1]; if it is already
+                        // past max, every subsequent child slot is also past max.
+                        if (frame.childIndex > 0 && node->keys[frame.childIndex - 1] > maxFastHash) {
+                            rangeExhausted = true;
+                            stack.pop_back();
+                            continue;
+                        }
+
+                        // Range pruning: if the separator key to our right is below
+                        // minFastHash, the current child slot (whose subtree ends at that
+                        // separator) cannot contain any in-range keys. Skip to the next.
+                        if (frame.childIndex < node->keyCount &&
+                            node->keys[frame.childIndex] < minFastHash) {
+                            frame.childIndex++;
+                            continue;
+                        }
+
+                        frame.childIndex++;
+
+                        if (childOffset != 0 && childOffset < m_indexSize) {
+                            // SECURITY: Cycle detection (64-bit offsets)
+                            if (visitedNodes.count(childOffset) == 0) {
+                                visitedNodes.insert(childOffset);
+                                const BPlusTreeNode* childNode = GetNode(childOffset);
+                                if (childNode) {
+                                    stack.push_back({childNode, 0, false});
+                                }
+                            }
+                            else {
+                                SS_LOG_ERROR(L"SignatureIndex",
+                                    L"RangeQuery: Cycle detected at offset 0x%llX", childOffset);
+                            }
+                        }
+                    }
+                    else {
+                        // All children visited
+                        stack.pop_back();
+                    }
+                }
+            }
+
+            if (iterations >= MAX_ITERATIONS) {
+                SS_LOG_WARN(L"SignatureIndex",
+                    L"RangeQuery: Iteration limit reached (%zu iterations)", iterations);
+            }
+
+            SS_LOG_TRACE(L"SignatureIndex",
+                L"RangeQuery: Found %zu results in range [0x%llX, 0x%llX]",
+                results.size(), minFastHash, maxFastHash);
+
+            return results;
+        }
+
+        void SignatureIndex::BatchLookup(
+            std::span<const HashValue> hashes,
+            std::vector<std::optional<uint64_t>>& results
+        ) const noexcept {
+            results.clear();
+
+            // SECURITY: DoS protection - limit batch size
+            constexpr size_t MAX_BATCH_SIZE = 1000000;
+            if (hashes.size() > MAX_BATCH_SIZE) {
+                SS_LOG_WARN(L"SignatureIndex",
+                    L"BatchLookup: Batch size %zu exceeds limit %zu - truncating",
+                    hashes.size(), MAX_BATCH_SIZE);
+            }
+
+            const size_t effectiveSize = std::min(hashes.size(), MAX_BATCH_SIZE);
+
+            // Reserve space - use try/catch for noexcept safety
+            try {
+                results.reserve(effectiveSize);
+            }
+            catch (const std::bad_alloc&) {
+                SS_LOG_ERROR(L"SignatureIndex", L"BatchLookup: Failed to reserve result space");
+                return;
+            }
+            catch (...) {
+                SS_LOG_ERROR(L"SignatureIndex", L"BatchLookup: Unknown exception during reserve");
+                return;
+            }
+
+            // Single lock acquisition for entire batch - avoids deadlock
+            std::shared_lock<std::shared_mutex> lock(m_rwLock);
+
+            // SECURITY: Validate index state
+            if (!m_baseAddress || m_indexSize == 0) {
+                SS_LOG_WARN(L"SignatureIndex", L"BatchLookup: Index not initialized");
+                // Fill with nullopt for all requested hashes
+                for (size_t i = 0; i < effectiveSize; ++i) {
+                    results.push_back(std::nullopt);
+                }
+                return;
+            }
+
+            // Process batch using internal helper (no nested locks)
+            for (size_t i = 0; i < effectiveSize; ++i) {
+                const auto& hash = hashes[i];
+
+                // SECURITY: Validate each hash before processing
+                if (hash.length == 0 || hash.length > 64) {
+                    results.push_back(std::nullopt);
+                    continue;
+                }
+
+                try {
+                    results.push_back(LookupByFastHashInternal(hash.FastHash()));
+                }
+                catch (...) {
+                    // Ensure noexcept contract - push nullopt on any exception
+                    results.push_back(std::nullopt);
+                }
+            }
+        }
+
+	}
+}

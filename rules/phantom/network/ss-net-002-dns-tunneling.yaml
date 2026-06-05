@@ -1,0 +1,34 @@
+id: ss-net-002
+detection_name: "Win32/C2.DNSTunnel"
+description: "DNS query with suspiciously long or high-entropy subdomain — indicative of DNS tunneling for C2."
+scope: network
+severity: high
+status: stable
+source: native
+confidence: 0.70
+weight: 2.0
+version: 1
+attack:
+  - tactic: TA0011
+    technique: T1071
+    sub_technique: T1071.004
+    name: "Application Layer Protocol: DNS"
+logic:
+  and:
+    - field_exists:
+        field: dns.query.name
+    - or:
+        - field_regex:
+            field: dns.query.name
+            value: "^[a-z0-9]{30,}\\..*"
+        - field_regex:
+            field: dns.query.name
+            value: "^([a-z0-9]{8,}\\.){4,}"
+    - field_not_in:
+        field: process.name
+        values: [svchost.exe, dns.exe, nslookup.exe]
+        case_insensitive: true
+fp_guard:
+  notes:
+    - "CDN domains and some cloud service FQDNs have long labels. Threshold tuning required per environment."
+    - "Known CDN patterns should be whitelisted by domain suffix."

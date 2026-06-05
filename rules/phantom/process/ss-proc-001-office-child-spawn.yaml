@@ -1,0 +1,73 @@
+id: ss-proc-001
+detection_name: "Win32/OfficeShell.Execution"
+description: "Office application spawned an unusual child process — common in macro and exploit delivery chains."
+scope: process
+severity: high
+status: stable
+source: native
+confidence: 0.80
+weight: 2.0
+version: 1
+
+attack:
+  - tactic: TA0002
+    technique: T1566
+    sub_technique: T1566.001
+    name: "Phishing: Spearphishing Attachment"
+  - tactic: TA0002
+    technique: T1059
+    name: "Command and Scripting Interpreter"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1566/001/"
+    title: "ATT&CK T1566.001"
+
+logic:
+  and:
+    - field_in:
+        field: process.parent.name
+        values:
+          - WINWORD.EXE
+          - EXCEL.EXE
+          - POWERPNT.EXE
+          - MSPUB.EXE
+          - MSACCESS.EXE
+          - OUTLOOK.EXE
+          - VISIO.EXE
+          - ONENOTE.EXE
+        case_insensitive: true
+    - field_in:
+        field: process.name
+        values:
+          - powershell.exe
+          - powershell_ise.exe
+          - pwsh.exe
+          - cmd.exe
+          - wscript.exe
+          - cscript.exe
+          - mshta.exe
+          - rundll32.exe
+          - regsvr32.exe
+          - regsvcs.exe
+          - msiexec.exe
+          - wmic.exe
+          - certutil.exe
+          - bitsadmin.exe
+          - bash.exe
+          - wsl.exe
+          - msbuild.exe
+          - cmstp.exe
+          - installutil.exe
+          - schtasks.exe
+          - at.exe
+          - net.exe
+          - net1.exe
+        case_insensitive: true
+
+fp_guard:
+  notes:
+    - "Some enterprise Office add-ins legitimately launch cmd.exe or powershell.exe for automation."
+    - "Suppress when parent process image is signed by Microsoft AND the child command line matches a known enterprise pattern."
+  suppress:
+    - field: process.command_line
+      regex: "(?i)-ExecutionPolicy\\s+(Bypass|Unrestricted)\\s+-File\\s+[A-Z]:\\\\Program\\s+Files"

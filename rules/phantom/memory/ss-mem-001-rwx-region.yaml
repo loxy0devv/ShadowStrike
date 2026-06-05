@@ -1,0 +1,43 @@
+id: ss-mem-001
+detection_name: "Win32/Memory.RWXRegion"
+description: "Process contains an executable memory region not backed by a module image — likely shellcode or injected code."
+scope: memory
+severity: high
+status: stable
+source: native
+confidence: 0.85
+weight: 2.5
+version: 1
+
+attack:
+  - tactic: TA0005
+    technique: T1055
+    name: "Process Injection"
+  - tactic: TA0040
+    technique: T1620
+    name: "Reflective Code Loading"
+
+logic:
+  and:
+    - field_equals:
+        field: memory.type
+        value: "private"
+    - field_equals:
+        field: memory.protection
+        value: "rwx"
+    - field_equals:
+        field: memory.backed_by_image
+        value: "false"
+
+fp_guard:
+  notes:
+    - "JIT compilers legitimately use RWX pages. Suppress for known JIT processes (java.exe, node.exe, chrome.exe renderer)."
+  suppress:
+    - field: process.name
+      values:
+        - java.exe
+        - javaw.exe
+        - node.exe
+        - chrome.exe
+        - msedge.exe
+        - firefox.exe

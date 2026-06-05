@@ -1,0 +1,51 @@
+id: ss-static-023
+detection_name: "Win32/BruteRatel.PayloadIndicators"
+description: "Binary contains Brute Ratel C4 (BRC4) implant indicators: unique API hashing seed, named pipe format strings, and badger module export names."
+scope: static
+severity: critical
+status: stable
+source: native
+confidence: 0.90
+weight: 4.0
+version: 1
+
+attack:
+  - tactic: TA0011
+    technique: T1071
+    name: "Application Layer Protocol"
+  - tactic: TA0005
+    technique: T1055
+    name: "Process Injection"
+
+references:
+  - url: "https://unit42.paloaltonetworks.com/brute-ratel-c4-tool/"
+    title: "Palo Alto Unit42: Brute Ratel C4"
+
+logic:
+  or:
+    - and:
+        - field_contains:
+            field: static.strings
+            value: "badger"
+        - or:
+            - field_regex:
+                field: static.strings
+                pattern: "(?i)\\.\\pipe\\[a-f0-9]{8}-[a-f0-9]{4}"
+            - field_regex:
+                field: static.strings
+                pattern: "(?i)brc4|bruteratel"
+    - and:
+        - field_regex:
+            field: static.strings
+            pattern: "(?i)(optics|seatbelt|powerpick)"
+        - feature: Characteristic
+          value: "no-exports"
+        - feature: EntropyAbove
+          threshold: 6.9
+    - field_bytes:
+        field: static.bytes
+        hex: "BRC4"
+
+fp_guard:
+  notes:
+    - "Brute Ratel is a commercial red-team tool. Flag all detections as high-priority incidents."

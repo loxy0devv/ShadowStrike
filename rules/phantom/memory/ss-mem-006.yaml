@@ -1,0 +1,57 @@
+id: ss-mem-006
+detection_name: "Win32/Memory.Shellcode.HighEntropy.NonImage"
+description: "Detects executable memory regions that are not backed by a file on disk (non-image regions) with high Shannon entropy, indicative of shellcode or reflectively-loaded payloads. Legitimate code is always loaded from a known image (DLL/EXE); anonymous executable memory with high entropy strongly suggests shellcode execution or in-memory payload staging."
+scope: memory
+severity: critical
+status: stable
+source: native
+confidence: 0.90
+weight: 3.5
+version: 1
+
+attack:
+  - tactic: TA0002
+    technique: T1059.001
+    name: "Command and Scripting Interpreter: PowerShell"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1059/001/"
+    title: "ATT&CK T1059.001"
+  - url: "https://attack.mitre.org/techniques/T1620/"
+    title: "ATT&CK T1620 - Reflective Code Loading"
+
+logic:
+  and:
+    - field_eq:
+        field: memory.region_type
+        value: "private"
+    - field_eq:
+        field: memory.image_backed
+        value: "false"
+    - or:
+        - field_eq:
+            field: memory.region_protection
+            value: "RX"
+        - field_eq:
+            field: memory.region_protection
+            value: "RWX"
+    - field_gt:
+        field: memory.entropy
+        value: 7.0
+    - field_gt:
+        field: memory.region_size_bytes
+        value: 4096
+
+fp_guard:
+  notes:
+    - "JIT compilers (CLR, V8, SpiderMonkey) generate anonymous executable memory. This rule should be scoped away from known JIT-heavy processes."
+    - ".NET NGEN pre-compiled images may appear as non-image executable regions in some configurations."
+  suppress:
+    - field: memory.process.name
+      values:
+        - chrome.exe
+        - firefox.exe
+        - msedge.exe
+        - node.exe
+        - dotnet.exe
+        - clrjit.dll

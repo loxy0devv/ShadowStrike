@@ -1,0 +1,39 @@
+id: ss-proc-007
+detection_name: "Win32/Injection.Hollow"
+description: "Process-hollowing indicators: suspended child process followed by memory allocation and write APIs."
+scope: sequence
+severity: critical
+status: stable
+source: native
+confidence: 0.85
+weight: 3.0
+version: 1
+attack:
+  - tactic: TA0005
+    technique: T1055
+    sub_technique: T1055.012
+    name: "Process Injection: Process Hollowing"
+logic:
+  sequence:
+    - or:
+        - field_contains:
+            field: process.command_line
+            value: "CREATE_SUSPENDED"
+        - and:
+            - field_in:
+                field: process.name
+                values: [svchost.exe, notepad.exe, calc.exe, explorer.exe, rundll32.exe]
+                case_insensitive: true
+            - field_equals:
+                field: process.integrity_level
+                value: "High"
+    - and:
+        - field_equals:
+            field: deep.finding
+            value: "4"
+        - field_equals:
+            field: memory.backed_by_image
+            value: "false"
+fp_guard:
+  notes:
+    - "Legitimate processes may start suspended during debugging. Correlate with unbacked memory write."

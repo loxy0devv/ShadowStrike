@@ -1,0 +1,71 @@
+id: ss-seq-016
+detection_name: "Win32/Sequence.PassTheHash.RemoteServiceCreate"
+description: "Detects a pass-the-hash lateral movement sequence: an NTLM authentication event using a hash (no interactive logon) to a remote host, followed by remote service creation (SCM/RPC) on that host from the same source. This pattern represents the classic Impacket psexec / smbexec attack chain or similar PTH-based service execution techniques."
+scope: sequence
+severity: critical
+status: stable
+source: native
+confidence: 0.88
+weight: 4.0
+version: 1
+
+attack:
+  - tactic: TA0008
+    technique: T1550.002
+    name: "Use Alternate Authentication Material: Pass the Hash"
+  - tactic: TA0008
+    technique: T1021.002
+    name: "Remote Services: SMB/Windows Admin Shares"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1550/002/"
+    title: "ATT&CK T1550.002"
+  - url: "https://attack.mitre.org/techniques/T1021/002/"
+    title: "ATT&CK T1021.002"
+
+logic:
+  sequence:
+    - id: step1_pth_auth
+      within: 120s
+      event:
+        and:
+          - field_eq:
+              field: auth.protocol
+              value: "NTLM"
+          - field_eq:
+              field: auth.logon_type
+              value: "Network"
+          - field_eq:
+              field: auth.pth_indicator
+              value: "true"
+          - field_eq:
+              field: auth.destination_is_remote
+              value: "true"
+    - id: step2_service_create
+      within: 300s
+      after: step1_pth_auth
+      event:
+        and:
+          - field_eq:
+              field: network.destination_ip
+              value: "{{step1_pth_auth.auth.destination_ip}}"
+          - or:
+              - field_eq:
+                  field: network.destination_port
+                  value: 445
+              - field_eq:
+                  field: network.destination_port
+                  value: 135
+          - field_regex:
+              field: process.command_line
+              pattern: "(?i)(sc\\s+(\\\\\\\\[^\\\\]+\\\\)?create|services\\.exe|psexec|paexec|smbexec)"
+
+fp_guard:
+  notes:
+    - "Legitimate remote service management via NTLM (common in non-Kerberos environments) may trigger this. Correlate with authorized change windows."
+    - "IT administration tools that use NTLM for service deployment on older systems may match."
+  suppress:
+    - field: auth.source_user
+      values:
+        - "DOMAIN\\svc_deploy"
+        - "DOMAIN\\svc_config"

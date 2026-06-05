@@ -1,0 +1,44 @@
+id: ss-file-010
+detection_name: "Win32/ExecutableDropped.TempAppdata"
+description: "Detects executable files (PE binaries, scripts) written to user-writable temporary or roaming directories such as %TEMP%, %APPDATA%\\Roaming, or %LOCALAPPDATA%. Malware consistently uses these directories as staging areas because they are writable without elevation and are frequently excluded from traditional AV scanning paths."
+scope: file
+severity: high
+status: stable
+source: native
+confidence: 0.80
+weight: 2.0
+version: 1
+
+attack:
+  - tactic: TA0002
+    technique: T1204.002
+    name: "User Execution: Malicious File"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1204/002/"
+    title: "ATT&CK T1204.002"
+
+logic:
+  and:
+    - field_regex:
+        field: file.path
+        pattern: "(?i)(\\\\AppData\\\\Roaming\\\\|\\\\AppData\\\\Local\\\\Temp\\\\|\\\\Windows\\\\Temp\\\\|\\\\Temp\\\\)[^\\\\]+\\.(exe|dll|scr|com|pif|vbs|js|ps1|bat|cmd|hta)"
+    - field_eq:
+        field: file.operation
+        value: "create"
+    - not:
+        field_regex:
+          field: file.process.name
+          pattern: "(?i)(msiexec|setup|install|update|patch|deploy)\\.exe$"
+
+fp_guard:
+  notes:
+    - "Software updaters and installers legitimately drop binaries to temp directories. Correlate with install/update activity and signed binary verification."
+    - "Browser download managers may place executables in Downloads or Temp before user opens them."
+  suppress:
+    - field: file.process.name
+      values:
+        - msiexec.exe
+        - windowsupdateagent.exe
+        - trustedinstaller.exe
+        - wuauclt.exe

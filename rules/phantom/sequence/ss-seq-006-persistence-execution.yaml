@@ -1,0 +1,38 @@
+id: ss-seq-006
+detection_name: "Win32/Persist.WriteAndExecute"
+description: "Suspicious process wrote a file to a startup/temp location and then executed it."
+scope: sequence
+severity: high
+status: stable
+source: native
+confidence: 0.78
+weight: 2.5
+version: 1
+attack:
+  - tactic: TA0003
+    technique: T1547
+    name: "Boot or Logon Autostart Execution"
+  - tactic: TA0002
+    technique: T1204
+    name: "User Execution"
+logic:
+  sequence:
+    - or:
+        - field_contains:
+            field: file.path
+            value: "\\Startup\\"
+        - field_contains:
+            field: file.path
+            value: "\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu"
+        - field_contains:
+            field: file.path
+            value: "\\Temp\\"
+    - and:
+        - field_in:
+            field: process.name
+            values: [cmd.exe, powershell.exe, wscript.exe, cscript.exe, mshta.exe]
+            case_insensitive: true
+fp_guard:
+  notes:
+    - "Software installers commonly write startup entries and then run setup."
+    - "Require unsigned writer process or suspicious parent."

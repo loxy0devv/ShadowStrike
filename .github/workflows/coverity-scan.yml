@@ -1,0 +1,216 @@
+﻿name: Coverity Scan
+
+# TEMPORARILY DISABLED — Coverity scan service is currently down.
+# To re-enable: restore the push + schedule triggers below.
+# To run manually: use workflow_dispatch from the Actions tab.
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: 'Scan scope'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - full
+          - sensor-only
+          - usermode-only
+
+jobs:
+  coverity:
+    runs-on: windows-2022
+    timeout-minutes: 450
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download Coverity Build Tool (2024.12.1)
+        shell: powershell
+        run: |
+          $ProgressPreference = 'SilentlyContinue'
+          $token = "${{ secrets.COVERITY_SCAN_TOKEN }}"
+          $project = "ShadowStrike-Labs/ShadowStrike"
+
+          $url = "https://scan.coverity.com/download/cxx/win64?token=${token}&project=${project}&version=2024.12.1"
+
+          Write-Host "Downloading Coverity 2024.12.1..."
+          Invoke-WebRequest -Uri $url -OutFile "cov-analysis-win64.zip" -ErrorAction Stop
+
+          Write-Host "Extracting..."
+          Expand-Archive -Path "cov-analysis-win64.zip" -DestinationPath "." -Force
+          Write-Host "Done"
+
+      - name: Verify WDK Installation
+        shell: powershell
+        run: |
+          $wdkRoot = "C:\Program Files (x86)\Windows Kits\10"
+          $includeDir = Join-Path $wdkRoot "Include"
+          $kmVersions = Get-ChildItem $includeDir -Directory |
+              Where-Object { Test-Path (Join-Path $_.FullName "km\ntifs.h") } |
+              Sort-Object { [Version]($_.Name -replace '[^0-9.]','') } -Descending
+          if ($null -eq $kmVersions) { exit 1 }
+          Write-Host "WDK: $($kmVersions[0].Name)"
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Determine scan scope
+        id: scope
+        shell: powershell
+        run: |
+          $input_scope = "${{ github.event.inputs.scope }}"
+          if ([string]::IsNullOrEmpty($input_scope)) { $input_scope = "full" }
+          Write-Host "Scan scope: $input_scope"
+          "SCOPE=$input_scope" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      # Generate RulesBlob.generated.cpp before cov-build wraps the compiler.
+      # cov-build intercepts CL.exe calls only — the PowerShell PreBuildEvent
+      # in the vcxproj also runs this, but doing it here first guarantees the
+      # file exists and is Coverity-visible before any compilation begins.
+      - name: Bake rule corpus into binary blob
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass `
+            -File tools\bake_rules.ps1 `
+            -SolutionDir "$env:GITHUB_WORKSPACE" `
+            -OutFile "$env:GITHUB_WORKSPACE\src\PhantomCore\Detection\Rules\RulesBlob.generated.cpp"
+          $f  = "$env:GITHUB_WORKSPACE\src\PhantomCore\Detection\Rules\RulesBlob.generated.cpp"
+          $kb = [math]::Round((Get-Item $f).Length / 1KB, 1)
+          Write-Host "RulesBlob.generated.cpp: ${kb} KB"
+
+      - name: Build project-wide with Coverity
+        shell: powershell
+        run: |
+          $covDir = Get-ChildItem -Filter "cov-analysis-win64*" -Directory | Select-Object -First 1
+          $env:PATH = "$($covDir.FullName)\bin;$env:PATH"
+          $scope = "${{ steps.scope.outputs.SCOPE }}"
+
+          cov-configure --msvc
+
+          if (Test-Path "cov-int") { Remove-Item -Recurse -Force "cov-int" }
+
+          # ---------------------------------------------------------------
+          # Phase 1: PhantomSensor (kernel driver — requires WDK)
+          # ---------------------------------------------------------------
+          if ($scope -eq "full" -or $scope -eq "sensor-only") {
+              Write-Host "=== Building PhantomSensor (kernel) ==="
+              cov-build --dir cov-int msbuild `
+                  PhantomSensor\PhantomSensor.vcxproj `
+                  /t:Rebuild `
+                  /p:Configuration=Release /p:Platform=x64 `
+                  /p:InfVerif_Enable=false /p:InfVerif_NoError=true
+          }
+
+          # ---------------------------------------------------------------
+          # Phase 2: PhantomCoreLib (static library — engine core)
+          # Covers ScanEngine, AI/ML, Emulator, Disassembler, all Utils,
+          # HashStore, PatternStore, SignatureStore, ThreatIntel, Database,
+          # Whitelist, Config, and all shared infrastructure.
+          # ---------------------------------------------------------------
+          if ($scope -eq "full" -or $scope -eq "usermode-only") {
+              Write-Host "=== Building PhantomCoreLib (core engine library) ==="
+              cov-build --dir cov-int msbuild `
+                  PhantomCoreLib.vcxproj `
+                  /t:Rebuild `
+                  /p:Configuration=Debug /p:Platform=x64 `
+                  /p:PlatformToolset=v143
+
+              # -----------------------------------------------------------
+              # Phase 3: PhantomHome (product modules — Banking, Privacy,
+              # Email, IoT, USB, WebProtection, Performance, Gamemode)
+              # -----------------------------------------------------------
+              Write-Host "=== Building PhantomHome (product modules) ==="
+              cov-build --dir cov-int msbuild `
+                  PhantomHome.vcxproj `
+                  /t:Rebuild `
+                  /p:Configuration=Debug /p:Platform=x64 `
+                  /p:PlatformToolset=v143
+
+              # -----------------------------------------------------------
+              # Phase 4: Service / Tray / UI executables
+              # -----------------------------------------------------------
+              Write-Host "=== Building ShadowStrikePhantomService ==="
+              cov-build --dir cov-int msbuild `
+                  ShadowStrikePhantomService.vcxproj `
+                  /t:Rebuild `
+                  /p:Configuration=Debug /p:Platform=x64 `
+                  /p:PlatformToolset=v143
+
+              Write-Host "=== Building ShadowStrikePhantomTray ==="
+              cov-build --dir cov-int msbuild `
+                  ShadowStrikePhantomTray.vcxproj `
+                  /t:Rebuild `
+                  /p:Configuration=Debug /p:Platform=x64 `
+                  /p:PlatformToolset=v143
+
+              Write-Host "=== Building ShadowStrikePhantomUI ==="
+              cov-build --dir cov-int msbuild `
+                  ShadowStrikePhantomUI.vcxproj `
+                  /t:Rebuild `
+                  /p:Configuration=Debug /p:Platform=x64 `
+                  /p:PlatformToolset=v143
+
+              # -----------------------------------------------------------
+              # Phase 5: ShadowStrike main engine executable
+              # -----------------------------------------------------------
+              Write-Host "=== Building ShadowStrike (main engine) ==="
+              cov-build --dir cov-int msbuild `
+                  ShadowStrike.vcxproj `
+                  /t:Rebuild `
+                  /p:Configuration=Debug /p:Platform=x64 `
+                  /p:PlatformToolset=v143
+
+              # -----------------------------------------------------------
+              # Phase 6: PhantomEDR and PhantomXDR modules
+              # -----------------------------------------------------------
+              Write-Host "=== Building PhantomEDR ==="
+              cov-build --dir cov-int msbuild `
+                  PhantomEDR.vcxproj `
+                  /t:Rebuild `
+                  /p:Configuration=Debug /p:Platform=x64 `
+                  /p:PlatformToolset=v143
+
+              Write-Host "=== Building PhantomXDR ==="
+              cov-build --dir cov-int msbuild `
+                  PhantomXDR.vcxproj `
+                  /t:Rebuild `
+                  /p:Configuration=Debug /p:Platform=x64 `
+                  /p:PlatformToolset=v143
+          }
+
+          # Report captured translation units.
+          if (Test-Path "cov-int\emit") {
+              $tuCount = (Get-ChildItem -Path "cov-int\emit" -Recurse -File).Count
+              Write-Host "Total captured translation units: $tuCount"
+          } else {
+              Write-Host "WARNING: No emit directory found"
+              exit 1
+          }
+
+      - name: Submit to Coverity
+        shell: powershell
+        run: |
+          Write-Host "Creating archive..."
+          tar.exe -a -c -f cov-int.zip cov-int
+
+          $fileSize = (Get-Item "cov-int.zip").Length / 1MB
+          Write-Host "Archive size: $([math]::Round($fileSize, 2)) MB"
+
+          $token = "${{ secrets.COVERITY_SCAN_TOKEN }}"
+          $email = "${{ secrets.COVERITY_SCAN_EMAIL }}"
+          $scope = "${{ steps.scope.outputs.SCOPE }}"
+
+          Write-Host "Submitting to Coverity Scan (scope: $scope)..."
+          curl.exe --fail --show-error `
+                   --form "token=${token}" `
+                   --form "email=${email}" `
+                   --form "project=ShadowStrike-Labs/ShadowStrike" `
+                   --form "file=@cov-int.zip" `
+                   --form "version=${{ github.sha }}" `
+                   --form "description=ShadowStrike Full Platform - $scope scan" `
+                   https://scan.coverity.com/builds
+
+          Write-Host "Submission complete."

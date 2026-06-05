@@ -1,0 +1,39 @@
+id: ss-proc-020
+detection_name: "Win32/Evasion.ScriptBlockBypass"
+description: "PowerShell Script Block Logging or constrained language mode disabled at runtime."
+scope: process
+severity: high
+status: stable
+source: native
+confidence: 0.88
+weight: 2.5
+version: 1
+attack:
+  - tactic: TA0005
+    technique: T1562
+    sub_technique: T1562.001
+logic:
+  and:
+    - field_in:
+        field: process.name
+        values: [powershell.exe, pwsh.exe]
+        case_insensitive: true
+    - or:
+        - field_contains:
+            field: process.command_line
+            value: "DisableScriptBlockLogging"
+        - field_contains:
+            field: process.command_line
+            value: "DisableScriptBlockInvocationLogging"
+        - field_contains:
+            field: process.command_line
+            value: "LanguageMode"
+        - field_contains:
+            field: process.command_line
+            value: "ConstrainedLanguage"
+        - field_contains:
+            field: process.command_line
+            value: "ExecutionPolicy Bypass"
+fp_guard:
+  notes:
+    - "DevOps scripts sometimes set execution policy for automated runs."

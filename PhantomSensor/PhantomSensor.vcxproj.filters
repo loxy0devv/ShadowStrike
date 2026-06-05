@@ -1,0 +1,747 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hpp;hxx;hm;inl;inc;xsd</Extensions>
+    </Filter>
+    <Filter Include="Resource Files">
+      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    </Filter>
+    <Filter Include="Driver Files">
+      <UniqueIdentifier>{8E41214B-6785-4CFE-B992-037D68949A14}</UniqueIdentifier>
+      <Extensions>inf;inv;inx;mof;mc;</Extensions>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <Inf Include="PhantomSensor.inf">
+      <Filter>Driver Files</Filter>
+    </Inf>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="PhantomSensor\Context\InstanceContext.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Context\StreamContext.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Objects\ObjectNamespace.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\ALPC\AlpcPortMonitor.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Transactions\KtmMonitor.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Utilities\FileUtils.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Utilities\HashUtils.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Utilities\MemoryUtils.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Utilities\ProcessUtils.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Utilities\StringUtils.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Performance\BatchProcessing.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Performance\CacheOptimization.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Performance\LookasideLists.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Performance\PerformanceMonitor.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Performance\ResourceThrottling.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Sync\AsyncWorkQueue.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Sync\DeferredProcedure.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Sync\SpinLock.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Sync\ThreadPool.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Sync\TimerManager.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Sync\WorkQueue.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Communication\CommPort.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Communication\Compression.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Communication\Encryption.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Communication\MessageHandler.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Communication\MessageQueue.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Communication\ScanBridge.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Communication\TelemetryBuffer.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\ETW\ETWConsumer.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\ETW\ETWProvider.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\ETW\EventSchema.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\ETW\ManifestGenerator.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\ETW\TelemetryEvents.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Tracing\Trace.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Memory\HeapSpray.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Memory\HollowingDetector.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Memory\InjectionDetector.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Memory\MemoryMonitor.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Memory\MemoryScanner.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Memory\ROPDetector.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Memory\SectionTracker.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Memory\ShellcodeDetector.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Memory\VadTracker.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Syscall\CallstackAnalyzer.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Syscall\DirectSyscallDetector.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Syscall\HeavensGateDetector.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Syscall\NtdllIntegrity.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Syscall\SyscallHooks.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Syscall\SyscallMonitor.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Syscall\SyscallTable.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\FileSystem\FileBackupEngine.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\FileSystem\FileSystemCallbacks.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\FileSystem\NamedPipeMonitor.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\FileSystem\PostCreate.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\FileSystem\PostWrite.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\FileSystem\PreAcquireSection.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\FileSystem\PreCreate.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\FileSystem\PreSetInfo.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\FileSystem\PreWrite.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\FileSystem\USBDeviceControl.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\Object\ObjectCallback.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\Object\ProcessProtection.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\Object\ThreadProtection.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\Process\AmsiBypassDetector.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\Process\AppControl.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\Process\ClipboardMonitor.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\Process\CommandLineParser.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\Process\EnvironmentMonitor.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\Process\HandleTracker.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\Process\ImageNotify.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\Process\ParentChainTracker.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\Process\PrivilegeMonitor.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\Process\ProcessAnalyzer.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\Process\ProcessNotify.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\Process\ProcessRelationship.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\Process\ThreadNotify.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\Process\TokenAnalyzer.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\Process\WSLMonitor.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Callbacks\Registry\RegistryCallback.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Exclusions\ExclusionManager.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Exclusions\PathExclusion.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Exclusions\ProcessExclusion.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Power\PowerCallback.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Network\C2Detection.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Network\ConnectionTracker.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Network\DataExfiltration.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Network\DnsMonitor.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Network\NetworkFilter.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Network\NetworkReputation.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Network\PortScanner.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Network\ProtocolParser.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Network\SSLInspection.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Behavioral\AnomalyDetector.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Behavioral\AttackChainTracker.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Behavioral\BehaviorEngine.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Behavioral\IOCMatcher.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Behavioral\MITREMapper.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Behavioral\PatternMatcher.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Behavioral\RuleEngine.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Behavioral\ThreatScoring.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\SelfProtection\AntiDebug.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\SelfProtection\AntiUnload.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\SelfProtection\CallbackProtection.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\SelfProtection\FileProtection.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\SelfProtection\FirmwareIntegrity.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\SelfProtection\HandleProtection.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\SelfProtection\IntegrityMonitor.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\SelfProtection\SelfProtect.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensorELAM\BootDriverVerify.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensorELAM\BootThreatDetector.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensorELAM\ELAMCallbacks.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensorELAM\ELAMDriver.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Core\DriverEntry.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Core\FilterRegistration.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="PhantomSensor\Cache\ScanCache.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="TestFile.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="PhantomSensor\Context\InstanceContext.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Context\StreamContext.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Objects\ObjectNamespace.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\ALPC\AlpcPortMonitor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\ALPC\AlpcTypes.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Shared\AttackPatterns.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Shared\BehaviorTypes.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Shared\ErrorCodes.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Shared\MemoryTypes.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Shared\MessageProtocol.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Shared\MessageTypes.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Shared\NetworkTypes.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Shared\PortName.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Shared\SharedDefs.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Shared\TelemetryTypes.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Shared\VerdictTypes.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Transactions\KtmMonitor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Utilities\FileUtils.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Utilities\HashUtils.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Utilities\MemoryUtils.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Utilities\ProcessUtils.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Utilities\StringUtils.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Performance\BatchProcessing.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Performance\CacheOptimization.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Performance\LookasideLists.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Performance\PerformanceMonitor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Performance\ResourceThrottling.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Sync\AsyncWorkQueue.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Sync\DeferredProcedure.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Sync\SpinLock.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Sync\ThreadPool.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Sync\TimerManager.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Sync\WorkQueue.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Communication\CommPort.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Communication\Compression.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Communication\Encryption.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Communication\MessageHandler.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Communication\MessageQueue.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Communication\ScanBridge.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Communication\TelemetryBuffer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\ETW\ETWConsumer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\ETW\ETWProvider.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\ETW\EventSchema.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\ETW\ManifestGenerator.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\ETW\TelemetryEvents.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Tracing\Trace.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Tracing\WppConfig.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Memory\HeapSpray.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Memory\HollowingDetector.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Memory\InjectionDetector.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Memory\MemoryMonitor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Memory\MemoryScanner.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Memory\ROPDetector.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Memory\SectionTracker.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Memory\ShellcodeDetector.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Memory\VadTracker.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Syscall\CallstackAnalyzer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Syscall\DirectSyscallDetector.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Syscall\HeavensGateDetector.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Syscall\NtdllIntegrity.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Syscall\SyscallHooks.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Syscall\SyscallMonitor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Syscall\SyscallTable.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\FileSystem\FileBackupEngine.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\FileSystem\FileSystemCallbacks.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\FileSystem\NamedPipeMonitor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\FileSystem\PostCreate.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\FileSystem\PreCreate.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\FileSystem\PreSetInfo.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\FileSystem\USBDeviceControl.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\Object\ObjectCallback.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\Object\ProcessProtection.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\Object\ThreadProtection.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\Process\AmsiBypassDetector.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\Process\AppControl.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\Process\ClipboardMonitor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\Process\CommandLineParser.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\Process\EnvironmentMonitor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\Process\HandleTracker.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\Process\ImageNotify.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\Process\ParentChainTracker.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\Process\PrivilegeMonitor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\Process\ProcessAnalyzer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\Process\ProcessNotify.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\Process\ProcessRelationship.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\Process\ThreadNotify.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\Process\TokenAnalyzer.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\Process\WSLMonitor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Callbacks\Registry\RegistryCallback.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Exclusions\ExclusionManager.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Power\PowerCallback.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Network\C2Detection.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Network\ConnectionTracker.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Network\DataExfiltration.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Network\DnsMonitor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Network\NetworkFilter.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Network\NetworkReputation.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Network\PortScanner.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Network\ProtocolParser.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Network\SSLInspection.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Behavioral\AnomalyDetector.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Behavioral\AttackChainTracker.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Behavioral\BehaviorEngine.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Behavioral\IOCMatcher.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Behavioral\MITREMapper.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Behavioral\PatternMatcher.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Behavioral\RuleEngine.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Behavioral\ThreatScoring.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\SelfProtection\AntiDebug.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\SelfProtection\AntiUnload.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\SelfProtection\CallbackProtection.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\SelfProtection\FileProtection.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\SelfProtection\FirmwareIntegrity.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\SelfProtection\HandleProtection.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\SelfProtection\IntegrityMonitor.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\SelfProtection\SelfProtect.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensorELAM\BootDriverVerify.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensorELAM\BootThreatDetector.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensorELAM\ELAMCallbacks.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensorELAM\ELAMDriver.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Core\DriverEntry.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Core\FilterRegistration.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="PhantomSensor\Core\Globals.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+</Project>

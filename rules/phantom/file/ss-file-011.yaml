@@ -1,0 +1,50 @@
+id: ss-file-011
+detection_name: "Win32/DLL.System32LookAlike.Drop"
+description: "Detects DLL files written to directories designed to mimic the legitimate System32 folder (e.g., Syst3m32, System32 with Unicode lookalikes, or similarly named folders in user-writable paths). This masquerading technique allows DLL search-order hijacking and evasion of path-based security controls."
+scope: file
+severity: high
+status: stable
+source: native
+confidence: 0.87
+weight: 2.5
+version: 1
+
+attack:
+  - tactic: TA0005
+    technique: T1036.005
+    name: "Masquerading: Match Legitimate Name or Location"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1036/005/"
+    title: "ATT&CK T1036.005"
+
+logic:
+  and:
+    - field_regex:
+        field: file.path
+        pattern: "(?i)\\.(dll|ocx|cpl|drv)$"
+    - or:
+        - field_regex:
+            field: file.path
+            pattern: "(?i)(syst3m32|sy5tem32|syste?m3?2|system64|SysWow64[^\\\\]|sysnative[^\\\\]|System32[^\\\\])"
+        - field_regex:
+            field: file.path
+            pattern: "(?i)(\\\\AppData|\\\\Temp|\\\\ProgramData|\\\\Users\\\\[^\\\\]+\\\\Desktop|\\\\Downloads)\\\\.*\\.(dll|ocx)"
+        - and:
+            - field_regex:
+                field: file.path
+                pattern: "(?i)\\\\System32\\\\"
+            - not:
+                field_regex:
+                  field: file.path
+                  pattern: "(?i)^C:\\\\Windows\\\\(System32|SysWOW64)\\\\"
+
+fp_guard:
+  notes:
+    - "Some legitimate applications install DLLs to non-standard locations. Validate digital signature and software vendor against allowlist."
+    - "Portable application bundles may include DLLs in their own directories that share names with System32 files."
+  suppress:
+    - field: file.process.name
+      values:
+        - msiexec.exe
+        - trustedinstaller.exe

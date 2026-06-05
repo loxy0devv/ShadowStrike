@@ -1,0 +1,50 @@
+id: ss-net-010
+detection_name: "Win32/ICMP.Tunnel.LargePayload"
+description: "Detects ICMP echo request or reply packets with payloads exceeding 128 bytes, indicative of ICMP tunneling for covert command-and-control communications. Standard Windows ping uses 32-byte payloads; payloads significantly larger suggest data encapsulation within ICMP for exfiltration or C2 channel establishment."
+scope: network
+severity: high
+status: stable
+source: native
+confidence: 0.82
+weight: 2.5
+version: 1
+
+attack:
+  - tactic: TA0011
+    technique: T1095
+    name: "Non-Application Layer Protocol"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1095/"
+    title: "ATT&CK T1095"
+
+logic:
+  and:
+    - field_eq:
+        field: network.protocol
+        value: "icmp"
+    - or:
+        - field_eq:
+            field: network.icmp.type
+            value: 8
+        - field_eq:
+            field: network.icmp.type
+            value: 0
+    - field_gt:
+        field: network.packet_size
+        value: 128
+    - not:
+        field_regex:
+          field: network.destination_ip
+          pattern: "^(10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)"
+
+fp_guard:
+  notes:
+    - "Some network diagnostic tools (e.g., ping -l <size>) intentionally use large ICMP payloads for MTU testing. Correlate with process context."
+    - "Network monitoring probes (PRTG, SolarWinds) may send large ICMP packets for latency measurement."
+  suppress:
+    - field: network.process.name
+      values:
+        - ping.exe
+        - tracert.exe
+        - pathping.exe

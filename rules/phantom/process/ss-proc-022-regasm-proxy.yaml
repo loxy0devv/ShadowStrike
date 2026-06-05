@@ -1,0 +1,34 @@
+id: ss-proc-022
+detection_name: "Win32/LOLBin.RegasmProxy"
+description: "RegAsm or RegSvcs used to execute a .NET assembly — trusted developer utility proxy execution."
+scope: process
+severity: high
+status: stable
+source: native
+confidence: 0.80
+weight: 2.0
+version: 1
+attack:
+  - tactic: TA0005
+    technique: T1218
+    sub_technique: T1218.009
+logic:
+  and:
+    - field_in:
+        field: process.name
+        values: [regasm.exe, regsvcs.exe]
+        case_insensitive: true
+    - or:
+        - field_contains:
+            field: process.command_line
+            value: "\\AppData\\"
+        - field_contains:
+            field: process.command_line
+            value: "\\Temp\\"
+        - field_contains:
+            field: process.command_line
+            value: "\\Downloads\\"
+        - unsigned
+fp_guard:
+  notes:
+    - "Legitimate .NET COM component registration uses regasm.exe with system paths."

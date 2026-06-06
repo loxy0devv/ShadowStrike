@@ -21,7 +21,18 @@ logsource:
     definition: 0ad03ef1-f21b-4a79-8ce8-e6900c54b65b
 detection:
     selection_4103:
-        Payload|re: '(?i)&&set.*(\{\d\}){2,}\\"\s+?-f.*&&.*cmd.*/c' # FPs with |\/r
+        Payload|contains|all:
+            - '&&set'
+            - 'cmd'
+            - '/c'
+            - '-f'
+        Payload|contains:
+            - '{0}'
+            - '{1}'
+            - '{2}'
+            - '{3}'
+            - '{4}'
+            - '{5}'
     condition: selection_4103
 falsepositives:
     - Unknown

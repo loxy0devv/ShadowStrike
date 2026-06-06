@@ -18,7 +18,18 @@ logsource:
     definition: 'Requirements: Script Block Logging must be enabled'
 detection:
     selection_4104:
-        ScriptBlockText|re: '(?i)&&set.*(\{\d\}){2,}\\"\s+?-f.*&&.*cmd.*/c' # FPs with |\/r
+        ScriptBlockText|contains|all:
+            - '&&set'
+            - 'cmd'
+            - '/c'
+            - '-f'
+        ScriptBlockText|contains:
+            - '{0}'
+            - '{1}'
+            - '{2}'
+            - '{3}'
+            - '{4}'
+            - '{5}'
     condition: selection_4104
 falsepositives:
     - Unknown

@@ -77,16 +77,19 @@ function Add-Entry([byte]$srcType, [string]$filePath) {
     })
 }
 
-# ---- 0: Phantom native rules (rules\phantom\**\*.yaml, *.yml, *.json) -----
-$phantomDir = Join-Path $SolutionDir 'rules\phantom'
-if (Test-Path $phantomDir -PathType Container) {
-    Get-ChildItem -Path $phantomDir -Recurse -File -Include '*.yaml','*.yml','*.json' |
+# ---- 0: Native rules — prefer new category layout (rules\native\), fall back to legacy (rules\phantom\)
+$nativeNew    = Join-Path $SolutionDir 'rules\native'
+$nativeLegacy = Join-Path $SolutionDir 'rules\phantom'
+$nativeDir    = if (Test-Path $nativeNew -PathType Container) { $nativeNew } else { $nativeLegacy }
+if (Test-Path $nativeDir -PathType Container) {
+    Get-ChildItem -Path $nativeDir -Recurse -File -Include '*.yaml','*.yml','*.json' |
     ForEach-Object { Add-Entry 0 $_.FullName }
 }
 
-# ---- 1: capa rules (rules\capa\capa-rules-9.4.0\**\*.yaml, *.yml) ---------
-#         Skip infra files that are not actual rule files
-$capaDir = Join-Path $SolutionDir 'rules\capa\capa-rules-9.4.0'
+# ---- 1: capa rules — prefer external/ layout, fall back to legacy
+$capaNew    = Join-Path $SolutionDir 'rules\external\capa\capa-rules-9.4.0'
+$capaLegacy = Join-Path $SolutionDir 'rules\capa\capa-rules-9.4.0'
+$capaDir    = if (Test-Path $capaNew -PathType Container) { $capaNew } else { $capaLegacy }
 if (Test-Path $capaDir -PathType Container) {
     $skipStems = @('README','release','sync','tests','workflow')
     Get-ChildItem -Path $capaDir -Recurse -File -Include '*.yaml','*.yml' |
@@ -97,12 +100,13 @@ if (Test-Path $capaDir -PathType Container) {
     ForEach-Object { Add-Entry 1 $_.FullName }
 }
 
-# ---- 2: Sigma rules (rules\sigma\**\*.yaml, *.yml) — Windows-relevant only
-$sigmaDir = Join-Path $SolutionDir 'rules\sigma'
+# ---- 2: Sigma rules — prefer external/ layout, fall back to legacy; Windows-relevant only
+$sigmaNew    = Join-Path $SolutionDir 'rules\external\sigma'
+$sigmaLegacy = Join-Path $SolutionDir 'rules\sigma'
+$sigmaDir    = if (Test-Path $sigmaNew -PathType Container) { $sigmaNew } else { $sigmaLegacy }
 if (Test-Path $sigmaDir -PathType Container) {
     Get-ChildItem -Path $sigmaDir -Recurse -File -Include '*.yaml','*.yml' |
     Where-Object {
-        # Quick Windows-relevance filter matching RuleParser::IsWindowsRelevant
         $text = [System.IO.File]::ReadAllText($_.FullName)
         ($text -match '(?m)product:\s*windows') -or
         ($text -match 'category:\s*(process_creation|network_connection|image_load|file_event|registry_event|dns_query|pipe_created|driver_loaded)')
@@ -110,11 +114,11 @@ if (Test-Path $sigmaDir -PathType Container) {
     ForEach-Object { Add-Entry 2 $_.FullName }
 }
 
-# ---- 3: Elastic rules (rules\elastic\custom-consolidated-rules.ndjson) ----
-$elasticFile = Join-Path $SolutionDir 'rules\elastic\custom-consolidated-rules.ndjson'
+# ---- 3: Elastic rules — prefer external/ layout, fall back to legacy
+$elasticNew    = Join-Path $SolutionDir 'rules\external\elastic\custom-consolidated-rules.ndjson'
+$elasticLegacy = Join-Path $SolutionDir 'rules\elastic\custom-consolidated-rules.ndjson'
+$elasticFile   = if (Test-Path $elasticNew -PathType Leaf) { $elasticNew } else { $elasticLegacy }
 if (Test-Path $elasticFile -PathType Leaf) {
-    # The elastic importer loads the entire file as one entry; the C++ side
-    # calls ParseElasticJson per-line, so we embed the whole ndjson as one blob.
     Add-Entry 3 $elasticFile
 }
 

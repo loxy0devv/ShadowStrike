@@ -29,10 +29,28 @@ std::shared_ptr<RuleStore> RuleImporter::LoadAll(
     auto store = std::make_shared<RuleStore>();
     ImportResult r;
 
-    r.native  = LoadNative(rulesRoot / "phantom", *store);
-    r.capa    = LoadCapa  (rulesRoot / "capa",    *store);
-    r.sigma   = LoadSigma (rulesRoot / "sigma",   *store);
-    auto ndjson = rulesRoot / "elastic" / "custom-consolidated-rules.ndjson";
+    // Prefer the new category-based layout (rules/native/) introduced in 2026.
+    // Fall back to the legacy source-based layout (rules/phantom/) if the new
+    // layout is not present, so existing installations keep working.
+    auto nativeDir = rulesRoot / "native";
+    auto legacyDir = rulesRoot / "phantom";
+    r.native = LoadNative(
+        std::filesystem::exists(nativeDir) ? nativeDir : legacyDir,
+        *store);
+
+    // External corpora: prefer rules/external/<corpus>, fall back to rules/<corpus>.
+    auto capaDir  = rulesRoot / "external" / "capa";
+    if (!std::filesystem::exists(capaDir)) capaDir = rulesRoot / "capa";
+    r.capa = LoadCapa(capaDir, *store);
+
+    auto sigmaDir = rulesRoot / "external" / "sigma";
+    if (!std::filesystem::exists(sigmaDir)) sigmaDir = rulesRoot / "sigma";
+    r.sigma = LoadSigma(sigmaDir, *store);
+
+    // Elastic NDJSON — check both new and legacy paths.
+    auto ndjsonNew    = rulesRoot / "external" / "elastic" / "custom-consolidated-rules.ndjson";
+    auto ndjsonLegacy = rulesRoot / "elastic" / "custom-consolidated-rules.ndjson";
+    auto ndjson = std::filesystem::exists(ndjsonNew) ? ndjsonNew : ndjsonLegacy;
     if (std::filesystem::exists(ndjson))
         r.elastic = LoadElastic(ndjson, *store);
 

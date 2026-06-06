@@ -30,7 +30,7 @@ logic:
       - or:
           - field_regex:
               field: process.command_line
-              pattern: "(?i)schtasks\.exe.*\/create"
+              pattern: '(?i)schtasks\.exe.*/create'
           - field_regex:
               field: process.command_line
               pattern: "(?i)Register-ScheduledTask"
@@ -41,10 +41,10 @@ logic:
               case_insensitive: true
           - field_regex:
               field: process.command_line
-              pattern: "(?i)schtasks\.exe.*\/run"
+              pattern: '(?i)schtasks\.exe.*/run'
       - field_regex:
           field: network.destination.ip
-          pattern: "^(?!10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.).*"
+          pattern: '^(?!10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.).*'
 
 fp_guard:
   notes:

@@ -21,16 +21,16 @@ logic:
     - or:
         - field_contains:
             field: process.command_line
-            value: "\AppData\\"
+            value: '\AppData\'
         - field_contains:
             field: process.command_line
-            value: "\Temp\\"
+            value: '\Temp\'
         - field_contains:
             field: process.command_line
-            value: "\Users\Public\\"
+            value: '\Users\Public\'
         - field_contains:
             field: process.command_line
-            value: "\Downloads\\"
+            value: '\Downloads\'
 fp_guard:
   notes:
     - "Some enterprise software uses WScript from user directories during install."

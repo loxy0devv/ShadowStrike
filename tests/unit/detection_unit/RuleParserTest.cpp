@@ -127,7 +127,7 @@ logic:
 // 3. field_regex with pattern: key (newer rule style)
 // ---------------------------------------------------------------------------
 TEST_F(RuleParserTest, FieldRegexPatternKeyExtracted) {
-    constexpr std::string_view yaml = R"(
+    constexpr std::string_view yaml = R"yaml(
 id: ss-test-parser-pattern-key
 detection_name: "Test/PatternKey"
 scope: process
@@ -139,7 +139,7 @@ logic:
   field_regex:
     field: process.command_line
     pattern: "(?i)(powershell|cmd|wscript)"
-)";
+)yaml";
 
     PhantomRule rule;
     ParseError  err;
@@ -232,7 +232,7 @@ logic:
 // 6. Sequence rule with event: wrapper key on each step
 // ---------------------------------------------------------------------------
 TEST_F(RuleParserTest, SequenceStepEventKeyParsed) {
-    constexpr std::string_view yaml = R"(
+    constexpr std::string_view yaml = R"yaml(
 id: ss-test-parser-seq-event
 detection_name: "Test/SeqEvent"
 scope: sequence
@@ -255,7 +255,7 @@ logic:
         field_regex:
           field: process.command_line
           pattern: "(?i)(powershell|cmd|wscript)"
-)";
+)yaml";
 
     PhantomRule rule;
     ParseError  err;

@@ -31,7 +31,7 @@ logic:
             pattern: "(?i)WHLX[A-Za-z0-9+/]{20,}"
         - field_regex:
             field: static.strings
-            pattern: "(?i)\$wc\.Headers\.Add|\$wc\.downloadstring"
+            pattern: '(?i)\$wc\.Headers\.Add|\$wc\.downloadstring'
     - and:
         - field_regex:
             field: static.strings
@@ -48,7 +48,7 @@ logic:
                 value: "Invoke-Empire"
     - field_regex:
         field: static.strings
-        pattern: "(?i)\[System\.Runtime\.InteropServices\.Marshal\]::GetDelegateForFunctionPointer"
+        pattern: '(?i)\[System\.Runtime\.InteropServices\.Marshal\]::GetDelegateForFunctionPointer'
 
 fp_guard:
   notes:

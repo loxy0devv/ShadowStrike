@@ -33,7 +33,7 @@ logic:
     - or:
         - field_regex:
             field: static.strings
-            pattern: "(?i)\\\w{4,12}\\\w{4,12}\.exe\s+/[a-z]"
+            pattern: '(?i)\\\w{4,12}\\\w{4,12}\.exe\s+/[a-z]'
         - field_contains:
             field: static.strings
             value: "rundll32.exe"

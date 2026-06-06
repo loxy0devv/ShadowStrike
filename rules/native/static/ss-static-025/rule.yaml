@@ -36,16 +36,16 @@ logic:
                 value: "sliverpb"
             - field_regex:
                 field: static.strings
-                pattern: "(?i)github\.com/bishopfox/sliver"
+                pattern: '(?i)github\.com/bishopfox/sliver'
     - and:
         - field_regex:
             field: static.strings
-            pattern: "(?i)\\.\\pipe\\(sessions|implant|beacon)-[a-f0-9\-]{8,36}"
+            pattern: '(?i)\\.\\pipe\\(sessions|implant|beacon)-[a-f0-9\-]{8,36}'
         - feature: EntropyAbove
           threshold: 6.7
     - field_regex:
         field: static.strings
-        pattern: "(?i)(mtls|wireguard).*pivot.*[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}"
+        pattern: '(?i)(mtls|wireguard).*pivot.*[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}'
     - and:
         - field_contains:
             field: static.strings

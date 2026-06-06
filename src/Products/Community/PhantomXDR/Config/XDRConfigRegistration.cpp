@@ -47,8 +47,8 @@ bool RegKeyRange(const std::string& key, const std::string& category,
     meta.category = category;
     meta.displayName = displayName;
     meta.defaultValue = ShadowStrike::Config::ConfigValue(defaultValue);
-    meta.minValue = ShadowStrike::Config::ConfigValue(minVal);
-    meta.maxValue = ShadowStrike::Config::ConfigValue(maxVal);
+    meta.minValue = static_cast<double>(minVal);
+    meta.maxValue = static_cast<double>(maxVal);
     return CM::Instance().RegisterKeyMetadata(meta);
 }
 

@@ -383,13 +383,8 @@ bool EvidenceCollectorImpl::Initialize(const CollectionConfiguration& config) {
             }
         }
 
-        // Initialize infrastructure references
-        try {
-            m_hashStore = &HashStore::HashStore::Instance();
-        } catch (const std::exception& e) {
-            Logger::Warn("[EvidenceCollector] HashStore not available: {}", e.what());
-            m_hashStore = nullptr;
-        }
+        // HashStore is injected externally; default to unavailable
+        m_hashStore = nullptr;
 
         // Set default profile based on mode
         m_profile = CollectionProfile::FromMode(m_config.defaultMode);
@@ -401,7 +396,7 @@ bool EvidenceCollectorImpl::Initialize(const CollectionConfiguration& config) {
         m_initialized.store(true, std::memory_order_release);
         m_status.store(ModuleStatus::Running, std::memory_order_release);
 
-        Logger::Info("[EvidenceCollector] Initialized successfully (Version {})", GetVersionString());
+        Logger::Info("[EvidenceCollector] Initialized successfully (Version {})", EvidenceCollector::GetVersionString());
         Logger::Info("[EvidenceCollector] Output directory: {}",
             std::filesystem::path(m_config.outputDirectory).string());
 

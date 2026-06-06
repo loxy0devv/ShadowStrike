@@ -1556,9 +1556,9 @@ std::string BaseArtifact::ToJson() const {
     nlohmann::json j = {
         {"artifactId", artifactId},
         {"type", static_cast<uint32_t>(type)},
-        {"sourcePath", Utils::StringUtils::WideToUtf8(sourcePath)},
-        {"userSID", Utils::StringUtils::WideToUtf8(userSID)},
-        {"userName", Utils::StringUtils::WideToUtf8(userName)},
+        {"sourcePath", Utils::StringUtils::ToNarrow(sourcePath)},
+        {"userSID", Utils::StringUtils::ToNarrow(userSID)},
+        {"userName", Utils::StringUtils::ToNarrow(userName)},
         {"isComplete", isComplete}
     };
     return j.dump(2);
@@ -1570,7 +1570,7 @@ std::string MFTRecord::ToJson() const {
         {"type", "MFTRecord"},
         {"recordNumber", recordNumber},
         {"sequenceNumber", sequenceNumber},
-        {"fileName", Utils::StringUtils::WideToUtf8(fileName)},
+        {"fileName", Utils::StringUtils::ToNarrow(fileName)},
         {"parentRecordNumber", parentRecordNumber},
         {"fileSize", fileSize},
         {"allocatedSize", allocatedSize},
@@ -1586,8 +1586,8 @@ std::string PrefetchEntry::ToJson() const {
     nlohmann::json j = {
         {"artifactId", artifactId},
         {"type", "Prefetch"},
-        {"executableName", Utils::StringUtils::WideToUtf8(executableName)},
-        {"executablePath", Utils::StringUtils::WideToUtf8(executablePath)},
+        {"executableName", Utils::StringUtils::ToNarrow(executableName)},
+        {"executablePath", Utils::StringUtils::ToNarrow(executablePath)},
         {"prefetchHash", std::format("0x{:08X}", prefetchHash)},
         {"runCount", runCount},
         {"version", version},
@@ -1601,7 +1601,7 @@ std::string ShimcacheEntry::ToJson() const {
     nlohmann::json j = {
         {"artifactId", artifactId},
         {"type", "Shimcache"},
-        {"filePath", Utils::StringUtils::WideToUtf8(filePath)},
+        {"filePath", Utils::StringUtils::ToNarrow(filePath)},
         {"fileSize", fileSize},
         {"executed", executed},
         {"cacheIndex", cacheIndex},
@@ -1614,12 +1614,12 @@ std::string AmcacheEntry::ToJson() const {
     nlohmann::json j = {
         {"artifactId", artifactId},
         {"type", "Amcache"},
-        {"filePath", Utils::StringUtils::WideToUtf8(filePath)},
+        {"filePath", Utils::StringUtils::ToNarrow(filePath)},
         {"sha1Hash", sha1Hash},
         {"fileSize", fileSize},
-        {"productName", Utils::StringUtils::WideToUtf8(productName)},
-        {"companyName", Utils::StringUtils::WideToUtf8(companyName)},
-        {"fileVersion", Utils::StringUtils::WideToUtf8(fileVersion)},
+        {"productName", Utils::StringUtils::ToNarrow(productName)},
+        {"companyName", Utils::StringUtils::ToNarrow(companyName)},
+        {"fileVersion", Utils::StringUtils::ToNarrow(fileVersion)},
         {"isPE", isPE}
     };
     return j.dump(2);
@@ -1631,10 +1631,10 @@ std::string BrowserHistoryEntry::ToJson() const {
         {"type", "BrowserHistory"},
         {"browser", static_cast<int>(browser)},
         {"url", url},
-        {"title", Utils::StringUtils::WideToUtf8(title)},
+        {"title", Utils::StringUtils::ToNarrow(title)},
         {"visitCount", visitCount},
         {"isTyped", isTyped},
-        {"profile", Utils::StringUtils::WideToUtf8(profile)}
+        {"profile", Utils::StringUtils::ToNarrow(profile)}
     };
     return j.dump(2);
 }
@@ -1643,10 +1643,10 @@ std::string LNKFileEntry::ToJson() const {
     nlohmann::json j = {
         {"artifactId", artifactId},
         {"type", "LNKFile"},
-        {"lnkPath", Utils::StringUtils::WideToUtf8(lnkPath)},
-        {"targetPath", Utils::StringUtils::WideToUtf8(targetPath)},
-        {"workingDirectory", Utils::StringUtils::WideToUtf8(workingDirectory)},
-        {"arguments", Utils::StringUtils::WideToUtf8(arguments)},
+        {"lnkPath", Utils::StringUtils::ToNarrow(lnkPath)},
+        {"targetPath", Utils::StringUtils::ToNarrow(targetPath)},
+        {"workingDirectory", Utils::StringUtils::ToNarrow(workingDirectory)},
+        {"arguments", Utils::StringUtils::ToNarrow(arguments)},
         {"targetFileSize", targetFileSize},
         {"machineId", machineId},
         {"macAddress", macAddress},
@@ -1660,11 +1660,11 @@ std::string JumpListEntry::ToJson() const {
     nlohmann::json j = {
         {"artifactId", artifactId},
         {"type", "JumpList"},
-        {"appId", Utils::StringUtils::WideToUtf8(appId)},
-        {"targetPath", Utils::StringUtils::WideToUtf8(targetPath)},
+        {"appId", Utils::StringUtils::ToNarrow(appId)},
+        {"targetPath", Utils::StringUtils::ToNarrow(targetPath)},
         {"entryType", entryType},
-        {"arguments", Utils::StringUtils::WideToUtf8(arguments)},
-        {"workingDirectory", Utils::StringUtils::WideToUtf8(workingDirectory)}
+        {"arguments", Utils::StringUtils::ToNarrow(arguments)},
+        {"workingDirectory", Utils::StringUtils::ToNarrow(workingDirectory)}
     };
     return j.dump(2);
 }
@@ -1673,11 +1673,11 @@ std::string UserAssistEntry::ToJson() const {
     nlohmann::json j = {
         {"artifactId", artifactId},
         {"type", "UserAssist"},
-        {"name", Utils::StringUtils::WideToUtf8(name)},
+        {"name", Utils::StringUtils::ToNarrow(name)},
         {"runCount", runCount},
         {"focusCount", focusCount},
         {"focusTime", focusTime},
-        {"userSid", Utils::StringUtils::WideToUtf8(userSid)},
+        {"userSid", Utils::StringUtils::ToNarrow(userSid)},
         {"guid", guid}
     };
     return j.dump(2);
@@ -1687,9 +1687,9 @@ std::string ShellbagEntry::ToJson() const {
     nlohmann::json j = {
         {"artifactId", artifactId},
         {"type", "Shellbag"},
-        {"path", Utils::StringUtils::WideToUtf8(path)},
+        {"path", Utils::StringUtils::ToNarrow(path)},
         {"itemType", itemType},
-        {"registryPath", Utils::StringUtils::WideToUtf8(registryPath)}
+        {"registryPath", Utils::StringUtils::ToNarrow(registryPath)}
     };
     return j.dump(2);
 }
@@ -1698,12 +1698,12 @@ std::string ScheduledTaskEntry::ToJson() const {
     nlohmann::json j = {
         {"artifactId", artifactId},
         {"type", "ScheduledTask"},
-        {"taskName", Utils::StringUtils::WideToUtf8(taskName)},
-        {"taskPath", Utils::StringUtils::WideToUtf8(taskPath)},
-        {"action", Utils::StringUtils::WideToUtf8(action)},
-        {"arguments", Utils::StringUtils::WideToUtf8(arguments)},
-        {"author", Utils::StringUtils::WideToUtf8(author)},
-        {"description", Utils::StringUtils::WideToUtf8(description)},
+        {"taskName", Utils::StringUtils::ToNarrow(taskName)},
+        {"taskPath", Utils::StringUtils::ToNarrow(taskPath)},
+        {"action", Utils::StringUtils::ToNarrow(action)},
+        {"arguments", Utils::StringUtils::ToNarrow(arguments)},
+        {"author", Utils::StringUtils::ToNarrow(author)},
+        {"description", Utils::StringUtils::ToNarrow(description)},
         {"triggerType", triggerType},
         {"isEnabled", isEnabled},
         {"runLevel", runLevel}
@@ -3150,7 +3150,7 @@ std::vector<UserAssistEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseUser
                         UserAssistEntry entry;
                         entry.artifactId = GenerateArtifactId();
                         entry.type = ArtifactType::UserAssist;
-                        entry.guid = Utils::StringUtils::WideToUtf8(guidName);
+                        entry.guid = Utils::StringUtils::ToNarrow(guidName);
                         entry.collectionTime = SystemClock::now();
 
                         // Decode ROT13

@@ -10,6 +10,8 @@
  *   ShadowStrikePhantomCLI.exe scan C:\temp   — single command, then exit
  */
 
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #include "PhantomCLI.hpp"
 #include <cstring>
 

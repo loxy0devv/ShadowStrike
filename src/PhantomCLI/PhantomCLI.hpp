@@ -11,6 +11,12 @@
 
 #pragma once
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
+#include <atomic>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -125,10 +131,13 @@ private:
     std::string FormatTimestamp(int64_t unixMs) const;
 
     // ---- IPC helpers --------------------------------------------------------
+    bool SendV2Request(uint32_t cmdType, const std::string& json, std::string& response);
     bool SendRequest(std::string_view jsonRequest, std::string& jsonResponse);
     bool CallService(std::string_view command,
                      const std::string& params,
                      std::string& response);
+
+    std::atomic<uint64_t> m_reqId{1};
 };
 
 } // namespace ShadowStrike

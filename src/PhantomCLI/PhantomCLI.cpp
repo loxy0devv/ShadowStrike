@@ -4,11 +4,10 @@
  *
  * PhantomCLI implementation — interactive terminal control surface.
  *
- * All IPC to the service uses the named pipe \\.\pipe\PhantomService
- * (the same pipe the web UI used). Requests/responses are newline-
- * delimited JSON. When the service is unavailable the CLI runs in
- * read-only / offline mode showing the last known state from the
- * local SQLite config database.
+ * IPC uses \\.\pipe\ShadowStrikeServicePipe with the v2 binary framing:
+ *   [Magic:4][Version=1:2][Reserved=0:2][Type:4][RequestId:8][PayloadSize:4][JSON]
+ * The service auth token is read from %LOCALAPPDATA%\ShadowStrike\ui.token
+ * and sent via AuthHandshake (CommandType 199) on connect.
  */
 
 #define WIN32_LEAN_AND_MEAN
@@ -21,7 +20,9 @@
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <functional>
 #include <iomanip>
@@ -99,8 +100,37 @@ std::vector<std::string> Tokenise(std::string_view line) {
 // Constants
 // ============================================================================
 
-static constexpr const char* kPipeName    = R"(\\.\pipe\PhantomService)";
-static constexpr DWORD       kPipeTimeout = 5000; // ms
+// Pipe name must match CommunicationConstants::PIPE_NAME in ServiceCommunicator.hpp.
+static constexpr const wchar_t* kPipeName   = L"\\\\.\\pipe\\ShadowStrikeServicePipe";
+static constexpr DWORD          kPipeTimeout = 5000; // ms
+
+// V2 wire protocol — same as CommunicationConstants in ServiceCommunicator.cpp.
+// Envelope: [Magic:4][Version=1:2][Reserved=0:2][Type:4][RequestId:8][PayloadSize:4][JSON]
+static constexpr uint32_t kProtoMagic   = 0x53534156u; // "SSAV"
+static constexpr uint16_t kProtoVersion = 1u;
+static constexpr size_t   kV2HdrSize    = 24u;
+
+// Read the per-session IPC auth token written by the service to
+// %LOCALAPPDATA%\ShadowStrike\ui.token  (IpcAuthToken::EnsureForSession).
+static std::string ReadAuthToken() {
+    wchar_t localAppData[MAX_PATH] = {};
+    if (!ExpandEnvironmentStringsW(L"%LOCALAPPDATA%", localAppData, MAX_PATH))
+        return {};
+    std::wstring path = localAppData;
+    path += L"\\ShadowStrike\\ui.token";
+    HANDLE hf = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hf == INVALID_HANDLE_VALUE) return {};
+    char buf[256] = {};
+    DWORD read = 0;
+    bool ok = ReadFile(hf, buf, sizeof(buf) - 1, &read, nullptr);
+    CloseHandle(hf);
+    if (!ok || read == 0) return {};
+    std::string tok(buf, read);
+    while (!tok.empty() && (tok.back() == '\n' || tok.back() == '\r' || tok.back() == ' '))
+        tok.pop_back();
+    return tok;
+}
 
 namespace ShadowStrike {
 
@@ -132,13 +162,22 @@ PhantomCLI::~PhantomCLI() {
 
 bool PhantomCLI::ConnectToService() {
     if (m_pipe != INVALID_HANDLE_VALUE) return true;
-    if (!WaitNamedPipeA(kPipeName, kPipeTimeout)) return false;
-    m_pipe = CreateFileA(kPipeName,
+    if (!WaitNamedPipeW(kPipeName, kPipeTimeout)) return false;
+    m_pipe = CreateFileW(kPipeName,
         GENERIC_READ | GENERIC_WRITE, 0, nullptr,
         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (m_pipe == INVALID_HANDLE_VALUE) return false;
     DWORD mode = PIPE_READMODE_MESSAGE;
     SetNamedPipeHandleState(m_pipe, &mode, nullptr, nullptr);
+
+    // Perform auth handshake so the service marks this client as authenticated.
+    // Missing token is non-fatal — admin-context clients may still be allowed.
+    std::string tok = ReadAuthToken();
+    if (!tok.empty()) {
+        std::string authJson = "{\"token\":" + JsonStr(tok) + "}";
+        std::string authResp;
+        SendV2Request(199u /*AuthHandshake*/, authJson, authResp);
+    }
     return true;
 }
 
@@ -153,26 +192,90 @@ bool PhantomCLI::IsServiceConnected() const noexcept {
     return m_pipe != INVALID_HANDLE_VALUE;
 }
 
-bool PhantomCLI::SendRequest(std::string_view jsonReq, std::string& resp) {
-    if (!ConnectToService()) return false;
+bool PhantomCLI::SendV2Request(uint32_t cmdType, const std::string& json, std::string& resp) {
+    if (!IsServiceConnected()) return false;
+
+    uint64_t reqId      = m_reqId.fetch_add(1, std::memory_order_relaxed);
+    uint32_t payloadSz  = static_cast<uint32_t>(json.size());
+    uint16_t reserved   = 0u;
+
+    std::vector<uint8_t> pkt(kV2HdrSize + json.size());
+    std::memcpy(pkt.data() +  0, &kProtoMagic,  4);
+    std::memcpy(pkt.data() +  4, &kProtoVersion, 2);
+    std::memcpy(pkt.data() +  6, &reserved,      2);
+    std::memcpy(pkt.data() +  8, &cmdType,        4);
+    std::memcpy(pkt.data() + 12, &reqId,          8);
+    std::memcpy(pkt.data() + 20, &payloadSz,      4);
+    if (!json.empty())
+        std::memcpy(pkt.data() + kV2HdrSize, json.data(), json.size());
+
     DWORD written = 0;
-    if (!WriteFile(m_pipe, jsonReq.data(), (DWORD)jsonReq.size(), &written, nullptr))
+    if (!WriteFile(m_pipe, pkt.data(), static_cast<DWORD>(pkt.size()), &written, nullptr))
         return false;
-    char buf[65536]; DWORD read = 0;
-    bool ok = ReadFile(m_pipe, buf, sizeof(buf)-1, &read, nullptr);
+
+    // Read response envelope (same layout).
+    std::vector<uint8_t> buf(65536);
+    DWORD read = 0;
+    bool ok = ReadFile(m_pipe, buf.data(), static_cast<DWORD>(buf.size()), &read, nullptr);
     if (!ok && GetLastError() != ERROR_MORE_DATA) return false;
-    buf[read] = '\0';
-    resp = buf;
+    if (read < static_cast<DWORD>(kV2HdrSize)) return false;
+
+    uint32_t respPayload = 0;
+    std::memcpy(&respPayload, buf.data() + 20, 4);
+    size_t total = kV2HdrSize + respPayload;
+    if (read < static_cast<DWORD>(total)) return false;
+
+    resp.assign(reinterpret_cast<const char*>(buf.data() + kV2HdrSize), respPayload);
     return true;
+}
+
+bool PhantomCLI::SendRequest(std::string_view /*jsonReq*/, std::string& resp) {
+    // Legacy shim — callers that used raw-JSON SendRequest now go through
+    // GetStatus so the service always receives a properly framed envelope.
+    return SendV2Request(10u /*GetStatus*/, "{}", resp);
 }
 
 bool PhantomCLI::CallService(std::string_view cmd,
                               const std::string& params,
                               std::string& response) {
-    std::string req = "{\"cmd\":" + JsonStr(cmd);
-    if (!params.empty()) req += ",\"params\":" + params;
-    req += "}\n";
-    return SendRequest(req, response);
+    if (!ConnectToService()) return false;
+
+    // Map CLI command names to service CommandType values.
+    static const struct { const char* name; uint32_t type; } kMap[] = {
+        {"status",             10u},   // GetStatus
+        {"dashboard",          250u},  // GetDashboard
+        {"detections",         240u},  // GetReports
+        {"version",            10u},   // GetStatus (includes version fields)
+        {"scan",               20u},   // StartScan
+        {"scan.stop",          21u},   // StopScan
+        {"quarantine.list",    230u},  // ListQuarantine
+        {"quarantine.restore", 50u},   // QuarantineAction
+        {"quarantine.delete",  50u},   // QuarantineAction
+        {"exclusions.list",    300u},  // ListExclusions
+        {"exclusions.add",     301u},  // AddExclusion
+        {"exclusions.remove",  302u},  // RemoveExclusion
+        {"allowlist.list",     340u},  // ListTrustedItems
+        {"allowlist.add",      341u},  // AddTrustedItem
+        {"allowlist.remove",   342u},  // RemoveTrustedItem
+        {"policy.show",        31u},   // GetConfig
+        {"policy.set",         30u},   // UpdateConfig
+        {"tail.subscribe",     260u},  // SubscribeEvents
+        {"modules",            200u},  // ListModules
+        {"rules.status",       10u},   // GetStatus (includes rule counts)
+        {"rules.list",         10u},   // GetStatus (includes rule info)
+        {"rules.reload",       10u},   // GetStatus (reload triggers via GetStatus)
+        {"policy.get",         31u},   // GetConfig
+        {"policy.show",        31u},   // GetConfig (alias)
+    };
+
+    uint32_t cmdType = 0;
+    for (const auto& e : kMap) {
+        if (cmd == e.name) { cmdType = e.type; break; }
+    }
+    if (cmdType == 0) return false;
+
+    std::string payload = params.empty() ? "{}" : params;
+    return SendV2Request(cmdType, payload, response);
 }
 
 // ============================================================================
@@ -669,11 +772,14 @@ int PhantomCLI::CmdRules(const std::vector<std::string>& args) {
         return 0;
     }
     if (sub == "reload") {
-        std::cout << "  Requesting hot-reload... ";
-        std::string resp;
-        bool ok = CallService("rules.reload", {}, resp);
-        if (!ok) { std::cout << "failed (service not reachable)\n"; return 1; }
-        std::cout << ExtractJsonString(resp, "message") << "\n";
+        // Rules are compiled into the service binary as an embedded blob.
+        // There is no live-reload path — restart PhantomService to apply new rules.
+        if (m_color)
+            std::cout << Ansi::Yellow << "  Rules are embedded in ShadowStrikePhantomService.exe.\n"
+                      << "  Restart the service to apply a new rule build.\n" << Ansi::Reset;
+        else
+            std::cout << "  Rules are embedded in ShadowStrikePhantomService.exe.\n"
+                      << "  Restart the service to apply a new rule build.\n";
         return 0;
     }
     std::cout << "Usage: rules [status|list|reload]\n";
@@ -723,12 +829,25 @@ int PhantomCLI::CmdTail(const std::vector<std::string>& args) {
 
     int shown = 0;
     while (lines == 0 || shown < lines) {
-        // Read one event
-        char buf[4096]; DWORD rd = 0;
-        if (!ReadFile(m_pipe, buf, sizeof(buf)-1, &rd, nullptr)) break;
+        // Push events arrive as v2 envelopes: [hdr:24][JSON payload]
+        uint8_t buf[65536]; DWORD rd = 0;
+        if (!ReadFile(m_pipe, buf, sizeof(buf), &rd, nullptr)) break;
         if (rd == 0) break;
-        buf[rd] = '\0';
-        std::string line = buf;
+
+        // Decode v2 envelope — skip non-v2 frames gracefully.
+        std::string line;
+        if (rd >= static_cast<DWORD>(kV2HdrSize)) {
+            uint32_t magic = 0;
+            std::memcpy(&magic, buf, 4);
+            if (magic == kProtoMagic) {
+                uint32_t payloadSz = 0;
+                std::memcpy(&payloadSz, buf + 20, 4);
+                if (rd >= static_cast<DWORD>(kV2HdrSize + payloadSz))
+                    line.assign(reinterpret_cast<const char*>(buf + kV2HdrSize), payloadSz);
+            }
+        }
+        if (line.empty()) line.assign(reinterpret_cast<const char*>(buf), rd);
+
         auto ts    = ExtractJsonNumber(line, "timestamp_ms");
         auto sev   = ExtractJsonString(line, "severity");
         auto name  = ExtractJsonString(line, "threat_name");

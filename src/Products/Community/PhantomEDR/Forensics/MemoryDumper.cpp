@@ -515,7 +515,7 @@ bool MemoryDumper::Initialize(const MemoryDumperConfiguration& config) {
         m_impl->m_status = ModuleStatus::Error;
         return false;
     } catch (...) {
-        Utils::Logger::Critical("MemoryDumper: Initialization failed (unknown exception)");
+        Utils::Logger::Fatal("MemoryDumper: Initialization failed (unknown exception)");
         m_impl->m_status = ModuleStatus::Error;
         return false;
     }
@@ -557,7 +557,7 @@ void MemoryDumper::Shutdown() {
     } catch (const std::exception& ex) {
         Utils::Logger::Error("MemoryDumper: Shutdown error: {}", ex.what());
     } catch (...) {
-        Utils::Logger::Critical("MemoryDumper: Shutdown failed");
+        Utils::Logger::Fatal("MemoryDumper: Shutdown failed");
     }
 }
 
@@ -1931,7 +1931,7 @@ bool MemoryDumper::SelfTest() {
         Utils::Logger::Error("MemoryDumper: Self-test failed with exception: {}", ex.what());
         return false;
     } catch (...) {
-        Utils::Logger::Critical("MemoryDumper: Self-test failed (unknown exception)");
+        Utils::Logger::Fatal("MemoryDumper: Self-test failed (unknown exception)");
         return false;
     }
 }

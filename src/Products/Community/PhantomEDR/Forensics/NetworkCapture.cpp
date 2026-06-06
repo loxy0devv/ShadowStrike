@@ -884,7 +884,7 @@ bool NetworkCaptureImpl::Initialize(const NetworkCaptureConfiguration& config) {
         return true;
 
     } catch (const std::exception& e) {
-        Utils::Logger::Critical("NetworkCapture initialization failed: {}", e.what());
+        Utils::Logger::Fatal("NetworkCapture initialization failed: {}", e.what());
         m_status = ModuleStatus::Error;
         return false;
     }
@@ -1976,7 +1976,7 @@ bool NetworkCaptureImpl::SelfTest() {
         return true;
 
     } catch (const std::exception& e) {
-        Utils::Logger::Critical("Self-test failed with exception: {}", e.what());
+        Utils::Logger::Fatal("Self-test failed with exception: {}", e.what());
         return false;
     }
 }

@@ -91,6 +91,8 @@
 namespace ShadowStrike {
 namespace Forensics {
 
+using Utils::Logger;
+
 // ============================================================================
 // INTERNAL STRUCTURES
 // ============================================================================
@@ -573,11 +575,11 @@ bool TimelineAnalyzerImpl::Initialize(const TimelineAnalyzerConfiguration& confi
         return true;
 
     } catch (const std::exception& e) {
-        Logger::Critical("[TimelineAnalyzer] Initialization failed: {}", e.what());
+        Logger::Fatal("[TimelineAnalyzer] Initialization failed: {}", e.what());
         m_status.store(ModuleStatus::Error, std::memory_order_release);
         return false;
     } catch (...) {
-        Logger::Critical("[TimelineAnalyzer] Initialization failed: Unknown error");
+        Logger::Fatal("[TimelineAnalyzer] Initialization failed: Unknown error");
         m_status.store(ModuleStatus::Error, std::memory_order_release);
         return false;
     }

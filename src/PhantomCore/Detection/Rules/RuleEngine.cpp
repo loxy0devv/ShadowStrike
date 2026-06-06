@@ -270,12 +270,14 @@ bool RuleEngine::EvalLeafStatic(const FeatureLeaf& leaf,
             return check(!bag.signed_, "unsigned");
 
         case FeatureKind::Match: {
-            // Look up the referenced capa rule by name and evaluate it recursively
+            // Look up the referenced rule by name; try capa prefix, native id, and raw name.
             auto store = m_store.load();
             if (!store) return false;
-            const std::string refId = "capa-" + leaf.value;
-            const PhantomRule* refRule = store->Get(refId);
+            // Try capa-prefixed id first, then raw id (for native rules that reference others)
+            const PhantomRule* refRule = store->Get("capa-" + leaf.value);
+            if (!refRule) refRule = store->Get(leaf.value);
             if (!refRule) return false;
+            const std::string refId = refRule->id;
 
             // Cycle guard: if this rule is already on the call stack for this thread,
             // treat it as no-match to prevent infinite recursion / stack overflow.

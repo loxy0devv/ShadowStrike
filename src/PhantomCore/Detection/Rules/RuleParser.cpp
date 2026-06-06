@@ -1108,6 +1108,11 @@ static FeatureKind nativeKind(std::string_view k) noexcept {
     if (k == "has_mitigation") return FeatureKind::HasMitigation;
     if (k == "lacks_mitigation") return FeatureKind::LacksMitigation;
     if (k == "field_bytes") return FeatureKind::FieldBytes;
+    // Also accept capa-style keys in native rules
+    if (k == "match")          return FeatureKind::Match;
+    if (k == "offset")         return FeatureKind::Offset;
+    if (k == "operand_number") return FeatureKind::OperandNumber;
+    if (k == "property")       return FeatureKind::Property;
     return FeatureKind::Custom;
 }
 

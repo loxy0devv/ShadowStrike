@@ -35,6 +35,9 @@ using ShadowStrike::Database::DatabaseError;
 using ShadowStrike::Database::DatabaseManager;
 using ShadowStrike::Utils::HashUtils::Algorithm;
 
+// IncidentNote matches the notes field type in Incident (IncidentTypes.hpp line 114)
+using IncidentNote = std::pair<std::chrono::system_clock::time_point, std::string>;
+
 constexpr std::string_view kLogPrefix = "[IncidentManager]";
 constexpr std::string_view kCreateTableSql = R"(
     CREATE TABLE IF NOT EXISTS incidents (

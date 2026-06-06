@@ -30,7 +30,7 @@ logic:
     - or:
         - field_regex:
             field: process.command_line
-            pattern: "(?i)/node:['\"]?[0-9a-zA-Z\\.\\-]+"
+            pattern: "(?i)/node:['\"]?[0-9a-zA-Z.-]+"
         - field_regex:
             field: process.command_line
             pattern: "(?i)process\\s+(call\\s+)?create"

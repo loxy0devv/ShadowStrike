@@ -84,6 +84,8 @@
 #include <tlhelp32.h>
 #include <wtsapi32.h>
 #include <netlistmgr.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <iphlpapi.h>
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "wtsapi32.lib")
@@ -92,6 +94,8 @@
 
 namespace ShadowStrike {
 namespace Forensics {
+
+using Utils::Logger;
 
 // ============================================================================
 // INTERNAL STRUCTURES
@@ -404,11 +408,11 @@ bool EvidenceCollectorImpl::Initialize(const CollectionConfiguration& config) {
         return true;
 
     } catch (const std::exception& e) {
-        Logger::Critical("[EvidenceCollector] Initialization failed: {}", e.what());
+        Logger::Fatal("[EvidenceCollector] Initialization failed: {}", e.what());
         m_status.store(ModuleStatus::Error, std::memory_order_release);
         return false;
     } catch (...) {
-        Logger::Critical("[EvidenceCollector] Initialization failed: Unknown error");
+        Logger::Fatal("[EvidenceCollector] Initialization failed: Unknown error");
         m_status.store(ModuleStatus::Error, std::memory_order_release);
         return false;
     }

@@ -44,7 +44,7 @@ logic:
             case_insensitive: true
         - field_regex:
             field: process.command_line
-            pattern: "(?i)\\\\\\\\[a-zA-Z0-9\\.\\-]+"
+            pattern: "(?i)\\\\\\\\[a-zA-Z0-9.-]+"
 
 fp_guard:
   notes:

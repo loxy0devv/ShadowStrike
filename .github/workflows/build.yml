@@ -562,13 +562,35 @@ jobs:
             "https://github.com/google/googletest/archive/refs/tags/v${gtestVer}.zip" `
             -OutFile gtest-src.zip -UseBasicParsing -TimeoutSec 120
           Expand-Archive gtest-src.zip -DestinationPath . -Force
-          cmake -S "googletest-${gtestVer}" -B gtest-build `
-            -G "Visual Studio 17 2022" -A x64 `
-            -DBUILD_SHARED_LIBS=OFF `
-            -Dgtest_force_shared_crt=ON `
-            -DINSTALL_GTEST=OFF
-          cmake --build gtest-build --config Release --parallel 2
-          Copy-Item gtest-build\lib\Release\gtest.lib vendor\gtest_framework\ -Force
+          $gdir = "googletest-${gtestVer}\googletest"
+
+          # Locate vcvarsall.bat via vswhere
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+          if (-not $vsPath) { throw "vswhere: Visual Studio with VC tools not found" }
+          $vcvars = Join-Path $vsPath "VC\Auxiliary\Build\vcvarsall.bat"
+          Write-Host "vcvars: $vcvars"
+
+          # Compile gtest-all.cc directly with the same flags as the test project.
+          # Avoids any cmake/generator ABI mismatch with the repo's gtest headers.
+          # Array approach avoids YAML-breaking @"..."@ heredoc at column 0.
+          $bat = @(
+            '@echo off',
+            "call `"$vcvars`" x64",
+            'if %errorlevel% neq 0 (echo vcvarsall failed & exit /b 1)',
+            "cl.exe /c /nologo /EHsc /MD /O2 /std:c++20 /DWIN32 /DNDEBUG /D_UNICODE /DUNICODE /I`"$gdir\include`" /I`"$gdir`" /Fo`"gtest-all.obj`" `"$gdir\src\gtest-all.cc`"",
+            'if %errorlevel% neq 0 (echo cl.exe failed & exit /b 1)',
+            'lib.exe /nologo /OUT:"vendor\gtest_framework\gtest.lib" "gtest-all.obj"',
+            'if %errorlevel% neq 0 (echo lib.exe failed & exit /b 1)'
+          )
+          $bat | Set-Content "build_gtest.bat" -Encoding ASCII
+          cmd /c "build_gtest.bat"
+          if ($LASTEXITCODE -ne 0) { throw "GTest static build failed (exit $LASTEXITCODE)" }
+
+          # Replace repo gtest headers with matching 1.14.0 headers
+          Copy-Item "$gdir\include\gtest" include\ -Recurse -Force
           Write-Host "GTest static lib: $([int]((Get-Item 'vendor\gtest_framework\gtest.lib').Length/1KB)) KB"
 
       - name: Build detection unit tests

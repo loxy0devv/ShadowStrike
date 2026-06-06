@@ -763,33 +763,58 @@ struct CollectionProgress {
 struct CollectionStatistics {
     /// @brief Total collections
     std::atomic<uint64_t> totalCollections{0};
-    
+
     /// @brief Successful collections
     std::atomic<uint64_t> successfulCollections{0};
-    
+
     /// @brief Failed collections
     std::atomic<uint64_t> failedCollections{0};
-    
+
     /// @brief Total evidence items
     std::atomic<uint64_t> totalEvidenceItems{0};
-    
+
     /// @brief Total bytes collected
     std::atomic<uint64_t> totalBytesCollected{0};
-    
+
     /// @brief Total containers created
     std::atomic<uint64_t> totalContainers{0};
-    
+
     /// @brief Active collections
     std::atomic<uint32_t> activeCollections{0};
-    
+
     /// @brief Start time
     TimePoint startTime = Clock::now();
-    
+
+    CollectionStatistics() = default;
+    CollectionStatistics(const CollectionStatistics& o) noexcept
+        : totalCollections{o.totalCollections.load(std::memory_order_relaxed)}
+        , successfulCollections{o.successfulCollections.load(std::memory_order_relaxed)}
+        , failedCollections{o.failedCollections.load(std::memory_order_relaxed)}
+        , totalEvidenceItems{o.totalEvidenceItems.load(std::memory_order_relaxed)}
+        , totalBytesCollected{o.totalBytesCollected.load(std::memory_order_relaxed)}
+        , totalContainers{o.totalContainers.load(std::memory_order_relaxed)}
+        , activeCollections{o.activeCollections.load(std::memory_order_relaxed)}
+        , startTime{o.startTime}
+    {}
+    CollectionStatistics& operator=(const CollectionStatistics& o) noexcept {
+        if (this != &o) {
+            totalCollections.store(o.totalCollections.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            successfulCollections.store(o.successfulCollections.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            failedCollections.store(o.failedCollections.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            totalEvidenceItems.store(o.totalEvidenceItems.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            totalBytesCollected.store(o.totalBytesCollected.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            totalContainers.store(o.totalContainers.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            activeCollections.store(o.activeCollections.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            startTime = o.startTime;
+        }
+        return *this;
+    }
+
     /**
      * @brief Reset statistics
      */
     void Reset() noexcept;
-    
+
     /**
      * @brief Serialize to JSON
      */

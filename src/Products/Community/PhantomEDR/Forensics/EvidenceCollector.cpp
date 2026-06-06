@@ -423,16 +423,16 @@ void EvidenceCollectorImpl::Shutdown() {
     try {
         m_status.store(ModuleStatus::Stopping, std::memory_order_release);
 
-        // Cancel all active collections
-        std::vector<std::string> activeCollections;
+        // Cancel all active collections.
+        // We already hold m_mutex (unique), so we must NOT call CancelCollection()
+        // or GetCollection() here — both would try to re-acquire m_mutex and deadlock
+        // (std::shared_mutex is not recursive on Windows).
         for (const auto& [id, state] : m_collections) {
             if (state->progress.status == CollectionStatus::InProgress) {
-                activeCollections.push_back(id);
+                state->cancelled.store(true, std::memory_order_release);
+                state->progress.status = CollectionStatus::Cancelled;
+                Logger::Info("[EvidenceCollector] Cancelled collection during shutdown: {}", id);
             }
-        }
-
-        for (const auto& id : activeCollections) {
-            CancelCollection(id);
         }
 
         // Clear collections

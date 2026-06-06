@@ -1155,8 +1155,10 @@ static FeatureNode parseNativeNode(const YamlNode& n) {
         }
         out.leaf.kind = nativeKind(snake);
         if (out.leaf.kind == FeatureKind::Custom) out.leaf.kind = nativeKind(fk); // try original
-        if (const auto* tv = n.find("threshold"); tv && tv->isScalar())
+        if (const auto* tv = n.find("threshold"); tv && tv->isScalar()) {
             try { out.leaf.ratio = std::stod(tv->scalar); } catch (...) {}
+            try { out.leaf.number = static_cast<int64_t>(out.leaf.ratio); } catch (...) {}
+        }
         if (const auto* nv = n.find("number"); nv && nv->isScalar())
             try { out.leaf.number = std::stoll(nv->scalar); } catch (...) {}
         if (const auto* vv = n.find("value"); vv && vv->isScalar())
@@ -1171,6 +1173,14 @@ static FeatureNode parseNativeNode(const YamlNode& n) {
     // The event: sub-map carries the actual detection logic for this step.
     if (const auto* ev = n.find("event"); ev && ev->isMap()) {
         auto child = parseNativeNode(*ev);
+        // Ensure the step is a container node, not a bare leaf — callers expect
+        // Op::And/Or/Sequence so they can attach metadata and iterate children.
+        if (child.op == FeatureNode::Op::Leaf) {
+            FeatureNode wrapper;
+            wrapper.op = FeatureNode::Op::And;
+            wrapper.children.push_back(std::move(child));
+            child = std::move(wrapper);
+        }
         if (const auto* wv = n.find("within"); wv && wv->isScalar())
             child.maxGap = parseDuration(wv->scalar);
         return child;
@@ -1183,15 +1193,23 @@ static FeatureNode parseNativeNode(const YamlNode& n) {
     if (k == "optional") return parseNativeAndOrNot(v, FeatureNode::Op::Optional);
     if (k == "sequence") {
         out.op = FeatureNode::Op::Sequence;
-        if (v.isSeq()) {
-            for (const auto& c : v.seq) {
+        auto addSteps = [&](const auto& seq) {
+            for (const auto& c : seq) {
                 auto step = parseNativeNode(c);
                 if (step.op != FeatureNode::Op::Leaf ||
                     !step.leaf.field.empty() || step.leaf.kind != FeatureKind::Custom)
                     out.children.push_back(std::move(step));
             }
+        };
+        if (v.isSeq()) {
+            addSteps(v.seq);
         } else if (v.isMap()) {
-            out.children.push_back(parseNativeNode(v));
+            // Wrapped format: {window_seconds: N, ordered: bool, steps: [...]}
+            const auto* stepsNode = v.find("steps");
+            if (stepsNode && stepsNode->isSeq())
+                addSteps(stepsNode->seq);
+            else
+                out.children.push_back(parseNativeNode(v));
         }
         return out;
     }

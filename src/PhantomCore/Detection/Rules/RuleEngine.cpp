@@ -95,6 +95,13 @@ void RuleEngine::ResetStats() noexcept {
 }
 
 const std::regex& RuleEngine::GetRegex(std::string_view pattern, bool caseInsensitive) const {
+    // Strip (?i) inline flag — std::regex ECMAScript mode doesn't support it.
+    // Apply icase instead, which is semantically identical.
+    if (pattern.starts_with("(?i)")) {
+        caseInsensitive = true;
+        pattern = pattern.substr(4);
+    }
+
     std::string key(pattern);
     key.push_back('\x1F');
     key.push_back(caseInsensitive ? 'i' : 's');

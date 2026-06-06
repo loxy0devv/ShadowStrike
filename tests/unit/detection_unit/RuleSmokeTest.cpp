@@ -26,6 +26,7 @@
 
 #include "../../../src/PhantomCore/Detection/Rules/RuleStore.hpp"
 #include "../../../src/PhantomCore/Detection/Rules/RuleImporter.hpp"
+#include "../../../src/PhantomCore/Detection/Rules/RuleEngine.hpp"
 #include "../../../src/PhantomCore/Detection/Rules/PhantomRule.hpp"
 
 namespace fs = std::filesystem;

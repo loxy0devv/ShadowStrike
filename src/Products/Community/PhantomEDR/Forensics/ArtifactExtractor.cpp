@@ -112,7 +112,7 @@
 // ============================================================================
 // THIRD-PARTY INCLUDES
 // ============================================================================
-#include <sqlite3.h>
+#include <SQLiteCpp/sqlite3.h>
 #include <nlohmann/json.hpp>
 
 #pragma comment(lib, "sqlite3.lib")

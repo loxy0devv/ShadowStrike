@@ -14,7 +14,7 @@ using CM = ShadowStrike::Config::ConfigManager;
 using PM = ShadowStrike::Config::PolicyManager;
 using ProfM = ShadowStrike::Config::ProfileManager;
 using Meta = ShadowStrike::Config::ConfigKeyMetadata;
-using ValueType = ShadowStrike::Config::ConfigValueType;
+using ValueType = ShadowStrike::Config::ValueType;
 using Layer = ShadowStrike::Config::ConfigLayer;
 
 // ============================================================================
@@ -235,6 +235,7 @@ bool RegKeyRange(const std::string& key, const std::string& category,
     using EnforcementLevel = ShadowStrike::Config::EnforcementLevel;
     using Policy = ShadowStrike::Config::Policy;
     using PolicySetting = ShadowStrike::Config::PolicySetting;
+    using PolicyValue   = ShadowStrike::Config::PolicyValue;
 
     bool ok = true;
 

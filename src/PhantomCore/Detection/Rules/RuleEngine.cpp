@@ -119,12 +119,24 @@ const std::regex& RuleEngine::GetRegex(std::string_view pattern, bool caseInsens
     auto flags = std::regex::ECMAScript | std::regex::optimize;
     if (caseInsensitive) flags |= std::regex::icase;
 
+    // Malformed patterns in rule YAML must not crash the engine.  Log the
+    // offending pattern so CI output identifies the exact rule, then substitute
+    // a never-matching fallback so detection continues for all other rules.
+    auto makeRegex = [&](std::string_view pat) -> std::regex {
+        try {
+            return std::regex(pat.data(), pat.size(), flags);
+        } catch (const std::regex_error& e) {
+            std::cerr << "[ShadowStrike] regex_error compiling pattern ["
+                      << pat << "]: " << e.what() << " — substituting never-match\n";
+            return std::regex("[^\\s\\S]", flags);
+        }
+    };
+
     std::unique_lock<std::shared_mutex> wl(m_regexMutex);
     // Save the key string before moving it into emplace — we need it for
     // re-lookup if eviction invalidates the iterator returned by emplace.
     std::string savedKey = key;
-    auto [it, inserted] = m_regexCache.emplace(
-        std::move(key), std::regex(pattern.data(), pattern.size(), flags));
+    auto [it, inserted] = m_regexCache.emplace(std::move(key), makeRegex(pattern));
     if (inserted && m_regexCache.size() > m_cfg.regexCacheMax) {
         // Simple eviction: drop a few random entries — cache will refill.
         auto victim = m_regexCache.begin();
@@ -135,8 +147,7 @@ const std::regex& RuleEngine::GetRegex(std::string_view pattern, bool caseInsens
         auto found = m_regexCache.find(savedKey);
         if (found != m_regexCache.end()) return found->second;
         // Entry was itself evicted (unlikely but possible) — re-insert.
-        auto [it2, _] = m_regexCache.emplace(
-            std::move(savedKey), std::regex(pattern.data(), pattern.size(), flags));
+        auto [it2, dummy_inserted] = m_regexCache.emplace(std::move(savedKey), makeRegex(pattern));
         return it2->second;
     }
     return it->second;  // no eviction occurred — iterator is still valid

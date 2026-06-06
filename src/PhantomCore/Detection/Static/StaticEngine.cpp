@@ -507,8 +507,13 @@ void StaticEngine::ExtractPeFeatures(std::span<const uint8_t> bytes,
         if (!hasExports)
             out.features.characteristics.insert("no-exports");
         else {
-            for (const auto& exp : expDir.exports)
-                if (exp.isForwarder) { out.features.characteristics.insert("has-forwarded-export"); break; }
+            for (const auto& exp : expDir.exports) {
+                if (exp.isForwarder) {
+                    out.features.characteristics.insert("has-forwarded-export");
+                    out.features.characteristics.insert("forwarded export"); // capa compat
+                    break;
+                }
+            }
         }
     }
 
@@ -579,6 +584,31 @@ void StaticEngine::ExtractDotNetFeatures(std::span<const uint8_t> /*bytes*/,
     out.features.format.insert("dotnet");
     out.features.characteristics.insert("dotnet");
     out.tags.emplace_back("lang:dotnet");
+
+    // mixed mode: .NET assembly that also imports native (non-mscoree) DLLs.
+    // This indicates C++/CLI or IJW (It Just Works) mixed-mode assemblies.
+    if (out.importCount > 0) {
+        bool hasNativeImports = false;
+        for (const auto& api : out.features.apis) {
+            // mscoree.dll is the CLR host — any other DLL is native
+            if (api.rfind("mscoree", 0) != 0)
+                { hasNativeImports = true; break; }
+        }
+        if (hasNativeImports) {
+            out.features.characteristics.insert("mixed mode");
+            // unmanaged call: managed code invoking P/Invoke or unmanaged exports
+            out.features.characteristics.insert("unmanaged call");
+        }
+    }
+
+    // Also detect P/Invoke patterns from string table (DllImport attribute presence)
+    for (const auto& s : out.features.strings) {
+        if (s.find("dllimport") != std::string::npos ||
+            s.find("dllimportattribute") != std::string::npos) {
+            out.features.characteristics.insert("unmanaged call");
+            break;
+        }
+    }
 }
 
 void StaticEngine::ExtractDisasmFeatures(std::span<const uint8_t> text,
@@ -812,6 +842,25 @@ void StaticEngine::ExtractDisasmFeatures(std::span<const uint8_t> text,
             }
         }
         if (found_call_plus5) out.features.characteristics.insert("call $+5");
+    }
+
+    // recursive call: CALL rel32 (E8) whose resolved target is before the current
+    // instruction within the same section — heuristic for backward self-calls.
+    // False positives are possible (calls to earlier helper functions), but combined
+    // with other characteristics it provides useful signal.
+    {
+        bool found_recursive = false;
+        for (size_t i = 0; i + 4 < text.size() && !found_recursive; ++i) {
+            if (text[i] != 0xE8) continue;
+            int32_t rel = 0;
+            std::memcpy(&rel, text.data() + i + 1, 4);
+            // instrEnd = i + 5; target = instrEnd + rel
+            const int64_t target = static_cast<int64_t>(i + 5) + rel;
+            // Backward call into the section: target >= 0 and target < i
+            if (target >= 0 && target < static_cast<int64_t>(i))
+                found_recursive = true;
+        }
+        if (found_recursive) out.features.characteristics.insert("recursive call");
     }
 
     // cross section flow: CALL or JMP target lands outside the current (.text) section.

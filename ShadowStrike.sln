@@ -29,6 +29,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ShadowStrikePhantomUI", "Sh
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ShadowStrikePhantomCLI", "ShadowStrikePhantomCLI.vcxproj", "{D7B2C4F8-3A5E-4F91-B820-1E6A3C7D9F02}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "ShadowStrikeDetectionUnitTests", "ShadowStrikeDetectionUnitTests.vcxproj", "{E2C5F8A4-6D3B-4E10-A927-5F8B2C4D1E93}"
+EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Installer", "Installer", "{A3B7D0F1-5C2E-4891-B3A4-6D8E9F0C1234}"
 EndProject
 Project("{930C7802-8A8C-48F9-8165-68863BCCD9DD}") = "ShadowStrikePhantomHome", "packaging\installer\ShadowStrikePhantomHome.wixproj", "{D4C9E1A0-6B3F-4872-A5D7-8E1F0B2C3456}"
@@ -117,6 +119,12 @@ Global
 		{D7B2C4F8-3A5E-4F91-B820-1E6A3C7D9F02}.Release|x64.ActiveCfg = Release|x64
 		{D7B2C4F8-3A5E-4F91-B820-1E6A3C7D9F02}.Release|x64.Build.0 = Release|x64
 		{D7B2C4F8-3A5E-4F91-B820-1E6A3C7D9F02}.Release|x86.ActiveCfg = Release|x64
+		{E2C5F8A4-6D3B-4E10-A927-5F8B2C4D1E93}.Debug|x64.ActiveCfg = Debug|x64
+		{E2C5F8A4-6D3B-4E10-A927-5F8B2C4D1E93}.Debug|x64.Build.0 = Debug|x64
+		{E2C5F8A4-6D3B-4E10-A927-5F8B2C4D1E93}.Debug|x86.ActiveCfg = Debug|x64
+		{E2C5F8A4-6D3B-4E10-A927-5F8B2C4D1E93}.Release|x64.ActiveCfg = Release|x64
+		{E2C5F8A4-6D3B-4E10-A927-5F8B2C4D1E93}.Release|x64.Build.0 = Release|x64
+		{E2C5F8A4-6D3B-4E10-A927-5F8B2C4D1E93}.Release|x86.ActiveCfg = Release|x64
 		{D4C9E1A0-6B3F-4872-A5D7-8E1F0B2C3456}.Debug|x64.ActiveCfg = Release|x64
 		{D4C9E1A0-6B3F-4872-A5D7-8E1F0B2C3456}.Debug|x64.Build.0 = Release|x64
 		{D4C9E1A0-6B3F-4872-A5D7-8E1F0B2C3456}.Release|x64.ActiveCfg = Release|x64

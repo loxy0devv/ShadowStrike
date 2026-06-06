@@ -539,13 +539,72 @@ jobs:
           echo "Elastic rules (NDJSON lines): $lines"
 
   # ============================================================================
-  # Job 5: Package — assemble all artifacts into a single downloadable ZIP.
+  # Job 5: Detection unit tests — build and run RuleParserTest + RuleSmokeTest.
+  # These tests exercise the rule parser and store in isolation (no service).
+  # ============================================================================
+  unit-tests:
+    name: Detection unit tests (x64 Release)
+    runs-on: windows-2022
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build detection unit tests
+        shell: pwsh
+        run: |
+          msbuild ShadowStrikeDetectionUnitTests.vcxproj `
+            /t:Rebuild /p:Configuration=Release /p:Platform=x64 `
+            /p:PlatformToolset=v143 `
+            /m:1 /nologo /flp:"LogFile=build_tests.log;Verbosity=minimal"
+
+      - name: Run unit tests
+        shell: pwsh
+        run: |
+          $exe = "x64\Release\tests\ShadowStrikeDetectionUnitTests.exe"
+          if (-not (Test-Path $exe)) {
+            Write-Error "Test binary not found: $exe"
+            exit 1
+          }
+          # Run tests; copy rules/ to exe dir so FindRulesRoot locates them
+          $testDir = Split-Path $exe
+          if (-not (Test-Path "$testDir\rules")) {
+            New-Item -ItemType Junction -Path "$testDir\rules" -Target (Resolve-Path "rules").Path | Out-Null
+          }
+          & $exe --gtest_output="xml:test_results.xml" 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Unit tests FAILED (exit $LASTEXITCODE)"
+            exit $LASTEXITCODE
+          }
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-unit-tests
+          path: build_tests.log
+          retention-days: 7
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results
+          path: test_results.xml
+          retention-days: 7
+
+  # ============================================================================
+  # Job 6: Package — assemble all artifacts into a single downloadable ZIP.
   # Runs only after all build and validation jobs succeed.
   # ============================================================================
   package:
     name: Package release ZIP
     runs-on: windows-2022
-    needs: [build-usermode, build-driver, build-cli, validate-rules]
+    needs: [build-usermode, build-driver, build-cli, validate-rules, unit-tests]
     timeout-minutes: 15
 
     steps:

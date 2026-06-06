@@ -1,12 +1,16 @@
 /*
- * ShadowStrike - Enterprise NGAV/EDR Platform
+ * ShadowStrike - Enterprise NGAV / EDR / XDR Platform
  * Copyright (C) 2026 ShadowStrike Security
  *
- * PhantomCLI — interactive terminal control surface.
+ * PhantomCLI — full-featured interactive terminal control surface.
  *
- * Replaces the web UI for operator use until a dedicated GUI is ready.
- * Exposes: status, detections, scan, quarantine, exclusions, rules,
- * allowlist, policy, and live event tail — all via named commands.
+ * Exposes every user-configurable feature of ShadowStrike Phantom:
+ *   Protection, Modules, Detections, Scans, Quarantine, Exclusions,
+ *   Allowlist, Rules, Policy, Threat Hunting, Incidents, Alerts,
+ *   Containment, Remediation, Playbooks, Forensics, Live Response,
+ *   Assets, Vulnerabilities, Sandbox, Compliance, Device Control,
+ *   Telemetry, Reporting, XDR Correlation, Network Detection,
+ *   Identity Protection, Email Threats, SOAR.
  */
 
 #pragma once
@@ -17,125 +21,158 @@
 #include <windows.h>
 
 #include <atomic>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
-#include <functional>
-#include <memory>
 
 namespace ShadowStrike {
 
-// Forward declarations for IPC types shared with the service
-struct ServiceStatus;
-struct DetectionRecord;
-struct QuarantineEntry;
-struct ExclusionEntry;
-struct PolicySettings;
-
 // ============================================================================
-// ANSI colour / formatting helpers
+// ANSI colour / formatting
 // ============================================================================
 
 namespace Ansi {
+constexpr std::string_view Reset       = "\x1b[0m";
+constexpr std::string_view Bold        = "\x1b[1m";
+constexpr std::string_view Dim         = "\x1b[2m";
+constexpr std::string_view Italic      = "\x1b[3m";
+constexpr std::string_view Underline   = "\x1b[4m";
 
-constexpr std::string_view Reset   = "\x1b[0m";
-constexpr std::string_view Bold    = "\x1b[1m";
-constexpr std::string_view Dim     = "\x1b[2m";
+constexpr std::string_view Black       = "\x1b[30m";
+constexpr std::string_view Red         = "\x1b[31m";
+constexpr std::string_view Green       = "\x1b[32m";
+constexpr std::string_view Yellow      = "\x1b[33m";
+constexpr std::string_view Blue        = "\x1b[34m";
+constexpr std::string_view Magenta     = "\x1b[35m";
+constexpr std::string_view Cyan        = "\x1b[36m";
+constexpr std::string_view White       = "\x1b[37m";
 
-// Foreground colours
-constexpr std::string_view Black   = "\x1b[30m";
-constexpr std::string_view Red     = "\x1b[31m";
-constexpr std::string_view Green   = "\x1b[32m";
-constexpr std::string_view Yellow  = "\x1b[33m";
-constexpr std::string_view Blue    = "\x1b[34m";
-constexpr std::string_view Magenta = "\x1b[35m";
-constexpr std::string_view Cyan    = "\x1b[36m";
-constexpr std::string_view White   = "\x1b[37m";
-constexpr std::string_view BrightRed    = "\x1b[91m";
-constexpr std::string_view BrightGreen  = "\x1b[92m";
-constexpr std::string_view BrightYellow = "\x1b[93m";
-constexpr std::string_view BrightBlue   = "\x1b[94m";
-constexpr std::string_view BrightCyan   = "\x1b[96m";
-constexpr std::string_view BrightWhite  = "\x1b[97m";
-
-// Background colours
-constexpr std::string_view BgRed    = "\x1b[41m";
-constexpr std::string_view BgGreen  = "\x1b[42m";
-constexpr std::string_view BgYellow = "\x1b[43m";
-constexpr std::string_view BgBlue   = "\x1b[44m";
-
+constexpr std::string_view BrightBlack   = "\x1b[90m";
+constexpr std::string_view BrightRed     = "\x1b[91m";
+constexpr std::string_view BrightGreen   = "\x1b[92m";
+constexpr std::string_view BrightYellow  = "\x1b[93m";
+constexpr std::string_view BrightBlue    = "\x1b[94m";
+constexpr std::string_view BrightMagenta = "\x1b[95m";
+constexpr std::string_view BrightCyan    = "\x1b[96m";
+constexpr std::string_view BrightWhite   = "\x1b[97m";
 } // namespace Ansi
 
 // ============================================================================
-// Command dispatcher
+// Menu infrastructure
 // ============================================================================
+
+struct MenuOption {
+    int         number;     // 0 = Back
+    std::string label;      // display text
+    std::string shortcut;   // match word, e.g. "list", "restore"
+    std::string argHint;    // "<id>" shown alongside label
+    std::function<int(const std::vector<std::string>&)> action;
+};
 
 struct CliCommand {
     std::string name;
-    std::string synopsis;       // one-line usage, e.g. "scan <path>"
-    std::string description;    // paragraph for help
-    std::function<int(const std::vector<std::string>& args)> handler;
+    std::string category;
+    std::string synopsis;
+    std::string description;
+    std::function<int(const std::vector<std::string>&)> handler;
 };
+
+// ============================================================================
+// PhantomCLI
+// ============================================================================
 
 class PhantomCLI {
 public:
     PhantomCLI();
     ~PhantomCLI();
 
-    /// Run the interactive REPL (blocking until "exit" or EOF).
     int RunInteractive();
-
-    /// Run a single command from a pre-parsed argv and exit.
     int RunCommand(int argc, char* argv[]);
 
 private:
-    // IPC pipe to the ShadowStrike service
-    HANDLE m_pipe = INVALID_HANDLE_VALUE;
+    HANDLE m_pipe      = INVALID_HANDLE_VALUE;
+    bool   m_color     = true;
+    bool   m_exit      = false;  // set by "exit" in any submenu
+    std::string m_ctx;           // submenu context for prompt, e.g. "quarantine"
 
-    bool   m_color  = true;   // ANSI color enabled
-    bool   m_pager  = false;  // output pager for long lists
-
-    // Command registry
     std::vector<CliCommand> m_commands;
 
-    void   RegisterCommands();
-    void   PrintBanner();
-    void   PrintHelp(std::string_view filter = {});
-    void   PrintPrompt();
+    void RegisterCommands();
+    void PrintBanner() const;
+    void PrintPrompt() const;
 
-    bool   ConnectToService();
-    void   DisconnectService();
-    bool   IsServiceConnected() const noexcept;
+    // Displays a numbered menu; if args non-empty, resolves directly.
+    // Returns -1 if the user requested exit, else 0 or command return code.
+    int RunMenu(std::string_view title,
+                const std::vector<MenuOption>& options,
+                const std::vector<std::string>& args);
 
-    // ---- Command handlers ---------------------------------------------------
-    int CmdStatus(const std::vector<std::string>& args);
-    int CmdDetections(const std::vector<std::string>& args);
-    int CmdScan(const std::vector<std::string>& args);
-    int CmdQuarantine(const std::vector<std::string>& args);
-    int CmdExclusions(const std::vector<std::string>& args);
-    int CmdAllowlist(const std::vector<std::string>& args);
-    int CmdRules(const std::vector<std::string>& args);
-    int CmdPolicy(const std::vector<std::string>& args);
-    int CmdTail(const std::vector<std::string>& args);
-    int CmdVersion(const std::vector<std::string>& args);
-    int CmdHelp(const std::vector<std::string>& args);
-    int CmdClear(const std::vector<std::string>& args);
+    // ── IPC ──────────────────────────────────────────────────────────────────
+    bool ConnectToService();
+    void DisconnectService();
+    bool IsServiceConnected() const noexcept;
+    bool SendV2(uint32_t cmdType, const std::string& json, std::string& resp);
+    bool Call(std::string_view key, const std::string& params, std::string& resp);
 
-    // ---- Formatting helpers -------------------------------------------------
-    std::string ColorSeverity(std::string_view sev) const;
-    std::string ColorStatus(std::string_view status) const;
-    void        PrintTable(const std::vector<std::string>& headers,
-                           const std::vector<std::vector<std::string>>& rows,
-                           size_t maxWidth = 120) const;
-    void        PrintSection(std::string_view title) const;
+    // ── Command handlers ─────────────────────────────────────────────────────
+    int CmdStatus    (const std::vector<std::string>&);
+    int CmdProtect   (const std::vector<std::string>&);
+    int CmdModules   (const std::vector<std::string>&);
+    int CmdDetections(const std::vector<std::string>&);
+    int CmdScan      (const std::vector<std::string>&);
+    int CmdTail      (const std::vector<std::string>&);
+    int CmdQuarantine(const std::vector<std::string>&);
+    int CmdExclusions(const std::vector<std::string>&);
+    int CmdAllowlist (const std::vector<std::string>&);
+    int CmdRules     (const std::vector<std::string>&);
+    int CmdPolicy    (const std::vector<std::string>&);
+    int CmdHunt      (const std::vector<std::string>&);
+    int CmdIncidents (const std::vector<std::string>&);
+    int CmdAlerts    (const std::vector<std::string>&);
+    int CmdContain   (const std::vector<std::string>&);
+    int CmdRemediate (const std::vector<std::string>&);
+    int CmdPlaybooks (const std::vector<std::string>&);
+    int CmdForensics (const std::vector<std::string>&);
+    int CmdLive      (const std::vector<std::string>&);
+    int CmdAssets    (const std::vector<std::string>&);
+    int CmdVulns     (const std::vector<std::string>&);
+    int CmdSandbox   (const std::vector<std::string>&);
+    int CmdCompliance(const std::vector<std::string>&);
+    int CmdDevices   (const std::vector<std::string>&);
+    int CmdTelemetry (const std::vector<std::string>&);
+    int CmdReports   (const std::vector<std::string>&);
+    int CmdXDR       (const std::vector<std::string>&);
+    int CmdNetwork   (const std::vector<std::string>&);
+    int CmdIdentity  (const std::vector<std::string>&);
+    int CmdEmail     (const std::vector<std::string>&);
+    int CmdSOAR      (const std::vector<std::string>&);
+    int CmdVersion   (const std::vector<std::string>&);
+    int CmdHelp      (const std::vector<std::string>&);
+    int CmdClear     (const std::vector<std::string>&);
+
+    // ── Formatting ───────────────────────────────────────────────────────────
+    std::string C(std::string_view seq, std::string_view text) const;
+    std::string ColorSeverity(std::string_view s) const;
+    std::string ColorStatus  (std::string_view s) const;
+    std::string ColorId      (std::string_view s) const;
+    std::string ColorPath    (std::string_view s) const;
+
+    void PrintSection (std::string_view title) const;
+    void PrintSuccess (std::string_view msg)   const;
+    void PrintError   (std::string_view msg)   const;
+    void PrintWarning (std::string_view msg)   const;
+    void PrintInfo    (std::string_view msg)   const;
+    void PrintOffline ()                        const;
+
+    void PrintTable(const std::vector<std::string>& headers,
+                    const std::vector<std::vector<std::string>>& rows,
+                    size_t maxWidth = 132) const;
+
     std::string FormatTimestamp(int64_t unixMs) const;
+    std::string FormatBytes    (int64_t bytes)  const;
 
-    // ---- IPC helpers --------------------------------------------------------
-    bool SendV2Request(uint32_t cmdType, const std::string& json, std::string& response);
-    bool SendRequest(std::string_view jsonRequest, std::string& jsonResponse);
-    bool CallService(std::string_view command,
-                     const std::string& params,
-                     std::string& response);
+    std::string PromptLine(std::string_view prompt) const;
 
     std::atomic<uint64_t> m_reqId{1};
 };

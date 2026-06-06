@@ -66,6 +66,11 @@ struct StaticFeatureBag {
     uint32_t uniqueApis   = 0;
     bool     signed_       = false;
     std::string signerName;
+
+    // Raw file buffer — used for Bytes / FieldBytes searches at eval time.
+    // Non-owning pointer into StaticEngine's buffer; valid only during analysis.
+    const uint8_t* rawData = nullptr;
+    size_t         rawSize = 0;
 };
 
 struct RuleEngineConfig {

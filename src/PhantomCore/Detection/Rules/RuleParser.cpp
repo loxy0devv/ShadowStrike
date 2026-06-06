@@ -1107,6 +1107,7 @@ static FeatureKind nativeKind(std::string_view k) noexcept {
     if (k == "descendant_of") return FeatureKind::DescendantOf;
     if (k == "has_mitigation") return FeatureKind::HasMitigation;
     if (k == "lacks_mitigation") return FeatureKind::LacksMitigation;
+    if (k == "field_bytes") return FeatureKind::FieldBytes;
     return FeatureKind::Custom;
 }
 
@@ -1244,6 +1245,9 @@ static FeatureNode parseNativeNode(const YamlNode& n) {
         // "pattern" is an accepted alias for "value" used in field_regex nodes
         if (out.leaf.value.empty())
             out.leaf.value = v.str("pattern");
+        // "hex" is used by field_bytes nodes (hex byte pattern)
+        if (out.leaf.value.empty())
+            out.leaf.value = v.str("hex");
         out.leaf.description = v.str("description");
         if (auto* cv = v.find("case_insensitive"); cv && cv->isScalar())
             out.leaf.caseInsensitive = (cv->scalar == "true" || cv->scalar == "1");

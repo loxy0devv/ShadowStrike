@@ -245,6 +245,8 @@ bool StaticEngine::AnalyzeBuffer(std::span<const uint8_t> bytes,
     };
 
     out.fileSize = bytes.size();
+    out.features.rawData = bytes.data();
+    out.features.rawSize = bytes.size();
 
     ExtractCommonFeatures(bytes, out);
 
@@ -496,6 +498,18 @@ void StaticEngine::ExtractPeFeatures(std::span<const uint8_t> bytes,
     if (parser.ParseTLS(tls) && !tls.callbacks.empty())
         out.features.characteristics.insert("has-tls");
 
+    // Export directory — detect no-exports (EXE or loader stub, typical of shellcode/injectors)
+    {
+        ExportDirectoryInfo expDir;
+        const bool hasExports = parser.ParseExports(expDir) && expDir.numberOfFunctions > 0;
+        if (!hasExports)
+            out.features.characteristics.insert("no-exports");
+        else {
+            for (const auto& exp : expDir.exports)
+                if (exp.isForwarder) { out.features.characteristics.insert("has-forwarded-export"); break; }
+        }
+    }
+
     constexpr uint16_t DLL_NX_COMPAT       = 0x0100;
     constexpr uint16_t DLL_DYNAMIC_BASE    = 0x0040;
     constexpr uint16_t DLL_GUARD_CF        = 0x4000;
@@ -511,6 +525,29 @@ void StaticEngine::ExtractPeFeatures(std::span<const uint8_t> bytes,
     std::vector<ResourceEntry> resources;
     if (parser.ParseResources(resources))
         out.resourceCount = static_cast<uint32_t>(resources.size());
+
+    // Golang binary detection — section names are definitive; fall back to string scan.
+    {
+        bool isGolang = out.features.sections.count(".gosymtab") ||
+                        out.features.sections.count(".gopclntab") ||
+                        out.features.sections.count(".go.buildinfo");
+        if (!isGolang) {
+            static constexpr std::string_view kGoMarkers[] = {
+                "runtime.goroutine", "runtime.main", "go.buildid",
+                "runtime.throw", "runtime.morestack"
+            };
+            for (const auto& s : out.features.strings) {
+                for (const auto& m : kGoMarkers) {
+                    if (s.find(m) != std::string::npos) { isGolang = true; break; }
+                }
+                if (isGolang) break;
+            }
+        }
+        if (isGolang) {
+            out.features.characteristics.insert("golang");
+            out.tags.emplace_back("lang:go");
+        }
+    }
 
     if (m_cfg.enableDisassembly) {
         for (const auto& s : info.sections) {

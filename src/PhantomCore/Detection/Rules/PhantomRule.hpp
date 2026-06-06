@@ -149,6 +149,7 @@ enum class FeatureKind : uint16_t {
     FieldLe,
     FieldExists,
     FieldMissing,
+    FieldBytes,         ///< Byte-sequence search against binary field (field: static.bytes)
 
     // -- Higher-order -------------------------------------------------------
     SignerEquals,      ///< Authenticode signer == value

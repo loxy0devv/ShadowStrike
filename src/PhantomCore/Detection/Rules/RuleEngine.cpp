@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <iostream>
 
 namespace ShadowStrike {
@@ -61,6 +62,39 @@ bool iendswith(std::string_view hay, std::string_view suffix) noexcept {
             return false;
     }
     return true;
+}
+
+// Parse a hex string (with or without spaces/separators) into raw bytes.
+// Handles both "FC4889D0" and "FC 48 89 D0" formats.
+static std::vector<uint8_t> parseHexBytes(std::string_view hex) noexcept {
+    std::vector<uint8_t> out;
+    out.reserve(hex.size() / 2 + 1);
+    auto fromHex = [](char c) noexcept -> uint8_t {
+        if (c >= '0' && c <= '9') return static_cast<uint8_t>(c - '0');
+        if (c >= 'a' && c <= 'f') return static_cast<uint8_t>(c - 'a' + 10);
+        if (c >= 'A' && c <= 'F') return static_cast<uint8_t>(c - 'A' + 10);
+        return 0xFF;
+    };
+    size_t i = 0;
+    while (i < hex.size()) {
+        if (!std::isxdigit(static_cast<unsigned char>(hex[i]))) { ++i; continue; }
+        if (i + 1 >= hex.size()) break;
+        if (!std::isxdigit(static_cast<unsigned char>(hex[i + 1]))) { ++i; continue; }
+        out.push_back(static_cast<uint8_t>((fromHex(hex[i]) << 4) | fromHex(hex[i + 1])));
+        i += 2;
+    }
+    return out;
+}
+
+// Boyer-Moore-Horspool-style memcmp search — O(n) typical, O(nm) worst.
+static bool findBytes(const uint8_t* hay, size_t hlen,
+                      const uint8_t* needle, size_t nlen) noexcept {
+    if (nlen == 0) return true;
+    if (hlen < nlen) return false;
+    for (size_t i = 0; i + nlen <= hlen; ++i) {
+        if (std::memcmp(hay + i, needle, nlen) == 0) return true;
+    }
+    return false;
 }
 
 } // anonymous namespace
@@ -198,7 +232,14 @@ bool RuleEngine::EvalLeafStatic(const FeatureLeaf& leaf,
         case FeatureKind::OperandNumber:
             return check(bag.numbers.contains(leaf.number), "operand-number");
         case FeatureKind::Bytes:
-            return check(bag.bytes.contains(leaf.value), "bytes");
+        case FeatureKind::FieldBytes: {
+            // Search for the byte sequence in the raw file buffer.
+            // leaf.value holds the hex pattern ("FC4889D0" or "FC 48 89 D0").
+            auto pat = parseHexBytes(leaf.value);
+            if (pat.empty()) return false;
+            if (!bag.rawData || bag.rawSize < pat.size()) return false;
+            return check(findBytes(bag.rawData, bag.rawSize, pat.data(), pat.size()), "bytes");
+        }
         case FeatureKind::Section:
             return check(bag.sections.contains(leaf.value), "section");
         case FeatureKind::Characteristic:
@@ -268,8 +309,57 @@ bool RuleEngine::EvalLeafStatic(const FeatureLeaf& leaf,
             return false;
         }
 
+        // ── Static-field predicates ─────────────────────────────────────────
+        // When a rule has field: static.strings or field: static.bytes and is
+        // evaluated in a static-only context (no runtime event), we route the
+        // field predicate against the StaticFeatureBag rather than an event.
+        case FeatureKind::FieldEquals: {
+            if (leaf.field == "static.strings") {
+                for (const auto& s : bag.strings)
+                    if (iequals(s, leaf.value)) return check(true, "feq:static.strings");
+            }
+            return false;
+        }
+        case FeatureKind::FieldContains: {
+            if (leaf.field == "static.strings") {
+                for (const auto& s : bag.strings)
+                    if (icontains(s, leaf.value)) return check(true, "fcontains:static.strings");
+            }
+            return false;
+        }
+        case FeatureKind::FieldStartsWith: {
+            if (leaf.field == "static.strings") {
+                for (const auto& s : bag.strings)
+                    if (istartswith(s, leaf.value)) return check(true, "fstarts:static.strings");
+            }
+            return false;
+        }
+        case FeatureKind::FieldEndsWith: {
+            if (leaf.field == "static.strings") {
+                for (const auto& s : bag.strings)
+                    if (iendswith(s, leaf.value)) return check(true, "fends:static.strings");
+            }
+            return false;
+        }
+        case FeatureKind::FieldRegex: {
+            if (leaf.field == "static.strings") {
+                const auto& re = GetRegex(leaf.value, true);
+                for (const auto& s : bag.strings)
+                    if (std::regex_search(s, re)) return check(true, "fregex:static.strings");
+            }
+            return false;
+        }
+        case FeatureKind::FieldIn: {
+            if (leaf.field == "static.strings") {
+                for (const auto& s : bag.strings)
+                    for (const auto& v : leaf.setValues)
+                        if (iequals(s, v)) return check(true, "fin:static.strings");
+            }
+            return false;
+        }
+
         default:
-            return false; // Field/runtime predicates are not evaluable here
+            return false;
     }
 }
 

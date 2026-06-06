@@ -229,9 +229,9 @@ bool RegKeyRange(const std::string& key, const std::string& category,
         siemSec.enforcement = EnforcementLevel::Mandatory;
         siemSec.description = "Mandatory TLS encryption for SIEM data transport";
 
-        siemSec.settings.push_back({std::string(Keys::SIEMTLSEnabled), "true", EnforcementLevel::Mandatory});
-        siemSec.settings.push_back({std::string(Keys::CloudEncryptionEnabled), "true", EnforcementLevel::Mandatory});
-        siemSec.settings.push_back({std::string(Keys::DataLakeEncryptionAtRest), "true", EnforcementLevel::Mandatory});
+        { auto _k_ = std::string(Keys::SIEMTLSEnabled); siemSec.settings[_k_] = PolicySetting{_k_, _k_, PolicyValue{std::string("true")}, EnforcementLevel::Mandatory}; };
+        { auto _k_ = std::string(Keys::CloudEncryptionEnabled); siemSec.settings[_k_] = PolicySetting{_k_, _k_, PolicyValue{std::string("true")}, EnforcementLevel::Mandatory}; };
+        { auto _k_ = std::string(Keys::DataLakeEncryptionAtRest); siemSec.settings[_k_] = PolicySetting{_k_, _k_, PolicyValue{std::string("true")}, EnforcementLevel::Mandatory}; };
 
         ok &= PM::Instance().ApplyPolicy(siemSec);
     }
@@ -245,9 +245,9 @@ bool RegKeyRange(const std::string& key, const std::string& category,
         soarSafe.enforcement = EnforcementLevel::Mandatory;
         soarSafe.description = "Mandatory sandboxing and auditing for SOAR playbook execution";
 
-        soarSafe.settings.push_back({std::string(Keys::SOARAuditAll), "true", EnforcementLevel::Mandatory});
-        soarSafe.settings.push_back({std::string(Keys::SOARSandboxExecution), "true", EnforcementLevel::Mandatory});
-        soarSafe.settings.push_back({std::string(Keys::ThreatHuntAuditQueries), "true", EnforcementLevel::Mandatory});
+        { auto _k_ = std::string(Keys::SOARAuditAll); soarSafe.settings[_k_] = PolicySetting{_k_, _k_, PolicyValue{std::string("true")}, EnforcementLevel::Mandatory}; };
+        { auto _k_ = std::string(Keys::SOARSandboxExecution); soarSafe.settings[_k_] = PolicySetting{_k_, _k_, PolicyValue{std::string("true")}, EnforcementLevel::Mandatory}; };
+        { auto _k_ = std::string(Keys::ThreatHuntAuditQueries); soarSafe.settings[_k_] = PolicySetting{_k_, _k_, PolicyValue{std::string("true")}, EnforcementLevel::Mandatory}; };
 
         ok &= PM::Instance().ApplyPolicy(soarSafe);
     }
@@ -275,22 +275,22 @@ bool RegKeyRange(const std::string& key, const std::string& category,
     // cross-endpoint event processing
     {
         ProfileDef corrProfile{};
-        corrProfile.type = SystemProfile::Custom;
-        corrProfile.name = "XDR Correlation Node";
+        corrProfile.profileType = SystemProfile::Custom;
+        corrProfile.customName = "XDR Correlation Node";
         corrProfile.description = "High-resource profile for endpoints running correlation engine";
 
         corrProfile.resources.maxCpuPercent = 40;
-        corrProfile.resources.maxMemoryMB = 2048;
+        corrProfile.resources.maxMemoryMb = 2048;
         corrProfile.resources.ioPriority = 2;
         corrProfile.resources.maxConcurrentScans = 8;
-        corrProfile.resources.threadPriority = 1;
+        corrProfile.resources.scanThreadPriority = 1;
 
-        corrProfile.scanSettings.realTimeProtection = true;
-        corrProfile.scanSettings.behaviorMonitoring = true;
-        corrProfile.scanSettings.archiveScanning = true;
-        corrProfile.scanSettings.scanNetworkFiles = true;
-        corrProfile.scanSettings.heuristicLevel = 3;
-        corrProfile.scanSettings.cloudLookup = false;
+        corrProfile.scan.realtimeProtection = true;
+        corrProfile.scan.behaviorMonitoring = true;
+        corrProfile.scan.scanArchives = true;
+        corrProfile.scan.scanNetworkFiles = true;
+        corrProfile.scan.heuristicLevel = 3;
+        corrProfile.scan.cloudLookupEnabled = false;
 
         ok &= ProfM::Instance().CreateCustomProfile(corrProfile);
     }

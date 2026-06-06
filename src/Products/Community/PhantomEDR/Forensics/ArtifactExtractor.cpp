@@ -1748,7 +1748,7 @@ std::string ExtractionStatistics::ToJson() const {
 // PIMPL IMPLEMENTATION CLASS
 // ============================================================================
 
-class ArtifactExtractor::ArtifactExtractorImpl {
+class ArtifactExtractorImpl {
 public:
     // ========================================================================
     // MEMBERS
@@ -1812,7 +1812,7 @@ public:
 // IMPL: INITIALIZATION
 // ============================================================================
 
-bool ArtifactExtractor::ArtifactExtractorImpl::Initialize(
+bool ArtifactExtractorImpl::Initialize(
     const ExtractionConfiguration& config)
 {
     try {
@@ -1862,7 +1862,7 @@ bool ArtifactExtractor::ArtifactExtractorImpl::Initialize(
     }
 }
 
-void ArtifactExtractor::ArtifactExtractorImpl::Shutdown() {
+void ArtifactExtractorImpl::Shutdown() {
     try {
         if (!m_initialized.exchange(false, std::memory_order_acq_rel)) {
             return;
@@ -1891,7 +1891,7 @@ void ArtifactExtractor::ArtifactExtractorImpl::Shutdown() {
 // IMPL: EXTRACTION
 // ============================================================================
 
-std::vector<std::shared_ptr<BaseArtifact>> ArtifactExtractor::ArtifactExtractorImpl::ExtractAllInternal(
+std::vector<std::shared_ptr<BaseArtifact>> ArtifactExtractorImpl::ExtractAllInternal(
     const ExtractionConfiguration& config)
 {
     const auto startTime = Clock::now();
@@ -2019,7 +2019,7 @@ std::vector<std::shared_ptr<BaseArtifact>> ArtifactExtractor::ArtifactExtractorI
 // IMPL: MFT PARSING
 // ============================================================================
 
-std::vector<MFTRecord> ArtifactExtractor::ArtifactExtractorImpl::ParseMFTInternal(wchar_t driveLetter) {
+std::vector<MFTRecord> ArtifactExtractorImpl::ParseMFTInternal(wchar_t driveLetter) {
     std::vector<MFTRecord> records;
 
     try {
@@ -2275,7 +2275,7 @@ std::vector<MFTRecord> ArtifactExtractor::ArtifactExtractorImpl::ParseMFTInterna
 // IMPL: PREFETCH PARSING
 // ============================================================================
 
-std::vector<PrefetchEntry> ArtifactExtractor::ArtifactExtractorImpl::ParsePrefetchInternal() {
+std::vector<PrefetchEntry> ArtifactExtractorImpl::ParsePrefetchInternal() {
     std::vector<PrefetchEntry> entries;
 
     try {
@@ -2348,7 +2348,7 @@ std::vector<PrefetchEntry> ArtifactExtractor::ArtifactExtractorImpl::ParsePrefet
 // IMPL: SHIMCACHE PARSING
 // ============================================================================
 
-std::vector<ShimcacheEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseShimcacheInternal() {
+std::vector<ShimcacheEntry> ArtifactExtractorImpl::ParseShimcacheInternal() {
     std::vector<ShimcacheEntry> entries;
 
     try {
@@ -2569,7 +2569,7 @@ std::vector<ShimcacheEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseShimc
 // IMPL: AMCACHE PARSING
 // ============================================================================
 
-std::vector<AmcacheEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseAmcacheInternal() {
+std::vector<AmcacheEntry> ArtifactExtractorImpl::ParseAmcacheInternal() {
     std::vector<AmcacheEntry> entries;
 
     try {
@@ -2737,7 +2737,7 @@ std::vector<AmcacheEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseAmcache
 // IMPL: BROWSER HISTORY PARSING
 // ============================================================================
 
-std::vector<BrowserHistoryEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseBrowserHistoryInternal(
+std::vector<BrowserHistoryEntry> ArtifactExtractorImpl::ParseBrowserHistoryInternal(
     BrowserType browser)
 {
     std::vector<BrowserHistoryEntry> entries;
@@ -2942,7 +2942,7 @@ std::vector<BrowserHistoryEntry> ArtifactExtractor::ArtifactExtractorImpl::Parse
 // IMPL: LNK FILE PARSING
 // ============================================================================
 
-std::vector<LNKFileEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseLNKFilesInternal(
+std::vector<LNKFileEntry> ArtifactExtractorImpl::ParseLNKFilesInternal(
     std::wstring_view directory)
 {
     std::vector<LNKFileEntry> entries;
@@ -3038,7 +3038,7 @@ std::vector<LNKFileEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseLNKFile
 // IMPL: JUMP LIST PARSING
 // ============================================================================
 
-std::vector<JumpListEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseJumpListsInternal(
+std::vector<JumpListEntry> ArtifactExtractorImpl::ParseJumpListsInternal(
     std::wstring_view userProfile)
 {
     std::vector<JumpListEntry> entries;
@@ -3112,7 +3112,7 @@ std::vector<JumpListEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseJumpLi
 // IMPL: USERASSIST PARSING
 // ============================================================================
 
-std::vector<UserAssistEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseUserAssistInternal(
+std::vector<UserAssistEntry> ArtifactExtractorImpl::ParseUserAssistInternal(
     std::wstring_view userSID)
 {
     std::vector<UserAssistEntry> entries;
@@ -3203,7 +3203,7 @@ std::vector<UserAssistEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseUser
 // IMPL: SHELLBAGS PARSING
 // ============================================================================
 
-std::vector<ShellbagEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseShellbagsInternal(
+std::vector<ShellbagEntry> ArtifactExtractorImpl::ParseShellbagsInternal(
     std::wstring_view userSID)
 {
     std::vector<ShellbagEntry> entries;
@@ -3365,7 +3365,7 @@ std::vector<ShellbagEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseShellb
 // IMPL: SCHEDULED TASKS PARSING
 // ============================================================================
 
-std::vector<ScheduledTaskEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseScheduledTasksInternal() {
+std::vector<ScheduledTaskEntry> ArtifactExtractorImpl::ParseScheduledTasksInternal() {
     std::vector<ScheduledTaskEntry> entries;
 
     try {
@@ -3506,7 +3506,7 @@ std::vector<ScheduledTaskEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseS
 // IMPL: FILE RECOVERY
 // ============================================================================
 
-bool ArtifactExtractor::ArtifactExtractorImpl::RecoverFileInternal(
+bool ArtifactExtractorImpl::RecoverFileInternal(
     const std::wstring& fileName,
     std::vector<uint8_t>& outData)
 {
@@ -3692,7 +3692,7 @@ bool ArtifactExtractor::ArtifactExtractorImpl::RecoverFileInternal(
 // IMPL: CALLBACKS
 // ============================================================================
 
-void ArtifactExtractor::ArtifactExtractorImpl::InvokeArtifactCallback(const BaseArtifact& artifact) {
+void ArtifactExtractorImpl::InvokeArtifactCallback(const BaseArtifact& artifact) {
     std::lock_guard lock(m_callbacksMutex);
     if (m_artifactCallback) {
         try {
@@ -3704,7 +3704,7 @@ void ArtifactExtractor::ArtifactExtractorImpl::InvokeArtifactCallback(const Base
     }
 }
 
-void ArtifactExtractor::ArtifactExtractorImpl::InvokeProgressCallback(
+void ArtifactExtractorImpl::InvokeProgressCallback(
     ArtifactType type,
     uint32_t percentage,
     const std::wstring& item)

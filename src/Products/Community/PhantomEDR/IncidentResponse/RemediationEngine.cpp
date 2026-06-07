@@ -11,6 +11,7 @@
 #include "PhantomCore/Utils/StringUtils.hpp"
 
 #include <ShlObj.h>
+#include <shellapi.h>
 #include <combaseapi.h>
 #include <comdef.h>
 #include <taskschd.h>

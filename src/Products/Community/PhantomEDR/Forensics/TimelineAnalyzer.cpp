@@ -566,7 +566,7 @@ bool TimelineAnalyzerImpl::Initialize(const TimelineAnalyzerConfiguration& confi
         m_initialized.store(true, std::memory_order_release);
         m_status.store(ModuleStatus::Running, std::memory_order_release);
 
-        Logger::Info("[TimelineAnalyzer] Initialized successfully (Version {})", GetVersionString());
+        Logger::Info("[TimelineAnalyzer] Initialized successfully (Version {})", TimelineAnalyzer::GetVersionString());
         Logger::Info("[TimelineAnalyzer] MITRE mapping: {}, Causal analysis: {}, Gap detection: {}",
             m_config.enableMitreMapping ? "ON" : "OFF",
             m_config.enableCausalAnalysis ? "ON" : "OFF",
@@ -809,9 +809,9 @@ TimelineAnalysisResult TimelineAnalyzerImpl::AnalyzeTimeline(
 
         // Calculate risk score
         uint32_t score = 0;
-        score += std::min(result.attackChains.size() * 20, 40u);
-        score += std::min((result.suspiciousEvents * 100) / std::max<uint64_t>(result.totalEvents, 1), 40u);
-        score += std::min(result.techniques.size() * 2, 20u);
+        score += std::min(static_cast<uint32_t>(result.attackChains.size()) * 20u, 40u);
+        score += static_cast<uint32_t>(std::min<uint64_t>((result.suspiciousEvents * 100) / std::max<uint64_t>(result.totalEvents, 1), 40));
+        score += std::min(static_cast<uint32_t>(result.techniques.size()) * 2u, 20u);
         result.riskScore = static_cast<uint8_t>(std::min(score, 100u));
 
         auto endTime = Clock::now();
@@ -1807,7 +1807,7 @@ std::vector<TimelineEvent> TimelineAnalyzerImpl::CollectProcessEvents(uint32_t p
         // Collect process creation event
         TimelineEvent createEvent;
         createEvent.eventId = m_nextEventId++;
-        createEvent.timestamp = SystemTimeToFileTime(std::chrono::system_clock::now());
+        createEvent.timestamp = TimelineAnalyzer::SystemTimeToFileTime(std::chrono::system_clock::now());
         createEvent.systemTime = std::chrono::system_clock::now();
         createEvent.eventType = TimelineEventType::ProcessCreate;
         createEvent.severity = EventSeverity::Info;
@@ -1918,8 +1918,8 @@ bool TimelineAnalyzerImpl::SelfTest() {
         // Test 3: Time conversion
         {
             auto now = std::chrono::system_clock::now();
-            FileTime ft = SystemTimeToFileTime(now);
-            auto converted = FileTimeToSystemTime(ft);
+            FileTime ft = TimelineAnalyzer::SystemTimeToFileTime(now);
+            auto converted = TimelineAnalyzer::FileTimeToSystemTime(ft);
 
             // Allow 1 second tolerance
             auto diff = std::chrono::duration_cast<std::chrono::seconds>(

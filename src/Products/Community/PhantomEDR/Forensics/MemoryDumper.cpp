@@ -500,8 +500,7 @@ bool MemoryDumper::Initialize(const MemoryDumperConfiguration& config) {
             config.maxConcurrentDumps);
 
         // Initialize statistics
-        m_impl->m_stats = MemoryDumperStatistics{};
-        m_impl->m_stats.startTime = Clock::now();
+        m_impl->m_stats.Reset();
 
         m_impl->m_status = ModuleStatus::Running;
 
@@ -812,8 +811,8 @@ std::string MemoryDumper::StartAsyncDump(uint32_t pid, std::wstring_view outputP
 
         // Submit to thread pool
         if (m_impl->m_threadPool) {
-            m_impl->m_threadPool->Enqueue([this, pid, path = std::wstring(outputPath),
-                                           options, dumpId]() {
+            (void)m_impl->m_threadPool->Submit([this, pid, path = std::wstring(outputPath),
+                                                options, dumpId](const Utils::TaskContext&) {
                 auto result = DumpProcess(pid, path, options);
 
                 {
@@ -1857,8 +1856,7 @@ void MemoryDumper::ResetStatistics() {
     try {
         std::unique_lock lock(m_impl->m_mutex);
 
-        m_impl->m_stats = MemoryDumperStatistics{};
-        m_impl->m_stats.startTime = Clock::now();
+        m_impl->m_stats.Reset();
 
         Utils::Logger::Info("MemoryDumper: Statistics reset");
 

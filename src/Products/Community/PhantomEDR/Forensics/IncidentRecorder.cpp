@@ -294,7 +294,7 @@ public:
             }
 
             // Open database
-            std::string dbPathUtf8 = Utils::StringUtils::WideToUtf8(m_config.databasePath);
+            std::string dbPathUtf8 = Utils::StringUtils::ToNarrow(m_config.databasePath);
 
             int flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX;
             int rc = sqlite3_open_v2(dbPathUtf8.c_str(), &m_db, flags, nullptr);
@@ -451,7 +451,11 @@ public:
             data.insert(data.end(), incident.details.begin(), incident.details.end());
 
             // Compute SHA-256
-            return Utils::HashUtils::ComputeSHA256(std::span<const uint8_t>(data));
+            std::vector<uint8_t> digest;
+            Hash256 result{};
+            if (Utils::HashUtils::Compute(Utils::HashUtils::Algorithm::SHA256, data.data(), data.size(), digest) && digest.size() == 32)
+                std::copy(digest.begin(), digest.end(), result.begin());
+            return result;
 
         } catch (...) {
             return Hash256{};
@@ -465,7 +469,7 @@ public:
         try {
             if (!m_db) return;
 
-            std::string dbPath = Utils::StringUtils::WideToUtf8(m_config.databasePath);
+            std::string dbPath = Utils::StringUtils::ToNarrow(m_config.databasePath);
             if (fs::exists(dbPath)) {
                 auto size = fs::file_size(dbPath);
                 m_stats.databaseSize.store(size, std::memory_order_relaxed);
@@ -660,20 +664,20 @@ void IncidentRecorder::RecordIncident(const Incident& incident) {
 
         sqlite3_bind_int(stmt, idx++, inc.processId);
         sqlite3_bind_text(stmt, idx++,
-            Utils::StringUtils::WideToUtf8(inc.processName).c_str(), -1, SQLITE_TRANSIENT);
+            Utils::StringUtils::ToNarrow(inc.processName).c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, idx++,
-            Utils::StringUtils::WideToUtf8(inc.processPath).c_str(), -1, SQLITE_TRANSIENT);
+            Utils::StringUtils::ToNarrow(inc.processPath).c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_int(stmt, idx++, inc.parentProcessId);
         sqlite3_bind_text(stmt, idx++,
-            Utils::StringUtils::WideToUtf8(inc.filePath).c_str(), -1, SQLITE_TRANSIENT);
+            Utils::StringUtils::ToNarrow(inc.filePath).c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_blob(stmt, idx++, inc.fileHash.data(),
                          static_cast<int>(inc.fileHash.size()), SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, idx++,
-            Utils::StringUtils::WideToUtf8(inc.userName).c_str(), -1, SQLITE_TRANSIENT);
+            Utils::StringUtils::ToNarrow(inc.userName).c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, idx++,
-            Utils::StringUtils::WideToUtf8(inc.userSID).c_str(), -1, SQLITE_TRANSIENT);
+            Utils::StringUtils::ToNarrow(inc.userSID).c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, idx++,
-            Utils::StringUtils::WideToUtf8(inc.hostname).c_str(), -1, SQLITE_TRANSIENT);
+            Utils::StringUtils::ToNarrow(inc.hostname).c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_int(stmt, idx++, static_cast<int>(inc.action));
         sqlite3_bind_text(stmt, idx++, inc.detectionName.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, idx++, inc.threatId.c_str(), -1, SQLITE_TRANSIENT);
@@ -959,7 +963,7 @@ void IncidentRecorder::RecordIncident(
         sqlite3_bind_int(stmt, 6, event.threadId);
         sqlite3_bind_int(stmt, 7, event.targetProcessId);
         sqlite3_bind_text(stmt, 8,
-            Utils::StringUtils::WideToUtf8(event.path).c_str(), -1, SQLITE_TRANSIENT);
+            Utils::StringUtils::ToNarrow(event.path).c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, 9, event.networkInfo.c_str(), -1, SQLITE_TRANSIENT);
 
         int rc = sqlite3_step(stmt);
@@ -1064,19 +1068,19 @@ void IncidentRecorder::RecordProcess(const ProcessRecord& process) {
         sqlite3_bind_int(stmt, idx++, process.processId);
         sqlite3_bind_int(stmt, idx++, process.parentProcessId);
         sqlite3_bind_text(stmt, idx++,
-            Utils::StringUtils::WideToUtf8(process.processName).c_str(), -1, SQLITE_TRANSIENT);
+            Utils::StringUtils::ToNarrow(process.processName).c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, idx++,
-            Utils::StringUtils::WideToUtf8(process.processPath).c_str(), -1, SQLITE_TRANSIENT);
+            Utils::StringUtils::ToNarrow(process.processPath).c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, idx++,
-            Utils::StringUtils::WideToUtf8(process.commandLine).c_str(), -1, SQLITE_TRANSIENT);
+            Utils::StringUtils::ToNarrow(process.commandLine).c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_blob(stmt, idx++, process.hash.data(),
                          static_cast<int>(process.hash.size()), SQLITE_TRANSIENT);
         sqlite3_bind_int64(stmt, idx++, process.startTime);
         sqlite3_bind_int64(stmt, idx++, process.endTime);
         sqlite3_bind_text(stmt, idx++,
-            Utils::StringUtils::WideToUtf8(process.userName).c_str(), -1, SQLITE_TRANSIENT);
+            Utils::StringUtils::ToNarrow(process.userName).c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, idx++,
-            Utils::StringUtils::WideToUtf8(process.userSID).c_str(), -1, SQLITE_TRANSIENT);
+            Utils::StringUtils::ToNarrow(process.userSID).c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_int(stmt, idx++, process.integrityLevel);
         sqlite3_bind_int(stmt, idx++, process.isElevated ? 1 : 0);
         sqlite3_bind_int(stmt, idx++, process.isSystem ? 1 : 0);
@@ -1592,7 +1596,7 @@ void IncidentRecorder::UpdateProcessEnd(uint32_t processId, uint64_t endTime) {
             << inc.GetStatusString() << ","
             << "\"" << inc.details << "\","
             << inc.processId << ","
-            << "\"" << Utils::StringUtils::WideToUtf8(inc.processName) << "\","
+            << "\"" << Utils::StringUtils::ToNarrow(inc.processName) << "\","
             << "\"" << inc.detectionName << "\","
             << static_cast<int>(inc.action) << "\n";
     }
@@ -1709,7 +1713,7 @@ void IncidentRecorder::UpdateProcessEnd(uint32_t processId, uint64_t endTime) {
 
         if (!m_impl->m_db) return false;
 
-        std::string backupPathUtf8 = Utils::StringUtils::WideToUtf8(std::wstring(backupPath));
+        std::string backupPathUtf8 = Utils::StringUtils::ToNarrow(std::wstring(backupPath));
 
         // Use SQLite backup API
         sqlite3* backupDb = nullptr;
@@ -1754,7 +1758,7 @@ void IncidentRecorder::UpdateProcessEnd(uint32_t processId, uint64_t endTime) {
 
         if (success) {
             Utils::Logger::Info("Restored from backup: {}",
-                               Utils::StringUtils::WideToUtf8(std::wstring(backupPath)));
+                               Utils::StringUtils::ToNarrow(std::wstring(backupPath)));
         }
 
         return success;
@@ -1812,7 +1816,7 @@ IncidentRecorder::GetDatabaseInfo() const {
         if (!m_impl->m_db) return info;
 
         // Get database size
-        info["path"] = Utils::StringUtils::WideToUtf8(m_impl->m_config.databasePath);
+        info["path"] = Utils::StringUtils::ToNarrow(m_impl->m_config.databasePath);
         info["size"] = std::to_string(m_impl->m_stats.databaseSize.load());
 
         // Get counts
@@ -1976,12 +1980,12 @@ void IncidentStatistics::Reset() noexcept {
     j["status"] = GetStatusString();
     j["details"] = details;
     j["processId"] = processId;
-    j["processName"] = Utils::StringUtils::WideToUtf8(processName);
-    j["processPath"] = Utils::StringUtils::WideToUtf8(processPath);
+    j["processName"] = Utils::StringUtils::ToNarrow(processName);
+    j["processPath"] = Utils::StringUtils::ToNarrow(processPath);
     j["parentProcessId"] = parentProcessId;
-    j["filePath"] = Utils::StringUtils::WideToUtf8(filePath);
+    j["filePath"] = Utils::StringUtils::ToNarrow(filePath);
     j["fileHash"] = Utils::HashUtils::ToHexString(fileHash);
-    j["userName"] = Utils::StringUtils::WideToUtf8(userName);
+    j["userName"] = Utils::StringUtils::ToNarrow(userName);
     j["action"] = static_cast<int>(action);
     j["detectionName"] = detectionName;
     j["threatId"] = threatId;
@@ -2004,7 +2008,11 @@ void IncidentStatistics::Reset() noexcept {
 
     data.insert(data.end(), details.begin(), details.end());
 
-    return Utils::HashUtils::ComputeSHA256(std::span<const uint8_t>(data));
+    std::vector<uint8_t> digest;
+    Hash256 result{};
+    if (Utils::HashUtils::Compute(Utils::HashUtils::Algorithm::SHA256, data.data(), data.size(), digest) && digest.size() == 32)
+        std::copy(digest.begin(), digest.end(), result.begin());
+    return result;
 }
 
 [[nodiscard]] std::string EventRecord::ToJson() const {
@@ -2020,7 +2028,7 @@ void IncidentStatistics::Reset() noexcept {
     j["processId"] = processId;
     j["threadId"] = threadId;
     j["targetProcessId"] = targetProcessId;
-    j["path"] = Utils::StringUtils::WideToUtf8(path);
+    j["path"] = Utils::StringUtils::ToNarrow(path);
     j["networkInfo"] = networkInfo;
 
     return j.dump(2);
@@ -2034,13 +2042,13 @@ void IncidentStatistics::Reset() noexcept {
     j["id"] = id;
     j["processId"] = processId;
     j["parentProcessId"] = parentProcessId;
-    j["processName"] = Utils::StringUtils::WideToUtf8(processName);
-    j["processPath"] = Utils::StringUtils::WideToUtf8(processPath);
-    j["commandLine"] = Utils::StringUtils::WideToUtf8(commandLine);
+    j["processName"] = Utils::StringUtils::ToNarrow(processName);
+    j["processPath"] = Utils::StringUtils::ToNarrow(processPath);
+    j["commandLine"] = Utils::StringUtils::ToNarrow(commandLine);
     j["hash"] = Utils::HashUtils::ToHexString(hash);
     j["startTime"] = startTime;
     j["endTime"] = endTime;
-    j["userName"] = Utils::StringUtils::WideToUtf8(userName);
+    j["userName"] = Utils::StringUtils::ToNarrow(userName);
     j["integrityLevel"] = integrityLevel;
     j["isElevated"] = isElevated;
     j["isSystem"] = isSystem;

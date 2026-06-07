@@ -496,8 +496,10 @@ bool MemoryDumper::Initialize(const MemoryDumperConfiguration& config) {
         }
 
         // Initialize thread pool
-        m_impl->m_threadPool = std::make_unique<Utils::ThreadPool>(
-            config.maxConcurrentDumps);
+        Utils::ThreadPoolConfig tpConfig;
+        tpConfig.maxThreads = static_cast<size_t>(config.maxConcurrentDumps);
+        tpConfig.minThreads = std::min(tpConfig.minThreads, tpConfig.maxThreads);
+        m_impl->m_threadPool = std::make_unique<Utils::ThreadPool>(std::move(tpConfig));
 
         // Initialize statistics
         m_impl->m_stats.Reset();

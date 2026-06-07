@@ -1775,7 +1775,7 @@ public:
     mutable std::mutex m_callbacksMutex;
 
     /// @brief Infrastructure integrations
-    std::shared_ptr<ThreatIntel::ThreatIntelManager> m_threatIntel;
+    ThreatIntel::ThreatIntelManager* m_threatIntel = nullptr;
     std::shared_ptr<SignatureStore::SignatureStore> m_signatureStore;
 
     // ========================================================================
@@ -1836,7 +1836,7 @@ bool ArtifactExtractorImpl::Initialize(
         m_config = config;
 
         // Initialize infrastructure integrations
-        m_threatIntel = std::make_shared<ThreatIntel::ThreatIntelManager>();
+        m_threatIntel = &ThreatIntel::ThreatIntelManager::Instance();
         m_signatureStore = std::make_shared<SignatureStore::SignatureStore>();
 
         // Create output directory if specified

@@ -1021,7 +1021,7 @@ void IncidentRecorder::RecordIncident(
             evt.targetProcessId = sqlite3_column_int(stmt, 7);
 
             if (auto text = sqlite3_column_text(stmt, 8)) {
-                evt.path = Utils::StringUtils::Utf8ToWide(
+                evt.path = Utils::StringUtils::ToWide(
                     reinterpret_cast<const char*>(text));
             }
 
@@ -1156,17 +1156,17 @@ void IncidentRecorder::UpdateProcessEnd(uint32_t processId, uint64_t endTime) {
                 proc.parentProcessId = sqlite3_column_int(stmt, idx++);
 
                 if (auto text = sqlite3_column_text(stmt, idx++)) {
-                    proc.processName = Utils::StringUtils::Utf8ToWide(
+                    proc.processName = Utils::StringUtils::ToWide(
                         reinterpret_cast<const char*>(text));
                 }
 
                 if (auto text = sqlite3_column_text(stmt, idx++)) {
-                    proc.processPath = Utils::StringUtils::Utf8ToWide(
+                    proc.processPath = Utils::StringUtils::ToWide(
                         reinterpret_cast<const char*>(text));
                 }
 
                 if (auto text = sqlite3_column_text(stmt, idx++)) {
-                    proc.commandLine = Utils::StringUtils::Utf8ToWide(
+                    proc.commandLine = Utils::StringUtils::ToWide(
                         reinterpret_cast<const char*>(text));
                 }
 
@@ -1182,12 +1182,12 @@ void IncidentRecorder::UpdateProcessEnd(uint32_t processId, uint64_t endTime) {
                 proc.endTime = sqlite3_column_int64(stmt, idx++);
 
                 if (auto text = sqlite3_column_text(stmt, idx++)) {
-                    proc.userName = Utils::StringUtils::Utf8ToWide(
+                    proc.userName = Utils::StringUtils::ToWide(
                         reinterpret_cast<const char*>(text));
                 }
 
                 if (auto text = sqlite3_column_text(stmt, idx++)) {
-                    proc.userSID = Utils::StringUtils::Utf8ToWide(
+                    proc.userSID = Utils::StringUtils::ToWide(
                         reinterpret_cast<const char*>(text));
                 }
 
@@ -1331,19 +1331,19 @@ void IncidentRecorder::UpdateProcessEnd(uint32_t processId, uint64_t endTime) {
             inc.processId = sqlite3_column_int(stmt, idx++);
 
             if (auto text = sqlite3_column_text(stmt, idx++)) {
-                inc.processName = Utils::StringUtils::Utf8ToWide(
+                inc.processName = Utils::StringUtils::ToWide(
                     reinterpret_cast<const char*>(text));
             }
 
             if (auto text = sqlite3_column_text(stmt, idx++)) {
-                inc.processPath = Utils::StringUtils::Utf8ToWide(
+                inc.processPath = Utils::StringUtils::ToWide(
                     reinterpret_cast<const char*>(text));
             }
 
             inc.parentProcessId = sqlite3_column_int(stmt, idx++);
 
             if (auto text = sqlite3_column_text(stmt, idx++)) {
-                inc.filePath = Utils::StringUtils::Utf8ToWide(
+                inc.filePath = Utils::StringUtils::ToWide(
                     reinterpret_cast<const char*>(text));
             }
 
@@ -1984,7 +1984,7 @@ void IncidentStatistics::Reset() noexcept {
     j["processPath"] = Utils::StringUtils::ToNarrow(processPath);
     j["parentProcessId"] = parentProcessId;
     j["filePath"] = Utils::StringUtils::ToNarrow(filePath);
-    j["fileHash"] = Utils::HashUtils::ToHexString(fileHash);
+    j["fileHash"] = Utils::HashUtils::ToHexLower(fileHash.data(), fileHash.size());
     j["userName"] = Utils::StringUtils::ToNarrow(userName);
     j["action"] = static_cast<int>(action);
     j["detectionName"] = detectionName;
@@ -2045,7 +2045,7 @@ void IncidentStatistics::Reset() noexcept {
     j["processName"] = Utils::StringUtils::ToNarrow(processName);
     j["processPath"] = Utils::StringUtils::ToNarrow(processPath);
     j["commandLine"] = Utils::StringUtils::ToNarrow(commandLine);
-    j["hash"] = Utils::HashUtils::ToHexString(hash);
+    j["hash"] = Utils::HashUtils::ToHexLower(hash.data(), hash.size());
     j["startTime"] = startTime;
     j["endTime"] = endTime;
     j["userName"] = Utils::StringUtils::ToNarrow(userName);

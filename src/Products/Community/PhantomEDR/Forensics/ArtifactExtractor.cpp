@@ -1817,17 +1817,17 @@ bool ArtifactExtractorImpl::Initialize(
 {
     try {
         if (m_initialized.exchange(true, std::memory_order_acq_rel)) {
-            Utils::Logger::Warn(L"ArtifactExtractor: Already initialized");
+            Utils::Logger::Warn("ArtifactExtractor: Already initialized");
             return true;
         }
 
-        Utils::Logger::Info(L"ArtifactExtractor: Initializing...");
+        Utils::Logger::Info("ArtifactExtractor: Initializing...");
 
         m_status.store(ModuleStatus::Initializing, std::memory_order_release);
 
         // Validate configuration
         if (!config.IsValid()) {
-            Utils::Logger::Error(L"ArtifactExtractor: Invalid configuration");
+            Utils::Logger::Error("ArtifactExtractor: Invalid configuration");
             m_initialized.store(false, std::memory_order_release);
             m_status.store(ModuleStatus::Error, std::memory_order_release);
             return false;
@@ -1844,18 +1844,18 @@ bool ArtifactExtractorImpl::Initialize(
             if (!std::filesystem::exists(m_config.outputDirectory)) {
                 std::filesystem::create_directories(m_config.outputDirectory);
             }
-            Utils::Logger::Info(L"ArtifactExtractor: Output directory: {}", m_config.outputDirectory);
+            Utils::Logger::Info("ArtifactExtractor: Output directory: {}", Utils::StringUtils::ToNarrow(m_config.outputDirectory));
         }
 
         m_status.store(ModuleStatus::Running, std::memory_order_release);
 
-        Utils::Logger::Info(L"ArtifactExtractor: Initialized successfully");
+        Utils::Logger::Info("ArtifactExtractor: Initialized successfully");
 
         return true;
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: Initialization failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: Initialization failed - {}",
+                           e.what());
         m_initialized.store(false, std::memory_order_release);
         m_status.store(ModuleStatus::Error, std::memory_order_release);
         return false;
@@ -1868,7 +1868,7 @@ void ArtifactExtractorImpl::Shutdown() {
             return;
         }
 
-        Utils::Logger::Info(L"ArtifactExtractor: Shutting down...");
+        Utils::Logger::Info("ArtifactExtractor: Shutting down...");
 
         m_status.store(ModuleStatus::Stopping, std::memory_order_release);
 
@@ -1880,10 +1880,10 @@ void ArtifactExtractorImpl::Shutdown() {
 
         m_status.store(ModuleStatus::Stopped, std::memory_order_release);
 
-        Utils::Logger::Info(L"ArtifactExtractor: Shutdown complete");
+        Utils::Logger::Info("ArtifactExtractor: Shutdown complete");
 
     } catch (...) {
-        Utils::Logger::Error(L"ArtifactExtractor: Exception during shutdown");
+        Utils::Logger::Error("ArtifactExtractor: Exception during shutdown");
     }
 }
 
@@ -1900,7 +1900,7 @@ std::vector<std::shared_ptr<BaseArtifact>> ArtifactExtractorImpl::ExtractAllInte
     try {
         m_statistics.totalExtractions.fetch_add(1, std::memory_order_relaxed);
 
-        Utils::Logger::Info(L"ArtifactExtractor: Starting comprehensive extraction...");
+        Utils::Logger::Info("ArtifactExtractor: Starting comprehensive extraction...");
 
         // 1. File System Artifacts
         if (static_cast<uint32_t>(config.artifactTypes & ArtifactType::MFTRecord) != 0) {
@@ -2004,12 +2004,12 @@ std::vector<std::shared_ptr<BaseArtifact>> ArtifactExtractorImpl::ExtractAllInte
         const auto endTime = Clock::now();
         const auto duration = std::chrono::duration_cast<std::chrono::seconds>(endTime - startTime);
 
-        Utils::Logger::Info(L"ArtifactExtractor: Extraction complete - {} artifacts in {} seconds",
+        Utils::Logger::Info("ArtifactExtractor: Extraction complete - {} artifacts in {} seconds",
                           allArtifacts.size(), duration.count());
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: Extraction failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: Extraction failed - {}",
+                           e.what());
     }
 
     return allArtifacts;
@@ -2264,8 +2264,8 @@ std::vector<MFTRecord> ArtifactExtractorImpl::ParseMFTInternal(wchar_t driveLett
                     volumePath.c_str());
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: MFT parsing failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: MFT parsing failed - {}",
+                           e.what());
     }
 
     return records;
@@ -2279,12 +2279,12 @@ std::vector<PrefetchEntry> ArtifactExtractorImpl::ParsePrefetchInternal() {
     std::vector<PrefetchEntry> entries;
 
     try {
-        Utils::Logger::Info(L"ArtifactExtractor: Parsing Prefetch files...");
+        Utils::Logger::Info("ArtifactExtractor: Parsing Prefetch files...");
 
         std::wstring prefetchDir = L"C:\\Windows\\Prefetch";
 
         if (!std::filesystem::exists(prefetchDir)) {
-            Utils::Logger::Warn(L"ArtifactExtractor: Prefetch directory not found");
+            Utils::Logger::Warn("ArtifactExtractor: Prefetch directory not found");
             return entries;
         }
 
@@ -2334,11 +2334,11 @@ std::vector<PrefetchEntry> ArtifactExtractorImpl::ParsePrefetchInternal() {
 
         m_statistics.prefetchFilesParsed.fetch_add(entries.size(), std::memory_order_relaxed);
 
-        Utils::Logger::Info(L"ArtifactExtractor: Parsed {} Prefetch files", entries.size());
+        Utils::Logger::Info("ArtifactExtractor: Parsed {} Prefetch files", entries.size());
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: Prefetch parsing failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: Prefetch parsing failed - {}",
+                           e.what());
     }
 
     return entries;
@@ -2558,8 +2558,8 @@ std::vector<ShimcacheEntry> ArtifactExtractorImpl::ParseShimcacheInternal() {
                     entries.size());
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: Shimcache parsing failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: Shimcache parsing failed - {}",
+                           e.what());
     }
 
     return entries;
@@ -2726,8 +2726,8 @@ std::vector<AmcacheEntry> ArtifactExtractorImpl::ParseAmcacheInternal() {
                     entries.size());
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: Amcache parsing failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: Amcache parsing failed - {}",
+                           e.what());
     }
 
     return entries;
@@ -2931,8 +2931,8 @@ std::vector<BrowserHistoryEntry> ArtifactExtractorImpl::ParseBrowserHistoryInter
                     browserName.c_str());
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: Browser history parsing failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: Browser history parsing failed - {}",
+                           e.what());
     }
 
     return entries;
@@ -2948,7 +2948,7 @@ std::vector<LNKFileEntry> ArtifactExtractorImpl::ParseLNKFilesInternal(
     std::vector<LNKFileEntry> entries;
 
     try {
-        Utils::Logger::Info(L"ArtifactExtractor: Parsing LNK files...");
+        Utils::Logger::Info("ArtifactExtractor: Parsing LNK files...");
 
         std::vector<std::wstring> searchDirs;
 
@@ -3024,11 +3024,11 @@ std::vector<LNKFileEntry> ArtifactExtractorImpl::ParseLNKFilesInternal(
             }
         }
 
-        Utils::Logger::Info(L"ArtifactExtractor: Parsed {} LNK files", entries.size());
+        Utils::Logger::Info("ArtifactExtractor: Parsed {} LNK files", entries.size());
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: LNK parsing failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: LNK parsing failed - {}",
+                           e.what());
     }
 
     return entries;
@@ -3044,7 +3044,7 @@ std::vector<JumpListEntry> ArtifactExtractorImpl::ParseJumpListsInternal(
     std::vector<JumpListEntry> entries;
 
     try {
-        Utils::Logger::Info(L"ArtifactExtractor: Parsing Jump Lists...");
+        Utils::Logger::Info("ArtifactExtractor: Parsing Jump Lists...");
 
         std::vector<std::wstring> profiles;
         if (userProfile.empty()) {
@@ -3098,11 +3098,11 @@ std::vector<JumpListEntry> ArtifactExtractorImpl::ParseJumpListsInternal(
             }
         }
 
-        Utils::Logger::Info(L"ArtifactExtractor: Parsed {} Jump List entries", entries.size());
+        Utils::Logger::Info("ArtifactExtractor: Parsed {} Jump List entries", entries.size());
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: Jump List parsing failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: Jump List parsing failed - {}",
+                           e.what());
     }
 
     return entries;
@@ -3118,7 +3118,7 @@ std::vector<UserAssistEntry> ArtifactExtractorImpl::ParseUserAssistInternal(
     std::vector<UserAssistEntry> entries;
 
     try {
-        Utils::Logger::Info(L"ArtifactExtractor: Parsing UserAssist...");
+        Utils::Logger::Info("ArtifactExtractor: Parsing UserAssist...");
 
         // UserAssist is in: HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist
         // Contains two GUIDs with ROT13-encoded program names and execution counts
@@ -3189,11 +3189,11 @@ std::vector<UserAssistEntry> ArtifactExtractorImpl::ParseUserAssistInternal(
             RegCloseKey(hKey);
         }
 
-        Utils::Logger::Info(L"ArtifactExtractor: Parsed {} UserAssist entries", entries.size());
+        Utils::Logger::Info("ArtifactExtractor: Parsed {} UserAssist entries", entries.size());
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: UserAssist parsing failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: UserAssist parsing failed - {}",
+                           e.what());
     }
 
     return entries;
@@ -3354,8 +3354,8 @@ std::vector<ShellbagEntry> ArtifactExtractorImpl::ParseShellbagsInternal(
                     entries.size());
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: Shellbags parsing failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: Shellbags parsing failed - {}",
+                           e.what());
     }
 
     return entries;
@@ -3369,7 +3369,7 @@ std::vector<ScheduledTaskEntry> ArtifactExtractorImpl::ParseScheduledTasksIntern
     std::vector<ScheduledTaskEntry> entries;
 
     try {
-        Utils::Logger::Info(L"ArtifactExtractor: Parsing Scheduled Tasks...");
+        Utils::Logger::Info("ArtifactExtractor: Parsing Scheduled Tasks...");
 
         // Use Task Scheduler COM API
         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -3491,11 +3491,11 @@ std::vector<ScheduledTaskEntry> ArtifactExtractorImpl::ParseScheduledTasksIntern
 
         CoUninitialize();
 
-        Utils::Logger::Info(L"ArtifactExtractor: Parsed {} scheduled tasks", entries.size());
+        Utils::Logger::Info("ArtifactExtractor: Parsed {} scheduled tasks", entries.size());
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: Scheduled tasks parsing failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: Scheduled tasks parsing failed - {}",
+                           e.what());
         CoUninitialize();
     }
 
@@ -3511,7 +3511,7 @@ bool ArtifactExtractorImpl::RecoverFileInternal(
     std::vector<uint8_t>& outData)
 {
     try {
-        Utils::Logger::Info(L"ArtifactExtractor: Attempting to recover file: {}", fileName);
+        Utils::Logger::Info("ArtifactExtractor: Attempting to recover file: {}", Utils::StringUtils::ToNarrow(fileName));
 
         // Derive volume letter from path (e.g. "C:\deleted.exe" → 'C')
         wchar_t driveLetter = L'C';
@@ -3523,8 +3523,8 @@ bool ArtifactExtractorImpl::RecoverFileInternal(
             GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             nullptr, OPEN_EXISTING, 0, nullptr);
         if (hVol == INVALID_HANDLE_VALUE) {
-            Utils::Logger::Warn(L"ArtifactExtractor: Cannot open volume {} for file recovery",
-                                volumePath);
+            Utils::Logger::Warn("ArtifactExtractor: Cannot open volume {} for file recovery",
+                                Utils::StringUtils::ToNarrow(volumePath));
             return false;
         }
         ScopedHandle volHandle(hVol);
@@ -3635,8 +3635,8 @@ bool ArtifactExtractorImpl::RecoverFileInternal(
 
             // Resident data already populated above
             if (!outData.empty()) {
-                Utils::Logger::Info(L"ArtifactExtractor: Recovered {} bytes (resident) for {}",
-                    outData.size(), baseName);
+                Utils::Logger::Info("ArtifactExtractor: Recovered {} bytes (resident) for {}",
+                    outData.size(), Utils::StringUtils::ToNarrow(baseName));
                 return true;
             }
 
@@ -3673,17 +3673,17 @@ bool ArtifactExtractorImpl::RecoverFileInternal(
             if (outData.size() < dataSize) { outData.clear(); return false; }
             outData.resize(static_cast<size_t>(dataSize));
 
-            Utils::Logger::Info(L"ArtifactExtractor: Recovered {} bytes for {}",
-                outData.size(), baseName);
+            Utils::Logger::Info("ArtifactExtractor: Recovered {} bytes for {}",
+                outData.size(), Utils::StringUtils::ToNarrow(baseName));
             return true;
         }
 
-        Utils::Logger::Warn(L"ArtifactExtractor: Deleted file not found in MFT: {}", fileName);
+        Utils::Logger::Warn("ArtifactExtractor: Deleted file not found in MFT: {}", Utils::StringUtils::ToNarrow(fileName));
         return false;
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: File recovery failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: File recovery failed - {}",
+                           e.what());
         return false;
     }
 }
@@ -3698,8 +3698,8 @@ void ArtifactExtractorImpl::InvokeArtifactCallback(const BaseArtifact& artifact)
         try {
             m_artifactCallback(artifact);
         } catch (const std::exception& e) {
-            Utils::Logger::Error(L"ArtifactExtractor: Artifact callback error - {}",
-                               Utils::StringUtils::Utf8ToWide(e.what()));
+            Utils::Logger::Error("ArtifactExtractor: Artifact callback error - {}",
+                               e.what());
         }
     }
 }
@@ -3714,8 +3714,8 @@ void ArtifactExtractorImpl::InvokeProgressCallback(
         try {
             m_progressCallback(type, percentage, item);
         } catch (const std::exception& e) {
-            Utils::Logger::Error(L"ArtifactExtractor: Progress callback error - {}",
-                               Utils::StringUtils::Utf8ToWide(e.what()));
+            Utils::Logger::Error("ArtifactExtractor: Progress callback error - {}",
+                               e.what());
         }
     }
 }
@@ -3743,14 +3743,14 @@ bool ArtifactExtractor::HasInstance() noexcept {
 ArtifactExtractor::ArtifactExtractor()
     : m_impl(std::make_unique<ArtifactExtractorImpl>())
 {
-    Utils::Logger::Info(L"ArtifactExtractor: Constructor called");
+    Utils::Logger::Info("ArtifactExtractor: Constructor called");
 }
 
 ArtifactExtractor::~ArtifactExtractor() {
     if (m_impl) {
         m_impl->Shutdown();
     }
-    Utils::Logger::Info(L"ArtifactExtractor: Destructor called");
+    Utils::Logger::Info("ArtifactExtractor: Destructor called");
 }
 
 bool ArtifactExtractor::Initialize(const ExtractionConfiguration& config) {
@@ -3990,7 +3990,7 @@ void ArtifactExtractor::ResetStatistics() {
 // ============================================================================
 
 bool ArtifactExtractor::SelfTest() {
-    Utils::Logger::Info(L"ArtifactExtractor: Running self-test...");
+    Utils::Logger::Info("ArtifactExtractor: Running self-test...");
 
     try {
         // Test 1: Initialization
@@ -4001,22 +4001,21 @@ bool ArtifactExtractor::SelfTest() {
         config.timeoutMs = 60000;
 
         if (!Initialize(config)) {
-            Utils::Logger::Error(L"ArtifactExtractor: Self-test failed - Initialization");
+            Utils::Logger::Error("ArtifactExtractor: Self-test failed - Initialization");
             return false;
         }
 
         // Test 2: Configuration validation
         if (!config.IsValid()) {
-            Utils::Logger::Error(L"ArtifactExtractor: Self-test failed - Configuration invalid");
+            Utils::Logger::Error("ArtifactExtractor: Self-test failed - Configuration invalid");
             return false;
         }
 
         // Test 3: Statistics
-        auto stats = GetStatistics();
         ResetStatistics();
-        stats = GetStatistics();
+        auto stats = GetStatistics();
         if (stats.totalExtractions.load() != 0) {
-            Utils::Logger::Error(L"ArtifactExtractor: Self-test failed - Statistics reset");
+            Utils::Logger::Error("ArtifactExtractor: Self-test failed - Statistics reset");
             return false;
         }
 
@@ -4024,7 +4023,7 @@ bool ArtifactExtractor::SelfTest() {
         std::string id1 = GenerateArtifactId();
         std::string id2 = GenerateArtifactId();
         if (id1 == id2) {
-            Utils::Logger::Error(L"ArtifactExtractor: Self-test failed - Duplicate artifact IDs");
+            Utils::Logger::Error("ArtifactExtractor: Self-test failed - Duplicate artifact IDs");
             return false;
         }
 
@@ -4032,16 +4031,16 @@ bool ArtifactExtractor::SelfTest() {
         std::wstring encoded = L"URYYBJBEYQ";  // "HELLOWORLD" in ROT13
         std::wstring decoded = DecodeROT13Internal(encoded);
         if (decoded != L"HELLOWORLD") {
-            Utils::Logger::Error(L"ArtifactExtractor: Self-test failed - ROT13 decode");
+            Utils::Logger::Error("ArtifactExtractor: Self-test failed - ROT13 decode");
             return false;
         }
 
-        Utils::Logger::Info(L"ArtifactExtractor: Self-test PASSED");
+        Utils::Logger::Info("ArtifactExtractor: Self-test PASSED");
         return true;
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: Self-test exception - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: Self-test exception - {}",
+                           e.what());
         return false;
     }
 }

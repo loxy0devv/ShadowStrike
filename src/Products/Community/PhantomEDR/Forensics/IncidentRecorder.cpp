@@ -63,7 +63,7 @@
 #include "../Utils/SystemUtils.hpp"
 #include "../Utils/JSONUtils.hpp"
 #include "../Utils/Timer.hpp"
-#include <sqlite3.h>
+#include <SQLiteCpp/sqlite3.h>
 #include <sstream>
 #include <iomanip>
 #include <algorithm>

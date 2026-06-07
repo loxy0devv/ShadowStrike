@@ -766,11 +766,23 @@ struct CaptureStatistics {
     /// @brief Start time
     TimePoint startTime = Clock::now();
     
+    CaptureStatistics() = default;
+    CaptureStatistics(const CaptureStatistics& o) noexcept
+        : totalPackets   (o.totalPackets   .load(std::memory_order_relaxed))
+        , totalBytes     (o.totalBytes     .load(std::memory_order_relaxed))
+        , droppedPackets (o.droppedPackets .load(std::memory_order_relaxed))
+        , tcpStreams      (o.tcpStreams      .load(std::memory_order_relaxed))
+        , dnsTransactions(o.dnsTransactions.load(std::memory_order_relaxed))
+        , sslSessions    (o.sslSessions    .load(std::memory_order_relaxed))
+        , activeCaptures (o.activeCaptures .load(std::memory_order_relaxed))
+        , startTime(o.startTime)
+    {}
+
     /**
      * @brief Reset statistics
      */
     void Reset() noexcept;
-    
+
     /**
      * @brief Serialize to JSON
      */

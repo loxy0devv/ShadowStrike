@@ -241,7 +241,7 @@ constexpr size_t DNS_TUNNELING_TXT_NULL_THRESHOLD = 10;
     }
 
     return std::any_of(session.filters.begin(), session.filters.end(), [&stream](const CaptureFilter& filter) {
-        return filter.action != FilterAction::Drop && StreamMatchesFilter(stream, filter);
+        return filter.action != FilterAction::Ignore && StreamMatchesFilter(stream, filter);
     });
 }
 
@@ -1600,7 +1600,8 @@ bool NetworkCaptureImpl::ExportSSLKeyLog(const std::string& sessionId,
 
         lock.unlock();
 
-        std::ofstream file(std::wstring(outputPath));
+        std::wstring outputPathStr(outputPath);
+        std::ofstream file(outputPathStr.c_str());
         if (!file) {
             Utils::Logger::Error("Failed to create SSL key log file");
             return false;
@@ -1920,7 +1921,7 @@ std::vector<std::pair<std::string, std::wstring>> NetworkCaptureImpl::GetInterfa
 
         while (pAdapter) {
             std::string name = pAdapter->AdapterName;
-            std::wstring desc = Utils::StringUtils::StringToWString(pAdapter->Description);
+            std::wstring desc = Utils::StringUtils::ToWide(pAdapter->Description);
 
             interfaces.push_back({name, desc});
 

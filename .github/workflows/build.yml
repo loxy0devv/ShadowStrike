@@ -175,15 +175,6 @@ jobs:
             $env:WPO_OVERRIDE $env:MP_OVERRIDE `
             /m:1 /nologo /flp:"LogFile=build_tray.log;Verbosity=minimal"
 
-      - name: Build ShadowStrikePhantomUI
-        shell: pwsh
-        run: |
-          msbuild ShadowStrikePhantomUI.vcxproj `
-            /t:Rebuild /p:Configuration=Release /p:Platform=$env:PLATFORM `
-            /p:PlatformToolset=$env:PLATFORM_TOOLSET /p:PreferredToolArchitecture=$env:PREFER_TOOL_ARCH `
-            $env:WPO_OVERRIDE $env:MP_OVERRIDE `
-            /m:1 /nologo /flp:"LogFile=build_ui.log;Verbosity=minimal"
-
       - name: Upload build logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -194,7 +185,6 @@ jobs:
             build_corelib.log
             build_service.log
             build_tray.log
-            build_ui.log
           retention-days: 7
 
       # Stage all user-mode binaries into one flat directory for the

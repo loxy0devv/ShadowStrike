@@ -9,7 +9,7 @@
 #include "PhantomCore/Config/ProfileManager.hpp"
 
 // XDR inherits EDR defaults — register EDR keys first
-#include "../PhantomEDR/Config/EDRConfigRegistration.hpp"
+#include "../../PhantomEDR/Config/EDRConfigRegistration.hpp"
 
 namespace ShadowStrike::Products::PhantomXDR::Config {
 

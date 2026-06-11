@@ -686,6 +686,17 @@ struct MemoryDumperStatistics {
     /// @brief Start time
     TimePoint startTime = Clock::now();
     
+    MemoryDumperStatistics() = default;
+    MemoryDumperStatistics(const MemoryDumperStatistics& o) noexcept
+        : totalDumps      (o.totalDumps      .load(std::memory_order_relaxed))
+        , successfulDumps (o.successfulDumps .load(std::memory_order_relaxed))
+        , failedDumps     (o.failedDumps     .load(std::memory_order_relaxed))
+        , totalBytesDumped(o.totalBytesDumped.load(std::memory_order_relaxed))
+        , stringsExtracted(o.stringsExtracted.load(std::memory_order_relaxed))
+        , activeDumps     (o.activeDumps     .load(std::memory_order_relaxed))
+        , startTime(o.startTime)
+    {}
+
     /**
      * @brief Reset statistics
      */

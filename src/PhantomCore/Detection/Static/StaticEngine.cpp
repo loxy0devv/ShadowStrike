@@ -245,6 +245,8 @@ bool StaticEngine::AnalyzeBuffer(std::span<const uint8_t> bytes,
     };
 
     out.fileSize = bytes.size();
+    out.features.rawData = bytes.data();
+    out.features.rawSize = bytes.size();
 
     ExtractCommonFeatures(bytes, out);
 
@@ -291,6 +293,8 @@ bool StaticEngine::AnalyzeBuffer(std::span<const uint8_t> bytes,
     }
 
     DetectPackers(out);
+    DetectEmbeddedPE(out);
+    DetectDriverCharacteristics(out);
 
     if (m_engine) {
         out.matches = m_engine->EvaluateStatic(out.features);
@@ -496,6 +500,23 @@ void StaticEngine::ExtractPeFeatures(std::span<const uint8_t> bytes,
     if (parser.ParseTLS(tls) && !tls.callbacks.empty())
         out.features.characteristics.insert("has-tls");
 
+    // Export directory — detect no-exports (EXE or loader stub, typical of shellcode/injectors)
+    {
+        ExportDirectoryInfo expDir;
+        const bool hasExports = parser.ParseExports(expDir) && expDir.numberOfFunctions > 0;
+        if (!hasExports)
+            out.features.characteristics.insert("no-exports");
+        else {
+            for (const auto& exp : expDir.exports) {
+                if (exp.isForwarder) {
+                    out.features.characteristics.insert("has-forwarded-export");
+                    out.features.characteristics.insert("forwarded export"); // capa compat
+                    break;
+                }
+            }
+        }
+    }
+
     constexpr uint16_t DLL_NX_COMPAT       = 0x0100;
     constexpr uint16_t DLL_DYNAMIC_BASE    = 0x0040;
     constexpr uint16_t DLL_GUARD_CF        = 0x4000;
@@ -511,6 +532,29 @@ void StaticEngine::ExtractPeFeatures(std::span<const uint8_t> bytes,
     std::vector<ResourceEntry> resources;
     if (parser.ParseResources(resources))
         out.resourceCount = static_cast<uint32_t>(resources.size());
+
+    // Golang binary detection — section names are definitive; fall back to string scan.
+    {
+        bool isGolang = out.features.sections.count(".gosymtab") ||
+                        out.features.sections.count(".gopclntab") ||
+                        out.features.sections.count(".go.buildinfo");
+        if (!isGolang) {
+            static constexpr std::string_view kGoMarkers[] = {
+                "runtime.goroutine", "runtime.main", "go.buildid",
+                "runtime.throw", "runtime.morestack"
+            };
+            for (const auto& s : out.features.strings) {
+                for (const auto& m : kGoMarkers) {
+                    if (s.find(m) != std::string::npos) { isGolang = true; break; }
+                }
+                if (isGolang) break;
+            }
+        }
+        if (isGolang) {
+            out.features.characteristics.insert("golang");
+            out.tags.emplace_back("lang:go");
+        }
+    }
 
     if (m_cfg.enableDisassembly) {
         for (const auto& s : info.sections) {
@@ -540,10 +584,35 @@ void StaticEngine::ExtractDotNetFeatures(std::span<const uint8_t> /*bytes*/,
     out.features.format.insert("dotnet");
     out.features.characteristics.insert("dotnet");
     out.tags.emplace_back("lang:dotnet");
+
+    // mixed mode: .NET assembly that also imports native (non-mscoree) DLLs.
+    // This indicates C++/CLI or IJW (It Just Works) mixed-mode assemblies.
+    if (out.importCount > 0) {
+        bool hasNativeImports = false;
+        for (const auto& api : out.features.apis) {
+            // mscoree.dll is the CLR host — any other DLL is native
+            if (api.rfind("mscoree", 0) != 0)
+                { hasNativeImports = true; break; }
+        }
+        if (hasNativeImports) {
+            out.features.characteristics.insert("mixed mode");
+            // unmanaged call: managed code invoking P/Invoke or unmanaged exports
+            out.features.characteristics.insert("unmanaged call");
+        }
+    }
+
+    // Also detect P/Invoke patterns from string table (DllImport attribute presence)
+    for (const auto& s : out.features.strings) {
+        if (s.find("dllimport") != std::string::npos ||
+            s.find("dllimportattribute") != std::string::npos) {
+            out.features.characteristics.insert("unmanaged call");
+            break;
+        }
+    }
 }
 
 void StaticEngine::ExtractDisasmFeatures(std::span<const uint8_t> text,
-                                         uint64_t /*imageBase*/,
+                                         uint64_t textSectionVA,
                                          StaticReport& out) {
     // We don't ship the full PhantomDisassembler here as a hard dependency,
     // but we can provide a fast opcode-frequency-style pass that recognizes
@@ -741,6 +810,125 @@ void StaticEngine::ExtractDisasmFeatures(std::span<const uint8_t> text,
         }
         if (stack_mov_count >= 5) out.features.characteristics.insert("stack string");
     }
+
+    // fs access: segment override prefix 0x64 (FS:) — common in x86 shellcode/PEB access
+    {
+        bool found_fs = false;
+        for (size_t i = 0; i + 1 < text.size() && !found_fs; ++i) {
+            if (text[i] == 0x64) found_fs = true; // FS: prefix before memory operand
+        }
+        if (found_fs) out.features.characteristics.insert("fs access");
+    }
+
+    // gs access: segment override prefix 0x65 (GS:) — common in x64 PEB/TEB access
+    {
+        bool found_gs = false;
+        for (size_t i = 0; i + 1 < text.size() && !found_gs; ++i) {
+            if (text[i] == 0x65) found_gs = true; // GS: prefix before memory operand
+        }
+        if (found_gs) out.features.characteristics.insert("gs access");
+    }
+
+    // call $+5: CALL instruction immediately followed by POP (E8 00 00 00 00 + 5B/58/59/5A/5D/5E/5F)
+    // Used by shellcode to locate its own VA at runtime.
+    {
+        bool found_call_plus5 = false;
+        for (size_t i = 0; i + 5 < text.size() && !found_call_plus5; ++i) {
+            if (text[i] == 0xE8 &&
+                text[i+1] == 0x00 && text[i+2] == 0x00 &&
+                text[i+3] == 0x00 && text[i+4] == 0x00) {
+                const uint8_t next = text[i + 5];
+                if ((next >= 0x58 && next <= 0x5F)) found_call_plus5 = true; // POP reg
+            }
+        }
+        if (found_call_plus5) out.features.characteristics.insert("call $+5");
+    }
+
+    // recursive call: CALL rel32 (E8) whose resolved target is before the current
+    // instruction within the same section — heuristic for backward self-calls.
+    // False positives are possible (calls to earlier helper functions), but combined
+    // with other characteristics it provides useful signal.
+    {
+        bool found_recursive = false;
+        for (size_t i = 0; i + 4 < text.size() && !found_recursive; ++i) {
+            if (text[i] != 0xE8) continue;
+            int32_t rel = 0;
+            std::memcpy(&rel, text.data() + i + 1, 4);
+            // instrEnd = i + 5; target = instrEnd + rel
+            const int64_t target = static_cast<int64_t>(i + 5) + rel;
+            // Backward call into the section: target >= 0 and target < i
+            if (target >= 0 && target < static_cast<int64_t>(i))
+                found_recursive = true;
+        }
+        if (found_recursive) out.features.characteristics.insert("recursive call");
+    }
+
+    // cross section flow: CALL or JMP target lands outside the current (.text) section.
+    // Detects code that jumps to other sections (common in unpacking stubs).
+    {
+        bool found_cross = false;
+        // We need at least one non-text, executable section to compare against.
+        // Simple heuristic: look for a CALL/JMP rel32 whose absolute target is
+        // outside the range [textVA, textVA + text.size()].
+        if (textSectionVA != 0) {
+            const uint64_t textStart = textSectionVA;
+            const uint64_t textEnd   = textStart + text.size();
+            for (size_t i = 0; i + 4 < text.size() && !found_cross; ++i) {
+                const uint8_t b = text[i];
+                bool isCallJmp = (b == 0xE8 || b == 0xE9); // CALL rel32 / JMP rel32
+                if (!isCallJmp && b == 0x0F && i + 5 < text.size())
+                    isCallJmp = (text[i+1] >= 0x80 && text[i+1] <= 0x8F); // Jcc rel32
+                if (!isCallJmp) continue;
+                int32_t rel = 0;
+                const size_t relOff = (b == 0x0F) ? i + 2 : i + 1;
+                if (relOff + 4 > text.size()) continue;
+                std::memcpy(&rel, text.data() + relOff, 4);
+                const size_t instrEnd = relOff + 4;
+                const uint64_t target = static_cast<uint64_t>(
+                    static_cast<int64_t>(textStart + instrEnd) + rel);
+                if (target < textStart || target >= textEnd) found_cross = true;
+            }
+        }
+        if (found_cross) out.features.characteristics.insert("cross section flow");
+    }
+}
+
+void StaticEngine::DetectEmbeddedPE(StaticReport& out) {
+    // embedded pe: scan for MZ header inside the file body (after the first 64 bytes).
+    // XOR-obfuscated payloads are not caught here; only plaintext embedded PEs.
+    const uint8_t* rawData = out.features.rawData;
+    const size_t   rawSize = out.features.rawSize;
+    if (!rawData || rawSize < 128) return;
+
+    for (size_t i = 64; i + 2 < rawSize; ++i) {
+        if (rawData[i] == 'M' && rawData[i+1] == 'Z') {
+            out.features.characteristics.insert("embedded pe");
+            return;
+        }
+    }
+}
+
+void StaticEngine::DetectDriverCharacteristics(StaticReport& out) {
+    // driver: PE imports ntoskrnl.exe, hal.dll, or ntosKrnl.exe → kernel-mode driver.
+    static constexpr std::string_view kKernelImports[] = {
+        "ntoskrnl.exe", "ntoskrnl", "hal.dll", "hal",
+        "ksecdd.sys", "ndis.sys", "fltmgr.sys"
+    };
+    for (const auto& api : out.features.apis) {
+        for (const auto& ki : kKernelImports) {
+            if (api.size() > ki.size() + 1 &&
+                api.substr(0, ki.size()) == ki &&
+                api[ki.size()] == '!')
+            {
+                out.features.characteristics.insert("driver");
+                return;
+            }
+        }
+    }
+    // Also check section names common in drivers
+    if (out.features.sections.contains("INIT") ||
+        out.features.sections.contains("PAGE"))
+        out.features.characteristics.insert("driver");
 }
 
 void StaticEngine::DetectPackers(StaticReport& out) {

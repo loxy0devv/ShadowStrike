@@ -25,6 +25,14 @@ bool RuleStore::AddOrReplace(PhantomRule rule) {
     auto& slot = m_rules[rule.id];
     int oldScope = static_cast<int>(slot.scope);
 
+    // Trace cross-corpus duplicate IDs so analysts can review collisions.
+    if (!inserted && slot.source != rule.source) {
+        std::string msg = "[RuleStore] Duplicate ID '" + rule.id +
+            "' from source " + std::to_string(static_cast<int>(rule.source)) +
+            " replaces source " + std::to_string(static_cast<int>(slot.source)) + "\n";
+        OutputDebugStringA(msg.c_str());
+    }
+
     if (!inserted) {
         auto& vec = m_byScope[oldScope];
         vec.erase(std::remove(vec.begin(), vec.end(), rule.id), vec.end());

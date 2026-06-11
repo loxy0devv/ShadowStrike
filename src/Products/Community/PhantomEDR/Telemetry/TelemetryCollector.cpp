@@ -161,7 +161,7 @@ bool TelemetryCollectorImpl::Initialize(const CollectorConfig& config)
 
     // Resolve DB path: use explicit telemetryDbPath, fall back to storeConfig
     if (!m_config.telemetryDbPath.empty()) {
-        m_config.storeConfig.databasePath = m_config.telemetryDbPath;
+        m_config.storeConfig.dbPath = m_config.telemetryDbPath;
     }
 
     // Initialize the storage backend (singleton)
@@ -370,7 +370,7 @@ QueryResult TelemetryCollectorImpl::Query(const QueryParams& params)
 
 std::optional<TelemetryEvent> TelemetryCollectorImpl::GetEventById(uint64_t eventId)
 {
-    return LocalTelemetryStore::Instance().GetEventById(eventId);
+    return LocalTelemetryStore::Instance().GetById(eventId);
 }
 
 // ============================================================================
@@ -459,7 +459,8 @@ void TelemetryCollectorImpl::MaintenanceLoop(std::stop_token token)
             std::chrono::hours(
                 static_cast<int64_t>(m_config.storeConfig.retentionDays) * 24);
 
-        if (!LocalTelemetryStore::Instance().PurgeOldEvents(maxAge)) {
+        if (!LocalTelemetryStore::Instance().PurgeOlderThan(
+                std::chrono::system_clock::now() - maxAge)) {
             ShadowStrike::Utils::Logger::Warn(
                 "[TelemetryCollector] Retention purge failed");
         }
@@ -491,7 +492,7 @@ void TelemetryCollectorImpl::ProcessBatch(std::vector<TelemetryEvent>&& batch)
 
     auto& store = LocalTelemetryStore::Instance();
 
-    if (!store.StoreBatch(std::span<const TelemetryEvent>(accepted))) {
+    if (!store.StoreBatch(std::move(accepted))) {
         ShadowStrike::Utils::Logger::Error(
             "[TelemetryCollector] StoreBatch failed for {} events — events dropped",
             accepted.size());

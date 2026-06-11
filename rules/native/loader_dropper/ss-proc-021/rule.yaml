@@ -1,0 +1,36 @@
+id: ss-proc-021
+detection_name: "Win32/Dropper.WScript"
+description: "WScript or CScript executed a suspicious script from a user-writable directory."
+scope: process
+severity: high
+status: stable
+source: native
+confidence: 0.78
+weight: 2.0
+version: 1
+attack:
+  - tactic: TA0002
+    technique: T1059
+    sub_technique: T1059.005
+logic:
+  and:
+    - field_in:
+        field: process.name
+        values: [wscript.exe, cscript.exe]
+        case_insensitive: true
+    - or:
+        - field_contains:
+            field: process.command_line
+            value: '\AppData\'
+        - field_contains:
+            field: process.command_line
+            value: '\Temp\'
+        - field_contains:
+            field: process.command_line
+            value: '\Users\Public\'
+        - field_contains:
+            field: process.command_line
+            value: '\Downloads\'
+fp_guard:
+  notes:
+    - "Some enterprise software uses WScript from user directories during install."

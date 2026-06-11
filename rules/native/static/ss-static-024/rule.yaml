@@ -1,0 +1,58 @@
+id: ss-static-024
+detection_name: "Win32/EmpireC2.StagerStrings"
+description: "PowerShell Empire / BC-Security Empire stager indicators: base64-encoded downloader with Empire-specific staging URIs, module load strings, and agent configuration markers."
+scope: static
+severity: high
+status: stable
+source: native
+confidence: 0.85
+weight: 3.0
+version: 1
+
+attack:
+  - tactic: TA0002
+    technique: T1059
+    sub_technique: T1059.001
+    name: "Command and Scripting Interpreter: PowerShell"
+  - tactic: TA0011
+    technique: T1071
+    sub_technique: T1071.001
+    name: "Application Layer Protocol: Web Protocols"
+
+references:
+  - url: "https://attack.mitre.org/software/S0363/"
+    title: "ATT&CK Empire"
+
+logic:
+  or:
+    - and:
+        - field_regex:
+            field: static.strings
+            pattern: "(?i)WHLX[A-Za-z0-9+/]{20,}"
+        - field_regex:
+            field: static.strings
+            pattern: '(?i)\$wc\.Headers\.Add|\$wc\.downloadstring'
+    - and:
+        - field_regex:
+            field: static.strings
+            pattern: "(?i)(empire|powershell-empire)"
+        - or:
+            - field_contains:
+                field: static.strings
+                value: "Get-Keystrokes"
+            - field_contains:
+                field: static.strings
+                value: "Invoke-Mimikatz"
+            - field_contains:
+                field: static.strings
+                value: "Invoke-Empire"
+    - field_regex:
+        field: static.strings
+        pattern: '(?i)\[System\.Runtime\.InteropServices\.Marshal\]::GetDelegateForFunctionPointer'
+
+fp_guard:
+  notes:
+    - "PowerShell penetration testing modules and legitimate security tools may contain Marshal::GetDelegateForFunctionPointer. Require secondary indicators."
+  suppress:
+    - field: file.signer_subject
+      regex: "(?i)microsoft corporation|bc security"

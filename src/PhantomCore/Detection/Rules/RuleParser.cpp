@@ -1084,13 +1084,13 @@ static FeatureKind nativeKind(std::string_view k) noexcept {
     if (k == "os") return FeatureKind::Os;
     if (k == "arch") return FeatureKind::Arch;
     if (k == "format") return FeatureKind::Format;
-    if (k == "field_equals") return FeatureKind::FieldEquals;
+    if (k == "field_equals" || k == "field_eq") return FeatureKind::FieldEquals;
     if (k == "field_contains") return FeatureKind::FieldContains;
     if (k == "field_regex") return FeatureKind::FieldRegex;
     if (k == "field_starts_with" || k == "field_startswith") return FeatureKind::FieldStartsWith;
     if (k == "field_ends_with" || k == "field_endswith") return FeatureKind::FieldEndsWith;
     if (k == "field_in") return FeatureKind::FieldIn;
-    if (k == "field_not_in") return FeatureKind::FieldNotIn;
+    if (k == "field_not_in" || k == "field_ne") return FeatureKind::FieldNotIn;
     if (k == "field_gt") return FeatureKind::FieldGt;
     if (k == "field_lt") return FeatureKind::FieldLt;
     if (k == "field_ge") return FeatureKind::FieldGe;
@@ -1107,6 +1107,12 @@ static FeatureKind nativeKind(std::string_view k) noexcept {
     if (k == "descendant_of") return FeatureKind::DescendantOf;
     if (k == "has_mitigation") return FeatureKind::HasMitigation;
     if (k == "lacks_mitigation") return FeatureKind::LacksMitigation;
+    if (k == "field_bytes") return FeatureKind::FieldBytes;
+    // Also accept capa-style keys in native rules
+    if (k == "match")          return FeatureKind::Match;
+    if (k == "offset")         return FeatureKind::Offset;
+    if (k == "operand_number") return FeatureKind::OperandNumber;
+    if (k == "property")       return FeatureKind::Property;
     return FeatureKind::Custom;
 }
 
@@ -1119,16 +1125,98 @@ static FeatureNode parseNativeAndOrNot(const YamlNode& v, FeatureNode::Op op) {
     return out;
 }
 
+// Parse duration string like "300s", "30m", "2h" into milliseconds.
+static std::chrono::milliseconds parseDuration(std::string_view s) noexcept {
+    if (s.empty()) return {};
+    size_t i = 0;
+    uint64_t n = 0;
+    while (i < s.size() && std::isdigit(static_cast<unsigned char>(s[i]))) {
+        n = n * 10 + static_cast<uint64_t>(s[i++] - '0');
+    }
+    std::string unit(s.substr(i));
+    if (unit == "ms") return std::chrono::milliseconds(n);
+    if (unit == "s" || unit.empty()) return std::chrono::milliseconds(n * 1000);
+    if (unit == "m") return std::chrono::milliseconds(n * 60000);
+    if (unit == "h") return std::chrono::milliseconds(n * 3600000);
+    return std::chrono::milliseconds(n * 1000);
+}
+
 static FeatureNode parseNativeNode(const YamlNode& n) {
     FeatureNode out;
     if (!n.isMap() || n.map.empty()) return out;
+
+    // Handle "feature: <KindName>" compact notation (sibling keys: threshold, value, number).
+    // Used in static rules: "- feature: EntropyAbove\n  threshold: 6.5"
+    if (const auto* feat = n.find("feature"); feat && feat->isScalar()) {
+        out.op = FeatureNode::Op::Leaf;
+        // Accept both PascalCase ("EntropyAbove") and snake_case ("entropy_above")
+        std::string fk = feat->scalar;
+        // Normalise PascalCase to snake_case for the existing nativeKind() lookup
+        std::string snake;
+        for (size_t i = 0; i < fk.size(); ++i) {
+            if (i > 0 && std::isupper(static_cast<unsigned char>(fk[i])) &&
+                std::islower(static_cast<unsigned char>(fk[i-1])))
+                snake += '_';
+            snake += static_cast<char>(std::tolower(static_cast<unsigned char>(fk[i])));
+        }
+        out.leaf.kind = nativeKind(snake);
+        if (out.leaf.kind == FeatureKind::Custom) out.leaf.kind = nativeKind(fk); // try original
+        if (const auto* tv = n.find("threshold"); tv && tv->isScalar()) {
+            try { out.leaf.ratio = std::stod(tv->scalar); } catch (...) {}
+            try { out.leaf.number = static_cast<int64_t>(out.leaf.ratio); } catch (...) {}
+        }
+        if (const auto* nv = n.find("number"); nv && nv->isScalar())
+            try { out.leaf.number = std::stoll(nv->scalar); } catch (...) {}
+        if (const auto* vv = n.find("value"); vv && vv->isScalar())
+            out.leaf.value = vv->scalar;
+        if (const auto* fv = n.find("field"); fv && fv->isScalar())
+            out.leaf.field = fv->scalar;
+        out.leaf.description = fk;
+        return out;
+    }
+
+    // Handle sequence step format: {id: ..., within: ..., after: ..., event: {...}}
+    // The event: sub-map carries the actual detection logic for this step.
+    if (const auto* ev = n.find("event"); ev && ev->isMap()) {
+        auto child = parseNativeNode(*ev);
+        // Ensure the step is a container node, not a bare leaf — callers expect
+        // Op::And/Or/Sequence so they can attach metadata and iterate children.
+        if (child.op == FeatureNode::Op::Leaf) {
+            FeatureNode wrapper;
+            wrapper.op = FeatureNode::Op::And;
+            wrapper.children.push_back(std::move(child));
+            child = std::move(wrapper);
+        }
+        if (const auto* wv = n.find("within"); wv && wv->isScalar())
+            child.maxGap = parseDuration(wv->scalar);
+        return child;
+    }
+
     const auto& [k, v] = n.map.front();
     if (k == "and") return parseNativeAndOrNot(v, FeatureNode::Op::And);
     if (k == "or")  return parseNativeAndOrNot(v, FeatureNode::Op::Or);
     if (k == "not") return parseNativeAndOrNot(v, FeatureNode::Op::Not);
     if (k == "optional") return parseNativeAndOrNot(v, FeatureNode::Op::Optional);
     if (k == "sequence") {
-        out = parseNativeAndOrNot(v, FeatureNode::Op::Sequence);
+        out.op = FeatureNode::Op::Sequence;
+        auto addSteps = [&](const auto& seq) {
+            for (const auto& c : seq) {
+                auto step = parseNativeNode(c);
+                if (step.op != FeatureNode::Op::Leaf ||
+                    !step.leaf.field.empty() || step.leaf.kind != FeatureKind::Custom)
+                    out.children.push_back(std::move(step));
+            }
+        };
+        if (v.isSeq()) {
+            addSteps(v.seq);
+        } else if (v.isMap()) {
+            // Wrapped format: {window_seconds: N, ordered: bool, steps: [...]}
+            const auto* stepsNode = v.find("steps");
+            if (stepsNode && stepsNode->isSeq())
+                addSteps(stepsNode->seq);
+            else
+                out.children.push_back(parseNativeNode(v));
+        }
         return out;
     }
     if (k == "at_least") {
@@ -1159,6 +1247,12 @@ static FeatureNode parseNativeNode(const YamlNode& n) {
     } else if (v.isMap()) {
         out.leaf.field = v.str("field");
         out.leaf.value = v.str("value");
+        // "pattern" is an accepted alias for "value" used in field_regex nodes
+        if (out.leaf.value.empty())
+            out.leaf.value = v.str("pattern");
+        // "hex" is used by field_bytes nodes (hex byte pattern)
+        if (out.leaf.value.empty())
+            out.leaf.value = v.str("hex");
         out.leaf.description = v.str("description");
         if (auto* cv = v.find("case_insensitive"); cv && cv->isScalar())
             out.leaf.caseInsensitive = (cv->scalar == "true" || cv->scalar == "1");
@@ -1168,9 +1262,18 @@ static FeatureNode parseNativeNode(const YamlNode& n) {
         if (auto* rv = v.find("ratio"); rv && rv->isScalar()) {
             try { out.leaf.ratio = std::stod(rv->scalar); } catch (...) {}
         }
+        // Try to parse the primary value as a number too so integer comparisons work
+        if (!out.leaf.value.empty() && out.leaf.number == 0) {
+            try { out.leaf.number = std::stoll(out.leaf.value); } catch (...) {}
+        }
         if (auto* vs = v.find("values"); vs && vs->isSeq()) {
             for (const auto& sv : vs->seq) if (sv.isScalar()) out.leaf.setValues.push_back(sv.scalar);
         }
+        // case_insensitive defaults true for field_in / field_not_in unless explicitly set false
+        if (!v.find("case_insensitive") &&
+            (out.leaf.kind == FeatureKind::FieldIn || out.leaf.kind == FeatureKind::FieldNotIn ||
+             out.leaf.kind == FeatureKind::FieldEquals || out.leaf.kind == FeatureKind::FieldContains))
+            out.leaf.caseInsensitive = true;
     }
     return out;
 }

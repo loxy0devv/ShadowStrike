@@ -9,6 +9,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
+#include <iostream>
 
 namespace ShadowStrike {
 namespace Detection {
@@ -62,6 +64,39 @@ bool iendswith(std::string_view hay, std::string_view suffix) noexcept {
     return true;
 }
 
+// Parse a hex string (with or without spaces/separators) into raw bytes.
+// Handles both "FC4889D0" and "FC 48 89 D0" formats.
+static std::vector<uint8_t> parseHexBytes(std::string_view hex) noexcept {
+    std::vector<uint8_t> out;
+    out.reserve(hex.size() / 2 + 1);
+    auto fromHex = [](char c) noexcept -> uint8_t {
+        if (c >= '0' && c <= '9') return static_cast<uint8_t>(c - '0');
+        if (c >= 'a' && c <= 'f') return static_cast<uint8_t>(c - 'a' + 10);
+        if (c >= 'A' && c <= 'F') return static_cast<uint8_t>(c - 'A' + 10);
+        return 0xFF;
+    };
+    size_t i = 0;
+    while (i < hex.size()) {
+        if (!std::isxdigit(static_cast<unsigned char>(hex[i]))) { ++i; continue; }
+        if (i + 1 >= hex.size()) break;
+        if (!std::isxdigit(static_cast<unsigned char>(hex[i + 1]))) { ++i; continue; }
+        out.push_back(static_cast<uint8_t>((fromHex(hex[i]) << 4) | fromHex(hex[i + 1])));
+        i += 2;
+    }
+    return out;
+}
+
+// Boyer-Moore-Horspool-style memcmp search — O(n) typical, O(nm) worst.
+static bool findBytes(const uint8_t* hay, size_t hlen,
+                      const uint8_t* needle, size_t nlen) noexcept {
+    if (nlen == 0) return true;
+    if (hlen < nlen) return false;
+    for (size_t i = 0; i + nlen <= hlen; ++i) {
+        if (std::memcmp(hay + i, needle, nlen) == 0) return true;
+    }
+    return false;
+}
+
 } // anonymous namespace
 
 // ----------------------------------------------------------------------------
@@ -95,6 +130,13 @@ void RuleEngine::ResetStats() noexcept {
 }
 
 const std::regex& RuleEngine::GetRegex(std::string_view pattern, bool caseInsensitive) const {
+    // Strip (?i) inline flag — std::regex ECMAScript mode doesn't support it.
+    // Apply icase instead, which is semantically identical.
+    if (pattern.starts_with("(?i)")) {
+        caseInsensitive = true;
+        pattern = pattern.substr(4);
+    }
+
     std::string key(pattern);
     key.push_back('\x1F');
     key.push_back(caseInsensitive ? 'i' : 's');
@@ -112,12 +154,24 @@ const std::regex& RuleEngine::GetRegex(std::string_view pattern, bool caseInsens
     auto flags = std::regex::ECMAScript | std::regex::optimize;
     if (caseInsensitive) flags |= std::regex::icase;
 
+    // Malformed patterns in rule YAML must not crash the engine.  Log the
+    // offending pattern so CI output identifies the exact rule, then substitute
+    // a never-matching fallback so detection continues for all other rules.
+    auto makeRegex = [&](std::string_view pat) -> std::regex {
+        try {
+            return std::regex(pat.data(), pat.size(), flags);
+        } catch (const std::regex_error& e) {
+            std::cerr << "[ShadowStrike] regex_error compiling pattern ["
+                      << pat << "]: " << e.what() << " — substituting never-match\n";
+            return std::regex("[^\\s\\S]", flags);
+        }
+    };
+
     std::unique_lock<std::shared_mutex> wl(m_regexMutex);
     // Save the key string before moving it into emplace — we need it for
     // re-lookup if eviction invalidates the iterator returned by emplace.
     std::string savedKey = key;
-    auto [it, inserted] = m_regexCache.emplace(
-        std::move(key), std::regex(pattern.data(), pattern.size(), flags));
+    auto [it, inserted] = m_regexCache.emplace(std::move(key), makeRegex(pattern));
     if (inserted && m_regexCache.size() > m_cfg.regexCacheMax) {
         // Simple eviction: drop a few random entries — cache will refill.
         auto victim = m_regexCache.begin();
@@ -128,8 +182,7 @@ const std::regex& RuleEngine::GetRegex(std::string_view pattern, bool caseInsens
         auto found = m_regexCache.find(savedKey);
         if (found != m_regexCache.end()) return found->second;
         // Entry was itself evicted (unlikely but possible) — re-insert.
-        auto [it2, _] = m_regexCache.emplace(
-            std::move(savedKey), std::regex(pattern.data(), pattern.size(), flags));
+        auto [it2, dummy_inserted] = m_regexCache.emplace(std::move(savedKey), makeRegex(pattern));
         return it2->second;
     }
     return it->second;  // no eviction occurred — iterator is still valid
@@ -179,7 +232,14 @@ bool RuleEngine::EvalLeafStatic(const FeatureLeaf& leaf,
         case FeatureKind::OperandNumber:
             return check(bag.numbers.contains(leaf.number), "operand-number");
         case FeatureKind::Bytes:
-            return check(bag.bytes.contains(leaf.value), "bytes");
+        case FeatureKind::FieldBytes: {
+            // Search for the byte sequence in the raw file buffer.
+            // leaf.value holds the hex pattern ("FC4889D0" or "FC 48 89 D0").
+            auto pat = parseHexBytes(leaf.value);
+            if (pat.empty()) return false;
+            if (!bag.rawData || bag.rawSize < pat.size()) return false;
+            return check(findBytes(bag.rawData, bag.rawSize, pat.data(), pat.size()), "bytes");
+        }
         case FeatureKind::Section:
             return check(bag.sections.contains(leaf.value), "section");
         case FeatureKind::Characteristic:
@@ -210,12 +270,14 @@ bool RuleEngine::EvalLeafStatic(const FeatureLeaf& leaf,
             return check(!bag.signed_, "unsigned");
 
         case FeatureKind::Match: {
-            // Look up the referenced capa rule by name and evaluate it recursively
+            // Look up the referenced rule by name; try capa prefix, native id, and raw name.
             auto store = m_store.load();
             if (!store) return false;
-            const std::string refId = "capa-" + leaf.value;
-            const PhantomRule* refRule = store->Get(refId);
+            // Try capa-prefixed id first, then raw id (for native rules that reference others)
+            const PhantomRule* refRule = store->Get("capa-" + leaf.value);
+            if (!refRule) refRule = store->Get(leaf.value);
             if (!refRule) return false;
+            const std::string refId = refRule->id;
 
             // Cycle guard: if this rule is already on the call stack for this thread,
             // treat it as no-match to prevent infinite recursion / stack overflow.
@@ -249,8 +311,57 @@ bool RuleEngine::EvalLeafStatic(const FeatureLeaf& leaf,
             return false;
         }
 
+        // ── Static-field predicates ─────────────────────────────────────────
+        // When a rule has field: static.strings or field: static.bytes and is
+        // evaluated in a static-only context (no runtime event), we route the
+        // field predicate against the StaticFeatureBag rather than an event.
+        case FeatureKind::FieldEquals: {
+            if (leaf.field == "static.strings") {
+                for (const auto& s : bag.strings)
+                    if (iequals(s, leaf.value)) return check(true, "feq:static.strings");
+            }
+            return false;
+        }
+        case FeatureKind::FieldContains: {
+            if (leaf.field == "static.strings") {
+                for (const auto& s : bag.strings)
+                    if (icontains(s, leaf.value)) return check(true, "fcontains:static.strings");
+            }
+            return false;
+        }
+        case FeatureKind::FieldStartsWith: {
+            if (leaf.field == "static.strings") {
+                for (const auto& s : bag.strings)
+                    if (istartswith(s, leaf.value)) return check(true, "fstarts:static.strings");
+            }
+            return false;
+        }
+        case FeatureKind::FieldEndsWith: {
+            if (leaf.field == "static.strings") {
+                for (const auto& s : bag.strings)
+                    if (iendswith(s, leaf.value)) return check(true, "fends:static.strings");
+            }
+            return false;
+        }
+        case FeatureKind::FieldRegex: {
+            if (leaf.field == "static.strings") {
+                const auto& re = GetRegex(leaf.value, true);
+                for (const auto& s : bag.strings)
+                    if (std::regex_search(s, re)) return check(true, "fregex:static.strings");
+            }
+            return false;
+        }
+        case FeatureKind::FieldIn: {
+            if (leaf.field == "static.strings") {
+                for (const auto& s : bag.strings)
+                    for (const auto& v : leaf.setValues)
+                        if (iequals(s, v)) return check(true, "fin:static.strings");
+            }
+            return false;
+        }
+
         default:
-            return false; // Field/runtime predicates are not evaluable here
+            return false;
     }
 }
 

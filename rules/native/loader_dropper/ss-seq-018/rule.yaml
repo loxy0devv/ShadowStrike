@@ -1,0 +1,57 @@
+id: ss-seq-018
+detection_name: "Win32/SuspiciousChain.ScheduledTaskExecution"
+description: "Scheduled task created, then executed within minutes, followed by outbound network activity — persistence establishment pattern after initial compromise."
+scope: sequence
+severity: high
+status: stable
+source: native
+confidence: 0.78
+weight: 3.0
+version: 1
+
+attack:
+  - tactic: TA0003
+    technique: T1053
+    sub_technique: T1053.005
+    name: "Scheduled Task/Job: Scheduled Task"
+  - tactic: TA0011
+    technique: T1071
+    name: "Application Layer Protocol"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1053/005/"
+    title: "ATT&CK T1053.005"
+
+logic:
+  sequence:
+    window_seconds: 300
+    ordered: true
+    steps:
+      - or:
+          - field_regex:
+              field: process.command_line
+              pattern: '(?i)schtasks\.exe.*/create'
+          - field_regex:
+              field: process.command_line
+              pattern: "(?i)Register-ScheduledTask"
+      - or:
+          - field_eq:
+              field: process.parent.name
+              value: taskeng.exe
+              case_insensitive: true
+          - field_regex:
+              field: process.command_line
+              pattern: '(?i)schtasks\.exe.*/run'
+      - field_regex:
+          field: network.destination.ip
+          pattern: '^(?!10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.).*'
+
+fp_guard:
+  notes:
+    - "Software deployment tools (SCCM, PDQ) create and run tasks routinely. Baseline against known asset management processes."
+  suppress:
+    - field: process.parent.name
+      values:
+        - ccmexec.exe
+        - msiexec.exe
+        - trustedinstaller.exe

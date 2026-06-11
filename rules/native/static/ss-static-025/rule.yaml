@@ -1,0 +1,59 @@
+id: ss-static-025
+detection_name: "Win32/SliverC2.BeaconStrings"
+description: "Binary contains Sliver C2 implant indicators: WireGuard-based C2 strings, Sliver-specific named pipe formats, and protobuf schema markers from the open-source C2 framework."
+scope: static
+severity: critical
+status: stable
+source: native
+confidence: 0.89
+weight: 3.5
+version: 1
+
+attack:
+  - tactic: TA0011
+    technique: T1071
+    sub_technique: T1071.001
+    name: "Application Layer Protocol: Web Protocols"
+  - tactic: TA0005
+    technique: T1055
+    name: "Process Injection"
+
+references:
+  - url: "https://github.com/BishopFox/sliver"
+    title: "Sliver C2 Framework"
+  - url: "https://attack.mitre.org/software/S1071/"
+    title: "ATT&CK Sliver"
+
+logic:
+  or:
+    - and:
+        - field_contains:
+            field: static.strings
+            value: "sliver"
+        - or:
+            - field_contains:
+                field: static.strings
+                value: "sliverpb"
+            - field_regex:
+                field: static.strings
+                pattern: '(?i)github\.com/bishopfox/sliver'
+    - and:
+        - field_regex:
+            field: static.strings
+            pattern: '(?i)\\.\\pipe\\(sessions|implant|beacon)-[a-f0-9\-]{8,36}'
+        - feature: EntropyAbove
+          threshold: 6.7
+    - field_regex:
+        field: static.strings
+        pattern: '(?i)(mtls|wireguard).*pivot.*[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}'
+    - and:
+        - field_contains:
+            field: static.strings
+            value: "sliverd"
+        - feature: Characteristic
+          value: "golang"
+
+fp_guard:
+  notes:
+    - "Sliver is exclusively a red-team/C2 framework. Any detection warrants immediate escalation."
+    - "The golang characteristic combined with Sliver strings is extremely high confidence."

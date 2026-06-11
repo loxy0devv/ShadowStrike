@@ -26,6 +26,7 @@
 
 #include "../../../src/PhantomCore/Detection/Rules/RuleStore.hpp"
 #include "../../../src/PhantomCore/Detection/Rules/RuleImporter.hpp"
+#include "../../../src/PhantomCore/Detection/Rules/RuleEngine.hpp"
 #include "../../../src/PhantomCore/Detection/Rules/PhantomRule.hpp"
 
 namespace fs = std::filesystem;
@@ -39,6 +40,8 @@ fs::path FindRulesRoot() {
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
     auto p = fs::path(exePath).parent_path();
     for (int depth = 0; depth < 8; ++depth) {
+        // Prefer the new category-based layout; fall back to legacy phantom/ dir.
+        if (fs::exists(p / L"rules" / L"native"))  return p / L"rules";
         if (fs::exists(p / L"rules" / L"phantom")) return p / L"rules";
         p = p.parent_path();
     }

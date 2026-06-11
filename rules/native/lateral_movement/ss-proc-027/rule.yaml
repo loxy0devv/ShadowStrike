@@ -1,0 +1,58 @@
+id: ss-proc-027
+detection_name: "Win32/ScheduledTask.LateralMovement.Creation"
+description: "Detects at.exe or schtasks.exe creating scheduled tasks targeting remote systems, a common lateral movement technique. Attackers use remote task scheduling to execute payloads on additional hosts without needing interactive sessions, often combining it with stolen credentials."
+scope: process
+severity: high
+status: stable
+source: native
+confidence: 0.80
+weight: 2.0
+version: 1
+
+attack:
+  - tactic: TA0008
+    technique: T1053.005
+    name: "Scheduled Task/Job: Scheduled Task"
+
+references:
+  - url: "https://attack.mitre.org/techniques/T1053/005/"
+    title: "ATT&CK T1053.005"
+
+logic:
+  or:
+    - and:
+        - field_in:
+            field: process.name
+            values:
+              - schtasks.exe
+            case_insensitive: true
+        - or:
+            - field_regex:
+                field: process.command_line
+                pattern: "(?i)/create.*(/s|/system)\\s+[^%]"
+            - field_regex:
+                field: process.command_line
+                pattern: "(?i)/create.*/tr\\s+.*(cmd|powershell|wscript|cscript|mshta|rundll32)"
+            - field_regex:
+                field: process.command_line
+                pattern: "(?i)/s\\s+[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}\\.[0-9]{1,3}"
+    - and:
+        - field_in:
+            field: process.name
+            values:
+              - at.exe
+            case_insensitive: true
+        - field_regex:
+            field: process.command_line
+            pattern: "(?i)\\\\\\\\[a-zA-Z0-9.-]+"
+
+fp_guard:
+  notes:
+    - "IT automation tools (SCCM, PDQ Deploy, Ansible) create scheduled tasks on remote hosts routinely. Correlate against change management windows."
+    - "Backup software may schedule tasks on remote systems as part of deployment."
+  suppress:
+    - field: process.parent.name
+      values:
+        - ccmexec.exe
+        - pdqdeploy.exe
+        - ansible.exe

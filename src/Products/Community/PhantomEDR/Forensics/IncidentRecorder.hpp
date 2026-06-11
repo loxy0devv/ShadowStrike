@@ -727,6 +727,21 @@ struct IncidentStatistics {
     /// @brief Start time
     TimePoint startTime = Clock::now();
     
+    IncidentStatistics() = default;
+    IncidentStatistics(const IncidentStatistics& o) noexcept
+        : totalIncidents (o.totalIncidents .load(std::memory_order_relaxed))
+        , totalEvents    (o.totalEvents    .load(std::memory_order_relaxed))
+        , openIncidents  (o.openIncidents  .load(std::memory_order_relaxed))
+        , incidentsToday (o.incidentsToday .load(std::memory_order_relaxed))
+        , databaseSize   (o.databaseSize   .load(std::memory_order_relaxed))
+        , startTime(o.startTime)
+    {
+        for (size_t i = 0; i < bySeverity.size(); ++i)
+            bySeverity[i].store(o.bySeverity[i].load(std::memory_order_relaxed), std::memory_order_relaxed);
+        for (size_t i = 0; i < byCategory.size(); ++i)
+            byCategory[i].store(o.byCategory[i].load(std::memory_order_relaxed), std::memory_order_relaxed);
+    }
+
     /**
      * @brief Reset statistics
      */

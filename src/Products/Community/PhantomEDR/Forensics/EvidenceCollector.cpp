@@ -84,6 +84,8 @@
 #include <tlhelp32.h>
 #include <wtsapi32.h>
 #include <netlistmgr.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <iphlpapi.h>
 #pragma comment(lib, "psapi.lib")
 #pragma comment(lib, "wtsapi32.lib")
@@ -92,6 +94,8 @@
 
 namespace ShadowStrike {
 namespace Forensics {
+
+using Utils::Logger;
 
 // ============================================================================
 // INTERNAL STRUCTURES
@@ -379,13 +383,8 @@ bool EvidenceCollectorImpl::Initialize(const CollectionConfiguration& config) {
             }
         }
 
-        // Initialize infrastructure references
-        try {
-            m_hashStore = &HashStore::HashStore::Instance();
-        } catch (const std::exception& e) {
-            Logger::Warn("[EvidenceCollector] HashStore not available: {}", e.what());
-            m_hashStore = nullptr;
-        }
+        // HashStore is injected externally; default to unavailable
+        m_hashStore = nullptr;
 
         // Set default profile based on mode
         m_profile = CollectionProfile::FromMode(m_config.defaultMode);
@@ -397,18 +396,18 @@ bool EvidenceCollectorImpl::Initialize(const CollectionConfiguration& config) {
         m_initialized.store(true, std::memory_order_release);
         m_status.store(ModuleStatus::Running, std::memory_order_release);
 
-        Logger::Info("[EvidenceCollector] Initialized successfully (Version {})", GetVersionString());
+        Logger::Info("[EvidenceCollector] Initialized successfully (Version {})", EvidenceCollector::GetVersionString());
         Logger::Info("[EvidenceCollector] Output directory: {}",
             std::filesystem::path(m_config.outputDirectory).string());
 
         return true;
 
     } catch (const std::exception& e) {
-        Logger::Critical("[EvidenceCollector] Initialization failed: {}", e.what());
+        Logger::Fatal("[EvidenceCollector] Initialization failed: {}", e.what());
         m_status.store(ModuleStatus::Error, std::memory_order_release);
         return false;
     } catch (...) {
-        Logger::Critical("[EvidenceCollector] Initialization failed: Unknown error");
+        Logger::Fatal("[EvidenceCollector] Initialization failed: Unknown error");
         m_status.store(ModuleStatus::Error, std::memory_order_release);
         return false;
     }
@@ -424,16 +423,16 @@ void EvidenceCollectorImpl::Shutdown() {
     try {
         m_status.store(ModuleStatus::Stopping, std::memory_order_release);
 
-        // Cancel all active collections
-        std::vector<std::string> activeCollections;
+        // Cancel all active collections.
+        // We already hold m_mutex (unique), so we must NOT call CancelCollection()
+        // or GetCollection() here — both would try to re-acquire m_mutex and deadlock
+        // (std::shared_mutex is not recursive on Windows).
         for (const auto& [id, state] : m_collections) {
             if (state->progress.status == CollectionStatus::InProgress) {
-                activeCollections.push_back(id);
+                state->cancelled.store(true, std::memory_order_release);
+                state->progress.status = CollectionStatus::Cancelled;
+                Logger::Info("[EvidenceCollector] Cancelled collection during shutdown: {}", id);
             }
-        }
-
-        for (const auto& id : activeCollections) {
-            CancelCollection(id);
         }
 
         // Clear collections

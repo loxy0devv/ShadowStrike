@@ -106,15 +106,15 @@
 #pragma comment(lib, "comsuppw.lib")
 #pragma comment(lib, "Wbemuuid.lib")
 #pragma comment(lib, "Shell32.lib")
+#pragma comment(lib, "ole32.lib")
 #endif
 
 // ============================================================================
 // THIRD-PARTY INCLUDES
 // ============================================================================
-#include <sqlite3.h>
+#include <SQLiteCpp/sqlite3.h>
 #include <nlohmann/json.hpp>
 
-#pragma comment(lib, "sqlite3.lib")
 
 namespace ShadowStrike {
 namespace Forensics {
@@ -1107,6 +1107,444 @@ struct ParsedShellItem {
 }
 
 
+// ============================================================================
+// PREFETCH BINARY PARSER HELPERS
+// ============================================================================
+
+using RtlDecompressBufferExFn = NTSTATUS(NTAPI*)(
+    USHORT, PUCHAR, ULONG, PUCHAR, ULONG, PULONG, PVOID);
+using RtlGetCompressionWorkSpaceSizeFn = NTSTATUS(NTAPI*)(
+    USHORT, PULONG, PULONG);
+
+[[nodiscard]] static bool DecompressMamPrefetch(
+    const std::vector<uint8_t>& compressed,
+    std::vector<uint8_t>& decompressed)
+{
+    if (compressed.size() < 8) return false;
+    if (compressed[0] != 'M' || compressed[1] != 'A' || compressed[2] != 'M') return false;
+
+    uint32_t uncompressedSize = 0;
+    std::memcpy(&uncompressedSize, compressed.data() + 4, 4);
+    if (uncompressedSize == 0 || uncompressedSize > 32u * 1024u * 1024u) return false;
+
+    HMODULE ntdll = ::GetModuleHandleW(L"ntdll.dll");
+    if (!ntdll) return false;
+
+    auto fnDecompress = reinterpret_cast<RtlDecompressBufferExFn>(
+        ::GetProcAddress(ntdll, "RtlDecompressBufferEx"));
+    auto fnWorkspaceSize = reinterpret_cast<RtlGetCompressionWorkSpaceSizeFn>(
+        ::GetProcAddress(ntdll, "RtlGetCompressionWorkSpaceSize"));
+    if (!fnDecompress || !fnWorkspaceSize) return false;
+
+    static constexpr USHORT kXpressHuff = 0x0004;
+    ULONG bufferWorkSize = 0, fragmentWorkSize = 0;
+    if (!NT_SUCCESS(fnWorkspaceSize(kXpressHuff, &bufferWorkSize, &fragmentWorkSize))) return false;
+
+    std::vector<uint8_t> workspace(bufferWorkSize > 0 ? bufferWorkSize : 65536u);
+    decompressed.resize(uncompressedSize);
+    ULONG finalSize = 0;
+
+    NTSTATUS status = fnDecompress(
+        kXpressHuff,
+        decompressed.data(),
+        static_cast<ULONG>(decompressed.size()),
+        const_cast<uint8_t*>(compressed.data()) + 8,
+        static_cast<ULONG>(compressed.size() - 8),
+        &finalSize,
+        workspace.data());
+
+    if (!NT_SUCCESS(status)) { decompressed.clear(); return false; }
+    decompressed.resize(finalSize);
+    return true;
+}
+
+[[nodiscard]] static std::vector<uint8_t> ReadPrefetchFile(const std::wstring& path)
+{
+    HANDLE hFile = ::CreateFileW(path.c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) return {};
+    ScopedHandle h(hFile);
+
+    LARGE_INTEGER fileSize{};
+    if (!::GetFileSizeEx(hFile, &fileSize) ||
+        fileSize.QuadPart <= 0 || fileSize.QuadPart > 10 * 1024 * 1024) return {};
+
+    std::vector<uint8_t> data(static_cast<size_t>(fileSize.QuadPart));
+    DWORD bytesRead = 0;
+    if (!::ReadFile(hFile, data.data(), static_cast<DWORD>(data.size()), &bytesRead, nullptr) ||
+        bytesRead != static_cast<DWORD>(data.size())) return {};
+
+    if (data.size() >= 3 && data[0] == 'M' && data[1] == 'A' && data[2] == 'M') {
+        std::vector<uint8_t> decompressed;
+        if (DecompressMamPrefetch(data, decompressed)) return decompressed;
+    }
+    return data;
+}
+
+[[nodiscard]] static bool ParsePrefetchBinary(
+    const std::vector<uint8_t>& data, PrefetchEntry& entry)
+{
+    static constexpr uint32_t kScamSig = 0x4D414353u;
+    if (data.size() < 84) return false;
+
+    uint32_t version = 0, signature = 0;
+    std::memcpy(&version,   data.data() + 0, 4);
+    std::memcpy(&signature, data.data() + 4, 4);
+
+    if (signature != kScamSig) return false;
+    if (version != 17 && version != 23 && version != 26 && version != 30) return false;
+    entry.version = version;
+
+    const uint8_t* nb = data.data() + 16;
+    size_t nameBytes = 0;
+    while (nameBytes + 2 <= 60) {
+        wchar_t ch = 0;
+        std::memcpy(&ch, nb + nameBytes, 2);
+        if (ch == 0) break;
+        nameBytes += 2;
+    }
+    if (nameBytes > 0)
+        entry.executableName = std::wstring(
+            reinterpret_cast<const wchar_t*>(nb), nameBytes / sizeof(wchar_t));
+
+    std::memcpy(&entry.prefetchHash, data.data() + 76, 4);
+
+    if (data.size() < 120) return true;
+
+    uint32_t fnStrOff = 0, fnStrSz = 0;
+    uint32_t volOff = 0, volCnt = 0, volSz = 0;
+    std::memcpy(&fnStrOff, data.data() + 100, 4);
+    std::memcpy(&fnStrSz,  data.data() + 104, 4);
+    std::memcpy(&volOff,   data.data() + 108, 4);
+    std::memcpy(&volCnt,   data.data() + 112, 4);
+    std::memcpy(&volSz,    data.data() + 116, 4);
+
+    if (version == 17 || version == 23 || version == 26) {
+        if (data.size() >= 0x94u) {
+            uint64_t ft = 0;
+            std::memcpy(&ft, data.data() + 0x78, 8);
+            if (auto tp = FileTimeValueToTimePoint(ft)) entry.lastRunTimes.push_back(*tp);
+            std::memcpy(&entry.runCount, data.data() + 0x90, 4);
+        }
+    } else {
+        if (data.size() >= 0xD4u) {
+            for (int i = 0; i < 8; ++i) {
+                uint64_t ft = 0;
+                std::memcpy(&ft, data.data() + 0x78 + static_cast<size_t>(i) * 8, 8);
+                if (ft == 0) break;
+                if (auto tp = FileTimeValueToTimePoint(ft)) entry.lastRunTimes.push_back(*tp);
+            }
+            std::memcpy(&entry.runCount, data.data() + 0xD0, 4);
+        }
+    }
+
+    if (fnStrOff > 0 && fnStrSz > 0 &&
+        static_cast<size_t>(fnStrOff) + fnStrSz <= data.size())
+    {
+        const uint8_t* strData = data.data() + fnStrOff;
+        size_t off = 0;
+        while (off + 2 <= fnStrSz) {
+            size_t start = off;
+            while (off + 2 <= fnStrSz) {
+                wchar_t ch = 0;
+                std::memcpy(&ch, strData + off, 2);
+                off += 2;
+                if (ch == 0) break;
+            }
+            const size_t len = off - start;
+            if (len >= 4) {
+                std::wstring fn(reinterpret_cast<const wchar_t*>(strData + start),
+                                (len - 2) / sizeof(wchar_t));
+                if (!fn.empty()) entry.loadedFiles.push_back(std::move(fn));
+            }
+        }
+    }
+
+    if (volOff > 0 && volCnt > 0 && static_cast<size_t>(volOff) < data.size()) {
+        const uint8_t* vd  = data.data() + volOff;
+        const size_t   vds = std::min<size_t>(volSz, data.size() - volOff);
+        const size_t   kes = (version >= 30) ? 104u : 40u;
+        for (uint32_t v = 0; v < volCnt; ++v) {
+            const size_t eOff = static_cast<size_t>(v) * kes;
+            if (eOff + 8 > vds) break;
+            uint32_t dpOff = 0, dpLen = 0;
+            std::memcpy(&dpOff, vd + eOff,     4);
+            std::memcpy(&dpLen, vd + eOff + 4, 4);
+            if (dpOff > 0 && dpLen > 0 &&
+                eOff + dpOff + static_cast<size_t>(dpLen) * 2 <= vds)
+            {
+                std::wstring vol(reinterpret_cast<const wchar_t*>(vd + eOff + dpOff), dpLen);
+                entry.volumes.push_back(std::move(vol));
+            }
+        }
+    }
+
+    return true;
+}
+
+// ============================================================================
+// LNK (MS-SHLLINK) BINARY PARSER HELPERS
+// ============================================================================
+
+static constexpr uint32_t kLF_HasIDList    = 0x00000001u;
+static constexpr uint32_t kLF_HasLinkInfo  = 0x00000002u;
+static constexpr uint32_t kLF_HasName      = 0x00000004u;
+static constexpr uint32_t kLF_HasRelPath   = 0x00000008u;
+static constexpr uint32_t kLF_HasWorkDir   = 0x00000010u;
+static constexpr uint32_t kLF_HasArguments = 0x00000020u;
+static constexpr uint32_t kLF_HasIconLoc   = 0x00000040u;
+static constexpr uint32_t kLF_IsUnicode    = 0x00000080u;
+static constexpr uint32_t kLIF_LocalPath   = 0x00000001u;
+static constexpr uint32_t kLIF_NetworkPath = 0x00000002u;
+static constexpr uint32_t kED_TrackerBlock = 0xA0000003u;
+
+[[nodiscard]] static std::wstring ReadLNKCountedString(
+    const uint8_t* data, size_t size, size_t& off, bool unicode)
+{
+    if (off + 2 > size) return {};
+    uint16_t count = 0;
+    std::memcpy(&count, data + off, 2);
+    off += 2;
+    if (unicode) {
+        const size_t bytes = static_cast<size_t>(count) * sizeof(wchar_t);
+        if (off + bytes > size) return {};
+        std::wstring s(count, L'\0');
+        std::memcpy(s.data(), data + off, bytes);
+        off += bytes;
+        return s;
+    }
+    if (off + count > size) return {};
+    std::string narrow(reinterpret_cast<const char*>(data + off), count);
+    off += count;
+    return Utils::StringUtils::ToWide(narrow);
+}
+
+static void ParseLNKBinary(const uint8_t* data, size_t size, LNKFileEntry& entry)
+{
+    if (size < 0x4C) return;
+    uint32_t headerSize = 0;
+    std::memcpy(&headerSize, data, 4);
+    if (headerSize != 0x4C) return;
+
+    uint32_t linkFlags = 0;
+    std::memcpy(&linkFlags, data + 0x14, 4);
+
+    uint64_t ctime = 0, atime = 0, wtime = 0;
+    std::memcpy(&ctime, data + 0x1C, 8);
+    std::memcpy(&atime, data + 0x24, 8);
+    std::memcpy(&wtime, data + 0x2C, 8);
+    if (auto tp = FileTimeValueToTimePoint(ctime)) entry.targetCreationTime     = *tp;
+    if (auto tp = FileTimeValueToTimePoint(atime)) entry.targetAccessTime       = *tp;
+    if (auto tp = FileTimeValueToTimePoint(wtime)) entry.targetModificationTime = *tp;
+
+    uint32_t tfsz = 0;
+    std::memcpy(&tfsz, data + 0x34, 4);
+    entry.targetFileSize = tfsz;
+
+    const bool unicode = (linkFlags & kLF_IsUnicode) != 0;
+    size_t off = 0x4C;
+
+    if ((linkFlags & kLF_HasIDList) && off + 2 <= size) {
+        uint16_t idListSize = 0;
+        std::memcpy(&idListSize, data + off, 2);
+        off += 2;
+        if (off + idListSize <= size) {
+            auto item = ParseShellItemList({data + off, idListSize});
+            if (!item.name.empty()) entry.targetPath = item.name;
+        }
+        off += idListSize;
+        if (off > size) return;
+    }
+
+    if ((linkFlags & kLF_HasLinkInfo) && off + 4 <= size) {
+        uint32_t liSize = 0;
+        std::memcpy(&liSize, data + off, 4);
+        if (liSize >= 28 && off + liSize <= size) {
+            const uint8_t* li = data + off;
+            uint32_t liHdrSz = 0, liFlags = 0;
+            uint32_t volIdOff = 0, localBaseOff = 0, netOff = 0, suffixOff = 0;
+            std::memcpy(&liHdrSz,     li + 4,  4);
+            std::memcpy(&liFlags,     li + 8,  4);
+            std::memcpy(&volIdOff,    li + 12, 4);
+            std::memcpy(&localBaseOff,li + 16, 4);
+            std::memcpy(&netOff,      li + 20, 4);
+            std::memcpy(&suffixOff,   li + 24, 4);
+
+            uint32_t localBaseUni = 0, suffixUni = 0;
+            if (liHdrSz >= 0x24 && liSize >= 0x24) {
+                std::memcpy(&localBaseUni, li + 28, 4);
+                std::memcpy(&suffixUni,    li + 32, 4);
+            }
+
+            if (liFlags & kLIF_LocalPath) {
+                if (localBaseUni > 0 && localBaseUni < liSize)
+                    entry.targetPath = ExtractUtf16String(li + localBaseUni, liSize - localBaseUni);
+                else if (localBaseOff > 0 && localBaseOff < liSize)
+                    entry.targetPath = ExtractAnsiString(li + localBaseOff, liSize - localBaseOff);
+
+                if (!entry.targetPath.empty()) {
+                    std::wstring suffix;
+                    if (suffixUni > 0 && suffixUni < liSize)
+                        suffix = ExtractUtf16String(li + suffixUni, liSize - suffixUni);
+                    else if (suffixOff > 0 && suffixOff < liSize)
+                        suffix = ExtractAnsiString(li + suffixOff, liSize - suffixOff);
+                    if (!suffix.empty()) entry.targetPath += suffix;
+                }
+                if (volIdOff > 0 && volIdOff + 12 <= liSize)
+                    std::memcpy(&entry.volumeSerialNumber, li + volIdOff + 8, 4);
+            }
+            if (liFlags & kLIF_NetworkPath) {
+                entry.hasNetworkLocation = true;
+                if (netOff > 0 && netOff + 20 <= liSize) {
+                    uint32_t netNameOff = 0;
+                    std::memcpy(&netNameOff, li + netOff + 8, 4);
+                    if (netNameOff > 0 && netOff + netNameOff < liSize)
+                        entry.networkPath = ExtractAnsiString(
+                            li + netOff + netNameOff, liSize - netOff - netNameOff);
+                }
+            }
+        }
+        off += liSize;
+        if (off > size) return;
+    }
+
+    auto readStr = [&]() { return ReadLNKCountedString(data, size, off, unicode); };
+    if (linkFlags & kLF_HasName)      readStr();
+    if (linkFlags & kLF_HasRelPath)   readStr();
+    if (linkFlags & kLF_HasWorkDir)   entry.workingDirectory = readStr();
+    if (linkFlags & kLF_HasArguments) entry.arguments        = readStr();
+    if (linkFlags & kLF_HasIconLoc)   readStr();
+
+    while (off + 8 <= size) {
+        uint32_t bSz = 0, bSig = 0;
+        std::memcpy(&bSz,  data + off,     4);
+        std::memcpy(&bSig, data + off + 4, 4);
+        if (bSz < 8 || off + bSz > size) break;
+
+        if (bSig == kED_TrackerBlock && bSz >= 88) {
+            const uint8_t* tdb = data + off;
+            char mid[17] = {};
+            std::memcpy(mid, tdb + 0x10, 16);
+            entry.machineId = std::string(mid, ::strnlen(mid, 16));
+            if (bSz >= 0x60) {
+                const uint8_t* node = tdb + 0x20 + 10;
+                char macBuf[18];
+                std::snprintf(macBuf, sizeof(macBuf), "%02X:%02X:%02X:%02X:%02X:%02X",
+                    node[0], node[1], node[2], node[3], node[4], node[5]);
+                entry.macAddress = macBuf;
+            }
+        }
+        off += bSz;
+    }
+}
+
+// ============================================================================
+// JUMP LIST OLE COMPOUND DOCUMENT HELPERS
+// ============================================================================
+
+static void ParseJumpListFile(
+    const std::wstring& path,
+    const std::wstring& appId,
+    std::vector<JumpListEntry>& entries,
+    size_t maxEntries)
+{
+    IStorage* storage = nullptr;
+    HRESULT hr = ::StgOpenStorage(path.c_str(), nullptr,
+        STGM_READ | STGM_SHARE_DENY_NONE, nullptr, 0, &storage);
+    if (FAILED(hr) || !storage) return;
+
+    IEnumSTATSTG* enumerator = nullptr;
+    if (FAILED(storage->EnumElements(0, nullptr, 0, &enumerator)) || !enumerator) {
+        storage->Release();
+        return;
+    }
+
+    STATSTG stat{};
+    while (enumerator->Next(1, &stat, nullptr) == S_OK) {
+        const bool hasName = stat.pwcsName != nullptr;
+        if (stat.type == STGTY_STREAM && hasName) {
+            IStream* stream = nullptr;
+            hr = storage->OpenStream(stat.pwcsName, nullptr,
+                STGM_READ | STGM_SHARE_EXCLUSIVE, 0, &stream);
+            if (SUCCEEDED(hr) && stream) {
+                STATSTG ss{};
+                stream->Stat(&ss, STATFLAG_NONAME);
+                const auto sz = ss.cbSize.QuadPart;
+                if (sz >= 0x4C && sz < 8 * 1024 * 1024) {
+                    std::vector<uint8_t> lnkBuf(static_cast<size_t>(sz));
+                    ULONG rb = 0;
+                    if (SUCCEEDED(stream->Read(lnkBuf.data(),
+                        static_cast<ULONG>(lnkBuf.size()), &rb)) && rb >= 0x4C)
+                    {
+                        JumpListEntry je;
+                        je.artifactId     = GenerateArtifactId();
+                        je.type           = ArtifactType::JumpList;
+                        je.sourcePath     = path;
+                        je.appId          = appId;
+                        je.entryType      = "automatic";
+                        je.collectionTime = SystemClock::now();
+
+                        LNKFileEntry lnk;
+                        ParseLNKBinary(lnkBuf.data(), rb, lnk);
+                        je.targetPath       = lnk.targetPath;
+                        je.arguments        = lnk.arguments;
+                        je.workingDirectory = lnk.workingDirectory;
+                        je.creationTime     = lnk.targetCreationTime;
+                        je.modificationTime = lnk.targetModificationTime;
+                        je.accessTime       = lnk.targetAccessTime;
+
+                        entries.push_back(std::move(je));
+                    }
+                }
+                stream->Release();
+            }
+        }
+        if (hasName) ::CoTaskMemFree(stat.pwcsName);
+        if (entries.size() >= maxEntries) break;
+    }
+
+    enumerator->Release();
+    storage->Release();
+}
+
+// ============================================================================
+// DATA RUN DECODER (MFT / deleted file recovery)
+// ============================================================================
+
+struct DataRun { int64_t lcn; uint64_t length; };
+
+[[nodiscard]] static std::vector<DataRun> DecodeDataRuns(
+    const uint8_t* runData, size_t runDataSize)
+{
+    std::vector<DataRun> runs;
+    size_t off = 0;
+    int64_t prevLcn = 0;
+    while (off < runDataSize) {
+        const uint8_t hdr = runData[off++];
+        if (hdr == 0) break;
+        const uint8_t lenBytes = hdr & 0x0Fu;
+        const uint8_t offBytes = (hdr >> 4u) & 0x0Fu;
+        if (lenBytes == 0 || lenBytes > 8 || offBytes > 8) break;
+        if (off + lenBytes + offBytes > runDataSize) break;
+
+        uint64_t runLen = 0;
+        std::memcpy(&runLen, runData + off, lenBytes);
+        off += lenBytes;
+
+        if (offBytes > 0) {
+            int64_t runOff = 0;
+            std::memcpy(&runOff, runData + off, offBytes);
+            if (offBytes < 8 && (runData[off + offBytes - 1] & 0x80u))
+                runOff |= static_cast<int64_t>(-1LL) << (static_cast<int>(offBytes) * 8);
+            off += offBytes;
+            prevLcn += runOff;
+            runs.push_back({prevLcn, runLen});
+        }
+    }
+    return runs;
+}
+
 }  // namespace
 
 // ============================================================================
@@ -1117,9 +1555,9 @@ std::string BaseArtifact::ToJson() const {
     nlohmann::json j = {
         {"artifactId", artifactId},
         {"type", static_cast<uint32_t>(type)},
-        {"sourcePath", Utils::StringUtils::WideToUtf8(sourcePath)},
-        {"userSID", Utils::StringUtils::WideToUtf8(userSID)},
-        {"userName", Utils::StringUtils::WideToUtf8(userName)},
+        {"sourcePath", Utils::StringUtils::ToNarrow(sourcePath)},
+        {"userSID", Utils::StringUtils::ToNarrow(userSID)},
+        {"userName", Utils::StringUtils::ToNarrow(userName)},
         {"isComplete", isComplete}
     };
     return j.dump(2);
@@ -1131,7 +1569,7 @@ std::string MFTRecord::ToJson() const {
         {"type", "MFTRecord"},
         {"recordNumber", recordNumber},
         {"sequenceNumber", sequenceNumber},
-        {"fileName", Utils::StringUtils::WideToUtf8(fileName)},
+        {"fileName", Utils::StringUtils::ToNarrow(fileName)},
         {"parentRecordNumber", parentRecordNumber},
         {"fileSize", fileSize},
         {"allocatedSize", allocatedSize},
@@ -1147,8 +1585,8 @@ std::string PrefetchEntry::ToJson() const {
     nlohmann::json j = {
         {"artifactId", artifactId},
         {"type", "Prefetch"},
-        {"executableName", Utils::StringUtils::WideToUtf8(executableName)},
-        {"executablePath", Utils::StringUtils::WideToUtf8(executablePath)},
+        {"executableName", Utils::StringUtils::ToNarrow(executableName)},
+        {"executablePath", Utils::StringUtils::ToNarrow(executablePath)},
         {"prefetchHash", std::format("0x{:08X}", prefetchHash)},
         {"runCount", runCount},
         {"version", version},
@@ -1162,7 +1600,7 @@ std::string ShimcacheEntry::ToJson() const {
     nlohmann::json j = {
         {"artifactId", artifactId},
         {"type", "Shimcache"},
-        {"filePath", Utils::StringUtils::WideToUtf8(filePath)},
+        {"filePath", Utils::StringUtils::ToNarrow(filePath)},
         {"fileSize", fileSize},
         {"executed", executed},
         {"cacheIndex", cacheIndex},
@@ -1175,12 +1613,12 @@ std::string AmcacheEntry::ToJson() const {
     nlohmann::json j = {
         {"artifactId", artifactId},
         {"type", "Amcache"},
-        {"filePath", Utils::StringUtils::WideToUtf8(filePath)},
+        {"filePath", Utils::StringUtils::ToNarrow(filePath)},
         {"sha1Hash", sha1Hash},
         {"fileSize", fileSize},
-        {"productName", Utils::StringUtils::WideToUtf8(productName)},
-        {"companyName", Utils::StringUtils::WideToUtf8(companyName)},
-        {"fileVersion", Utils::StringUtils::WideToUtf8(fileVersion)},
+        {"productName", Utils::StringUtils::ToNarrow(productName)},
+        {"companyName", Utils::StringUtils::ToNarrow(companyName)},
+        {"fileVersion", Utils::StringUtils::ToNarrow(fileVersion)},
         {"isPE", isPE}
     };
     return j.dump(2);
@@ -1192,10 +1630,10 @@ std::string BrowserHistoryEntry::ToJson() const {
         {"type", "BrowserHistory"},
         {"browser", static_cast<int>(browser)},
         {"url", url},
-        {"title", Utils::StringUtils::WideToUtf8(title)},
+        {"title", Utils::StringUtils::ToNarrow(title)},
         {"visitCount", visitCount},
         {"isTyped", isTyped},
-        {"profile", Utils::StringUtils::WideToUtf8(profile)}
+        {"profile", Utils::StringUtils::ToNarrow(profile)}
     };
     return j.dump(2);
 }
@@ -1204,10 +1642,10 @@ std::string LNKFileEntry::ToJson() const {
     nlohmann::json j = {
         {"artifactId", artifactId},
         {"type", "LNKFile"},
-        {"lnkPath", Utils::StringUtils::WideToUtf8(lnkPath)},
-        {"targetPath", Utils::StringUtils::WideToUtf8(targetPath)},
-        {"workingDirectory", Utils::StringUtils::WideToUtf8(workingDirectory)},
-        {"arguments", Utils::StringUtils::WideToUtf8(arguments)},
+        {"lnkPath", Utils::StringUtils::ToNarrow(lnkPath)},
+        {"targetPath", Utils::StringUtils::ToNarrow(targetPath)},
+        {"workingDirectory", Utils::StringUtils::ToNarrow(workingDirectory)},
+        {"arguments", Utils::StringUtils::ToNarrow(arguments)},
         {"targetFileSize", targetFileSize},
         {"machineId", machineId},
         {"macAddress", macAddress},
@@ -1221,11 +1659,11 @@ std::string JumpListEntry::ToJson() const {
     nlohmann::json j = {
         {"artifactId", artifactId},
         {"type", "JumpList"},
-        {"appId", Utils::StringUtils::WideToUtf8(appId)},
-        {"targetPath", Utils::StringUtils::WideToUtf8(targetPath)},
+        {"appId", Utils::StringUtils::ToNarrow(appId)},
+        {"targetPath", Utils::StringUtils::ToNarrow(targetPath)},
         {"entryType", entryType},
-        {"arguments", Utils::StringUtils::WideToUtf8(arguments)},
-        {"workingDirectory", Utils::StringUtils::WideToUtf8(workingDirectory)}
+        {"arguments", Utils::StringUtils::ToNarrow(arguments)},
+        {"workingDirectory", Utils::StringUtils::ToNarrow(workingDirectory)}
     };
     return j.dump(2);
 }
@@ -1234,11 +1672,11 @@ std::string UserAssistEntry::ToJson() const {
     nlohmann::json j = {
         {"artifactId", artifactId},
         {"type", "UserAssist"},
-        {"name", Utils::StringUtils::WideToUtf8(name)},
+        {"name", Utils::StringUtils::ToNarrow(name)},
         {"runCount", runCount},
         {"focusCount", focusCount},
         {"focusTime", focusTime},
-        {"userSid", Utils::StringUtils::WideToUtf8(userSid)},
+        {"userSid", Utils::StringUtils::ToNarrow(userSid)},
         {"guid", guid}
     };
     return j.dump(2);
@@ -1248,9 +1686,9 @@ std::string ShellbagEntry::ToJson() const {
     nlohmann::json j = {
         {"artifactId", artifactId},
         {"type", "Shellbag"},
-        {"path", Utils::StringUtils::WideToUtf8(path)},
+        {"path", Utils::StringUtils::ToNarrow(path)},
         {"itemType", itemType},
-        {"registryPath", Utils::StringUtils::WideToUtf8(registryPath)}
+        {"registryPath", Utils::StringUtils::ToNarrow(registryPath)}
     };
     return j.dump(2);
 }
@@ -1259,12 +1697,12 @@ std::string ScheduledTaskEntry::ToJson() const {
     nlohmann::json j = {
         {"artifactId", artifactId},
         {"type", "ScheduledTask"},
-        {"taskName", Utils::StringUtils::WideToUtf8(taskName)},
-        {"taskPath", Utils::StringUtils::WideToUtf8(taskPath)},
-        {"action", Utils::StringUtils::WideToUtf8(action)},
-        {"arguments", Utils::StringUtils::WideToUtf8(arguments)},
-        {"author", Utils::StringUtils::WideToUtf8(author)},
-        {"description", Utils::StringUtils::WideToUtf8(description)},
+        {"taskName", Utils::StringUtils::ToNarrow(taskName)},
+        {"taskPath", Utils::StringUtils::ToNarrow(taskPath)},
+        {"action", Utils::StringUtils::ToNarrow(action)},
+        {"arguments", Utils::StringUtils::ToNarrow(arguments)},
+        {"author", Utils::StringUtils::ToNarrow(author)},
+        {"description", Utils::StringUtils::ToNarrow(description)},
         {"triggerType", triggerType},
         {"isEnabled", isEnabled},
         {"runLevel", runLevel}
@@ -1309,7 +1747,7 @@ std::string ExtractionStatistics::ToJson() const {
 // PIMPL IMPLEMENTATION CLASS
 // ============================================================================
 
-class ArtifactExtractor::ArtifactExtractorImpl {
+class ArtifactExtractorImpl {
 public:
     // ========================================================================
     // MEMBERS
@@ -1336,7 +1774,7 @@ public:
     mutable std::mutex m_callbacksMutex;
 
     /// @brief Infrastructure integrations
-    std::shared_ptr<ThreatIntel::ThreatIntelManager> m_threatIntel;
+    ThreatIntel::ThreatIntelManager* m_threatIntel = nullptr;
     std::shared_ptr<SignatureStore::SignatureStore> m_signatureStore;
 
     // ========================================================================
@@ -1373,22 +1811,22 @@ public:
 // IMPL: INITIALIZATION
 // ============================================================================
 
-bool ArtifactExtractor::ArtifactExtractorImpl::Initialize(
+bool ArtifactExtractorImpl::Initialize(
     const ExtractionConfiguration& config)
 {
     try {
         if (m_initialized.exchange(true, std::memory_order_acq_rel)) {
-            Utils::Logger::Warn(L"ArtifactExtractor: Already initialized");
+            Utils::Logger::Warn("ArtifactExtractor: Already initialized");
             return true;
         }
 
-        Utils::Logger::Info(L"ArtifactExtractor: Initializing...");
+        Utils::Logger::Info("ArtifactExtractor: Initializing...");
 
         m_status.store(ModuleStatus::Initializing, std::memory_order_release);
 
         // Validate configuration
         if (!config.IsValid()) {
-            Utils::Logger::Error(L"ArtifactExtractor: Invalid configuration");
+            Utils::Logger::Error("ArtifactExtractor: Invalid configuration");
             m_initialized.store(false, std::memory_order_release);
             m_status.store(ModuleStatus::Error, std::memory_order_release);
             return false;
@@ -1397,7 +1835,7 @@ bool ArtifactExtractor::ArtifactExtractorImpl::Initialize(
         m_config = config;
 
         // Initialize infrastructure integrations
-        m_threatIntel = std::make_shared<ThreatIntel::ThreatIntelManager>();
+        m_threatIntel = &ThreatIntel::ThreatIntelManager::Instance();
         m_signatureStore = std::make_shared<SignatureStore::SignatureStore>();
 
         // Create output directory if specified
@@ -1405,31 +1843,31 @@ bool ArtifactExtractor::ArtifactExtractorImpl::Initialize(
             if (!std::filesystem::exists(m_config.outputDirectory)) {
                 std::filesystem::create_directories(m_config.outputDirectory);
             }
-            Utils::Logger::Info(L"ArtifactExtractor: Output directory: {}", m_config.outputDirectory);
+            Utils::Logger::Info("ArtifactExtractor: Output directory: {}", Utils::StringUtils::ToNarrow(m_config.outputDirectory));
         }
 
         m_status.store(ModuleStatus::Running, std::memory_order_release);
 
-        Utils::Logger::Info(L"ArtifactExtractor: Initialized successfully");
+        Utils::Logger::Info("ArtifactExtractor: Initialized successfully");
 
         return true;
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: Initialization failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: Initialization failed - {}",
+                           e.what());
         m_initialized.store(false, std::memory_order_release);
         m_status.store(ModuleStatus::Error, std::memory_order_release);
         return false;
     }
 }
 
-void ArtifactExtractor::ArtifactExtractorImpl::Shutdown() {
+void ArtifactExtractorImpl::Shutdown() {
     try {
         if (!m_initialized.exchange(false, std::memory_order_acq_rel)) {
             return;
         }
 
-        Utils::Logger::Info(L"ArtifactExtractor: Shutting down...");
+        Utils::Logger::Info("ArtifactExtractor: Shutting down...");
 
         m_status.store(ModuleStatus::Stopping, std::memory_order_release);
 
@@ -1441,10 +1879,10 @@ void ArtifactExtractor::ArtifactExtractorImpl::Shutdown() {
 
         m_status.store(ModuleStatus::Stopped, std::memory_order_release);
 
-        Utils::Logger::Info(L"ArtifactExtractor: Shutdown complete");
+        Utils::Logger::Info("ArtifactExtractor: Shutdown complete");
 
     } catch (...) {
-        Utils::Logger::Error(L"ArtifactExtractor: Exception during shutdown");
+        Utils::Logger::Error("ArtifactExtractor: Exception during shutdown");
     }
 }
 
@@ -1452,7 +1890,7 @@ void ArtifactExtractor::ArtifactExtractorImpl::Shutdown() {
 // IMPL: EXTRACTION
 // ============================================================================
 
-std::vector<std::shared_ptr<BaseArtifact>> ArtifactExtractor::ArtifactExtractorImpl::ExtractAllInternal(
+std::vector<std::shared_ptr<BaseArtifact>> ArtifactExtractorImpl::ExtractAllInternal(
     const ExtractionConfiguration& config)
 {
     const auto startTime = Clock::now();
@@ -1461,7 +1899,7 @@ std::vector<std::shared_ptr<BaseArtifact>> ArtifactExtractor::ArtifactExtractorI
     try {
         m_statistics.totalExtractions.fetch_add(1, std::memory_order_relaxed);
 
-        Utils::Logger::Info(L"ArtifactExtractor: Starting comprehensive extraction...");
+        Utils::Logger::Info("ArtifactExtractor: Starting comprehensive extraction...");
 
         // 1. File System Artifacts
         if (static_cast<uint32_t>(config.artifactTypes & ArtifactType::MFTRecord) != 0) {
@@ -1565,12 +2003,12 @@ std::vector<std::shared_ptr<BaseArtifact>> ArtifactExtractor::ArtifactExtractorI
         const auto endTime = Clock::now();
         const auto duration = std::chrono::duration_cast<std::chrono::seconds>(endTime - startTime);
 
-        Utils::Logger::Info(L"ArtifactExtractor: Extraction complete - {} artifacts in {} seconds",
+        Utils::Logger::Info("ArtifactExtractor: Extraction complete - {} artifacts in {} seconds",
                           allArtifacts.size(), duration.count());
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: Extraction failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: Extraction failed - {}",
+                           e.what());
     }
 
     return allArtifacts;
@@ -1580,7 +2018,7 @@ std::vector<std::shared_ptr<BaseArtifact>> ArtifactExtractor::ArtifactExtractorI
 // IMPL: MFT PARSING
 // ============================================================================
 
-std::vector<MFTRecord> ArtifactExtractor::ArtifactExtractorImpl::ParseMFTInternal(wchar_t driveLetter) {
+std::vector<MFTRecord> ArtifactExtractorImpl::ParseMFTInternal(wchar_t driveLetter) {
     std::vector<MFTRecord> records;
 
     try {
@@ -1825,8 +2263,8 @@ std::vector<MFTRecord> ArtifactExtractor::ArtifactExtractorImpl::ParseMFTInterna
                     volumePath.c_str());
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: MFT parsing failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: MFT parsing failed - {}",
+                           e.what());
     }
 
     return records;
@@ -1836,16 +2274,16 @@ std::vector<MFTRecord> ArtifactExtractor::ArtifactExtractorImpl::ParseMFTInterna
 // IMPL: PREFETCH PARSING
 // ============================================================================
 
-std::vector<PrefetchEntry> ArtifactExtractor::ArtifactExtractorImpl::ParsePrefetchInternal() {
+std::vector<PrefetchEntry> ArtifactExtractorImpl::ParsePrefetchInternal() {
     std::vector<PrefetchEntry> entries;
 
     try {
-        Utils::Logger::Info(L"ArtifactExtractor: Parsing Prefetch files...");
+        Utils::Logger::Info("ArtifactExtractor: Parsing Prefetch files...");
 
         std::wstring prefetchDir = L"C:\\Windows\\Prefetch";
 
         if (!std::filesystem::exists(prefetchDir)) {
-            Utils::Logger::Warn(L"ArtifactExtractor: Prefetch directory not found");
+            Utils::Logger::Warn("ArtifactExtractor: Prefetch directory not found");
             return entries;
         }
 
@@ -1872,16 +2310,16 @@ std::vector<PrefetchEntry> ArtifactExtractor::ArtifactExtractorImpl::ParsePrefet
                         entry.prefetchHash = std::wcstoul(hashStr.c_str(), nullptr, 16);
                     }
 
-                    // In production, would parse .pf file structure:
-                    // - Version (17, 23, 26, 30)
-                    // - Run count
-                    // - Last run times array
-                    // - Volume information
-                    // - File metrics array
-
-                    entry.runCount = 1;  // Stub
-                    entry.version = 30;  // Windows 10
-                    entry.lastRunTimes.push_back(SystemClock::now());
+                    // Parse the binary Prefetch file (versions 17/23/26/30,
+                    // with transparent MAM decompression for Win10+).
+                    const auto pfData = ReadPrefetchFile(entry.sourcePath);
+                    if (!pfData.empty()) {
+                        ParsePrefetchBinary(pfData, entry);
+                        // executableName may be overwritten by parser; preserve
+                        // filename-derived name if parser found nothing.
+                        if (entry.executableName.empty() && dashPos != std::wstring::npos)
+                            entry.executableName = filename.substr(0, dashPos);
+                    }
 
                     entries.push_back(entry);
 
@@ -1895,11 +2333,11 @@ std::vector<PrefetchEntry> ArtifactExtractor::ArtifactExtractorImpl::ParsePrefet
 
         m_statistics.prefetchFilesParsed.fetch_add(entries.size(), std::memory_order_relaxed);
 
-        Utils::Logger::Info(L"ArtifactExtractor: Parsed {} Prefetch files", entries.size());
+        Utils::Logger::Info("ArtifactExtractor: Parsed {} Prefetch files", entries.size());
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: Prefetch parsing failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: Prefetch parsing failed - {}",
+                           e.what());
     }
 
     return entries;
@@ -1909,7 +2347,7 @@ std::vector<PrefetchEntry> ArtifactExtractor::ArtifactExtractorImpl::ParsePrefet
 // IMPL: SHIMCACHE PARSING
 // ============================================================================
 
-std::vector<ShimcacheEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseShimcacheInternal() {
+std::vector<ShimcacheEntry> ArtifactExtractorImpl::ParseShimcacheInternal() {
     std::vector<ShimcacheEntry> entries;
 
     try {
@@ -2119,8 +2557,8 @@ std::vector<ShimcacheEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseShimc
                     entries.size());
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: Shimcache parsing failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: Shimcache parsing failed - {}",
+                           e.what());
     }
 
     return entries;
@@ -2130,7 +2568,7 @@ std::vector<ShimcacheEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseShimc
 // IMPL: AMCACHE PARSING
 // ============================================================================
 
-std::vector<AmcacheEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseAmcacheInternal() {
+std::vector<AmcacheEntry> ArtifactExtractorImpl::ParseAmcacheInternal() {
     std::vector<AmcacheEntry> entries;
 
     try {
@@ -2287,8 +2725,8 @@ std::vector<AmcacheEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseAmcache
                     entries.size());
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: Amcache parsing failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: Amcache parsing failed - {}",
+                           e.what());
     }
 
     return entries;
@@ -2298,7 +2736,7 @@ std::vector<AmcacheEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseAmcache
 // IMPL: BROWSER HISTORY PARSING
 // ============================================================================
 
-std::vector<BrowserHistoryEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseBrowserHistoryInternal(
+std::vector<BrowserHistoryEntry> ArtifactExtractorImpl::ParseBrowserHistoryInternal(
     BrowserType browser)
 {
     std::vector<BrowserHistoryEntry> entries;
@@ -2492,8 +2930,8 @@ std::vector<BrowserHistoryEntry> ArtifactExtractor::ArtifactExtractorImpl::Parse
                     browserName.c_str());
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: Browser history parsing failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: Browser history parsing failed - {}",
+                           e.what());
     }
 
     return entries;
@@ -2503,13 +2941,13 @@ std::vector<BrowserHistoryEntry> ArtifactExtractor::ArtifactExtractorImpl::Parse
 // IMPL: LNK FILE PARSING
 // ============================================================================
 
-std::vector<LNKFileEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseLNKFilesInternal(
+std::vector<LNKFileEntry> ArtifactExtractorImpl::ParseLNKFilesInternal(
     std::wstring_view directory)
 {
     std::vector<LNKFileEntry> entries;
 
     try {
-        Utils::Logger::Info(L"ArtifactExtractor: Parsing LNK files...");
+        Utils::Logger::Info("ArtifactExtractor: Parsing LNK files...");
 
         std::vector<std::wstring> searchDirs;
 
@@ -2543,19 +2981,32 @@ std::vector<LNKFileEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseLNKFile
                         entry.lnkPath = dir + L"\\" + findData.cFileName;
                         entry.collectionTime = SystemClock::now();
 
-                        // In production, would parse LNK structure:
-                        // - Shell Link Header (76 bytes)
-                        // - LinkTargetIDList
-                        // - LinkInfo (local/network path)
-                        // - StringData (name, relative path, working dir, args)
-                        // - ExtraData (TrackerDataBlock with MAC, machine ID)
-
-                        entry.targetPath = L"C:\\Windows\\System32\\notepad.exe";  // Stub
-                        entry.workingDirectory = L"C:\\Windows\\System32";
-                        entry.targetFileSize = 1024 * 200;
-                        entry.targetCreationTime = SystemClock::now();
-                        entry.targetModificationTime = SystemClock::now();
-                        entry.targetAccessTime = SystemClock::now();
+                        // Parse MS-SHLLINK binary format:
+                        // header → IDList → LinkInfo (local/network path) →
+                        // StringData (workdir, args) → ExtraData (TrackerBlock).
+                        {
+                            HANDLE hLnk = ::CreateFileW(
+                                entry.lnkPath.c_str(), GENERIC_READ,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                            if (hLnk != INVALID_HANDLE_VALUE) {
+                                ScopedHandle lh(hLnk);
+                                LARGE_INTEGER lnkSz{};
+                                if (::GetFileSizeEx(hLnk, &lnkSz) &&
+                                    lnkSz.QuadPart >= 0x4C &&
+                                    lnkSz.QuadPart <= 4 * 1024 * 1024)
+                                {
+                                    std::vector<uint8_t> buf(
+                                        static_cast<size_t>(lnkSz.QuadPart));
+                                    DWORD rd = 0;
+                                    if (::ReadFile(hLnk, buf.data(),
+                                        static_cast<DWORD>(buf.size()), &rd, nullptr))
+                                    {
+                                        ParseLNKBinary(buf.data(), rd, entry);
+                                    }
+                                }
+                            }
+                        }
 
                         entries.push_back(entry);
 
@@ -2572,11 +3023,11 @@ std::vector<LNKFileEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseLNKFile
             }
         }
 
-        Utils::Logger::Info(L"ArtifactExtractor: Parsed {} LNK files", entries.size());
+        Utils::Logger::Info("ArtifactExtractor: Parsed {} LNK files", entries.size());
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: LNK parsing failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: LNK parsing failed - {}",
+                           e.what());
     }
 
     return entries;
@@ -2586,13 +3037,13 @@ std::vector<LNKFileEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseLNKFile
 // IMPL: JUMP LIST PARSING
 // ============================================================================
 
-std::vector<JumpListEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseJumpListsInternal(
+std::vector<JumpListEntry> ArtifactExtractorImpl::ParseJumpListsInternal(
     std::wstring_view userProfile)
 {
     std::vector<JumpListEntry> entries;
 
     try {
-        Utils::Logger::Info(L"ArtifactExtractor: Parsing Jump Lists...");
+        Utils::Logger::Info("ArtifactExtractor: Parsing Jump Lists...");
 
         std::vector<std::wstring> profiles;
         if (userProfile.empty()) {
@@ -2628,12 +3079,10 @@ std::vector<JumpListEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseJumpLi
                                 entry.appId = filename.substr(0, dotPos);
                             }
 
-                            // In production, would parse OLE compound file structure
-                            entry.targetPath = L"C:\\Example\\Document.txt";  // Stub
-                            entry.creationTime = SystemClock::now();
-
-                            entries.push_back(entry);
-
+                            // Parse OLE compound document — each numbered stream
+                            // is an embedded LNK; ParseJumpListFile extracts them all.
+                            ParseJumpListFile(entry.sourcePath, entry.appId,
+                                entries, m_config.maxArtifactsPerType);
                             if (entries.size() >= m_config.maxArtifactsPerType) {
                                 break;
                             }
@@ -2648,11 +3097,11 @@ std::vector<JumpListEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseJumpLi
             }
         }
 
-        Utils::Logger::Info(L"ArtifactExtractor: Parsed {} Jump List entries", entries.size());
+        Utils::Logger::Info("ArtifactExtractor: Parsed {} Jump List entries", entries.size());
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: Jump List parsing failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: Jump List parsing failed - {}",
+                           e.what());
     }
 
     return entries;
@@ -2662,13 +3111,13 @@ std::vector<JumpListEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseJumpLi
 // IMPL: USERASSIST PARSING
 // ============================================================================
 
-std::vector<UserAssistEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseUserAssistInternal(
+std::vector<UserAssistEntry> ArtifactExtractorImpl::ParseUserAssistInternal(
     std::wstring_view userSID)
 {
     std::vector<UserAssistEntry> entries;
 
     try {
-        Utils::Logger::Info(L"ArtifactExtractor: Parsing UserAssist...");
+        Utils::Logger::Info("ArtifactExtractor: Parsing UserAssist...");
 
         // UserAssist is in: HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist
         // Contains two GUIDs with ROT13-encoded program names and execution counts
@@ -2700,7 +3149,7 @@ std::vector<UserAssistEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseUser
                         UserAssistEntry entry;
                         entry.artifactId = GenerateArtifactId();
                         entry.type = ArtifactType::UserAssist;
-                        entry.guid = Utils::StringUtils::WideToUtf8(guidName);
+                        entry.guid = Utils::StringUtils::ToNarrow(guidName);
                         entry.collectionTime = SystemClock::now();
 
                         // Decode ROT13
@@ -2739,11 +3188,11 @@ std::vector<UserAssistEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseUser
             RegCloseKey(hKey);
         }
 
-        Utils::Logger::Info(L"ArtifactExtractor: Parsed {} UserAssist entries", entries.size());
+        Utils::Logger::Info("ArtifactExtractor: Parsed {} UserAssist entries", entries.size());
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: UserAssist parsing failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: UserAssist parsing failed - {}",
+                           e.what());
     }
 
     return entries;
@@ -2753,7 +3202,7 @@ std::vector<UserAssistEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseUser
 // IMPL: SHELLBAGS PARSING
 // ============================================================================
 
-std::vector<ShellbagEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseShellbagsInternal(
+std::vector<ShellbagEntry> ArtifactExtractorImpl::ParseShellbagsInternal(
     std::wstring_view userSID)
 {
     std::vector<ShellbagEntry> entries;
@@ -2904,8 +3353,8 @@ std::vector<ShellbagEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseShellb
                     entries.size());
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: Shellbags parsing failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: Shellbags parsing failed - {}",
+                           e.what());
     }
 
     return entries;
@@ -2915,11 +3364,11 @@ std::vector<ShellbagEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseShellb
 // IMPL: SCHEDULED TASKS PARSING
 // ============================================================================
 
-std::vector<ScheduledTaskEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseScheduledTasksInternal() {
+std::vector<ScheduledTaskEntry> ArtifactExtractorImpl::ParseScheduledTasksInternal() {
     std::vector<ScheduledTaskEntry> entries;
 
     try {
-        Utils::Logger::Info(L"ArtifactExtractor: Parsing Scheduled Tasks...");
+        Utils::Logger::Info("ArtifactExtractor: Parsing Scheduled Tasks...");
 
         // Use Task Scheduler COM API
         CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -3041,11 +3490,11 @@ std::vector<ScheduledTaskEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseS
 
         CoUninitialize();
 
-        Utils::Logger::Info(L"ArtifactExtractor: Parsed {} scheduled tasks", entries.size());
+        Utils::Logger::Info("ArtifactExtractor: Parsed {} scheduled tasks", entries.size());
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: Scheduled tasks parsing failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: Scheduled tasks parsing failed - {}",
+                           e.what());
         CoUninitialize();
     }
 
@@ -3056,26 +3505,184 @@ std::vector<ScheduledTaskEntry> ArtifactExtractor::ArtifactExtractorImpl::ParseS
 // IMPL: FILE RECOVERY
 // ============================================================================
 
-bool ArtifactExtractor::ArtifactExtractorImpl::RecoverFileInternal(
+bool ArtifactExtractorImpl::RecoverFileInternal(
     const std::wstring& fileName,
     std::vector<uint8_t>& outData)
 {
     try {
-        Utils::Logger::Info(L"ArtifactExtractor: Attempting to recover file: {}", fileName);
+        Utils::Logger::Info("ArtifactExtractor: Attempting to recover file: {}", Utils::StringUtils::ToNarrow(fileName));
 
-        // In production, would:
-        // 1. Parse MFT to find deleted file entry
-        // 2. Check if data runs are still valid (not overwritten)
-        // 3. Read raw disk sectors using data runs
-        // 4. Reconstruct file content
+        // Derive volume letter from path (e.g. "C:\deleted.exe" → 'C')
+        wchar_t driveLetter = L'C';
+        if (fileName.size() >= 2 && fileName[1] == L':')
+            driveLetter = std::towupper(static_cast<wchar_t>(fileName[0]));
 
-        // For now, return false (not implemented in stub)
-        Utils::Logger::Warn(L"ArtifactExtractor: File recovery not yet implemented");
+        const std::wstring volumePath = std::wstring(L"\\\\.\\") + driveLetter + L":";
+        HANDLE hVol = ::CreateFileW(volumePath.c_str(),
+            GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr, OPEN_EXISTING, 0, nullptr);
+        if (hVol == INVALID_HANDLE_VALUE) {
+            Utils::Logger::Warn("ArtifactExtractor: Cannot open volume {} for file recovery",
+                                Utils::StringUtils::ToNarrow(volumePath));
+            return false;
+        }
+        ScopedHandle volHandle(hVol);
+
+        NTFS_VOLUME_DATA_BUFFER vd{};
+        DWORD br = 0;
+        if (!::DeviceIoControl(hVol, FSCTL_GET_NTFS_VOLUME_DATA,
+            nullptr, 0, &vd, sizeof(vd), &br, nullptr))
+            return false;
+
+        const auto bpr = static_cast<size_t>(vd.BytesPerFileRecordSegment);
+        const auto bps = static_cast<uint32_t>(vd.BytesPerSector);
+        const auto bpc = static_cast<uint64_t>(vd.BytesPerCluster);
+        if (bpr < 512 || bpr > 65536 || bps < 512) return false;
+
+        // Seek to MFT start
+        LARGE_INTEGER mftOff{};
+        mftOff.QuadPart = static_cast<LONGLONG>(vd.MftStartLcn.QuadPart * static_cast<LONGLONG>(bpc));
+        if (!::SetFilePointerEx(hVol, mftOff, nullptr, FILE_BEGIN)) return false;
+
+        // Basename for matching (case-insensitive)
+        std::wstring baseName = fileName;
+        const auto lastSlash = baseName.find_last_of(L"\\/");
+        if (lastSlash != std::wstring::npos)
+            baseName = baseName.substr(lastSlash + 1);
+        for (auto& ch : baseName) ch = std::towlower(ch);
+
+        static constexpr uint32_t kAttrFileName = 0x30U;
+        static constexpr uint32_t kAttrData     = 0x80U;
+        static constexpr uint32_t kAttrEnd      = 0xFFFFFFFFU;
+        static constexpr uint16_t kFlagDeleted  = 0x0000U; // in-use flag cleared
+
+        const uint64_t maxRecords = (vd.MftValidDataLength.QuadPart > 0)
+            ? std::min<uint64_t>(
+                static_cast<uint64_t>(vd.MftValidDataLength.QuadPart) / bpr,
+                ArtifactConstants::MAX_MFT_RECORDS)
+            : ArtifactConstants::MAX_MFT_RECORDS;
+
+        std::vector<uint8_t> rec(bpr);
+
+        for (uint64_t idx = 0; idx < maxRecords; ++idx) {
+            DWORD rdBytes = 0;
+            if (!::ReadFile(hVol, rec.data(), static_cast<DWORD>(rec.size()), &rdBytes, nullptr) ||
+                rdBytes != static_cast<DWORD>(rec.size()))
+                break;
+
+            const auto* hdr = reinterpret_cast<const NtfsFileRecordHeader*>(rec.data());
+            if (hdr->signature != ArtifactConstants::MFT_FILE_SIGNATURE) continue;
+
+            // Only look at deleted (non-in-use) file records
+            if ((hdr->flags & 0x0001u) != 0) continue; // bit 0 = in use
+
+            auto fixedRec = rec;
+            if (!ApplyNtfsUpdateSequenceArray(fixedRec,
+                hdr->updateSequenceOffset, hdr->updateSequenceCount, bps)) continue;
+
+            // Walk attributes
+            size_t attrOff = hdr->firstAttributeOffset;
+            bool nameMatch = false;
+            std::vector<DataRun> dataRuns;
+            uint64_t dataSize = 0;
+
+            while (attrOff + sizeof(NtfsAttributeHeader) <= bpr) {
+                const auto* ah = reinterpret_cast<const NtfsAttributeHeader*>(fixedRec.data() + attrOff);
+                if (ah->type == kAttrEnd || ah->length == 0) break;
+                if (attrOff + ah->length > bpr) break;
+
+                if (ah->type == kAttrFileName && ah->nonResident == 0) {
+                    const auto* rh = reinterpret_cast<const NtfsResidentAttributeHeader*>(fixedRec.data() + attrOff);
+                    const size_t valOff = attrOff + rh->valueOffset;
+                    if (valOff + sizeof(NtfsFileNameValueHeader) <= bpr) {
+                        const auto* fn = reinterpret_cast<const NtfsFileNameValueHeader*>(fixedRec.data() + valOff);
+                        const uint8_t fnLen = fn->fileNameLength;
+                        const size_t fnDataOff = valOff + sizeof(NtfsFileNameValueHeader);
+                        if (fnDataOff + static_cast<size_t>(fnLen) * 2 <= bpr && fnLen > 0) {
+                            std::wstring recName(
+                                reinterpret_cast<const wchar_t*>(fixedRec.data() + fnDataOff), fnLen);
+                            for (auto& c : recName) c = std::towlower(c);
+                            if (recName == baseName) nameMatch = true;
+                        }
+                    }
+                }
+
+                if (ah->type == kAttrData) {
+                    if (ah->nonResident == 0) {
+                        // Resident $DATA — copy directly
+                        const auto* rh = reinterpret_cast<const NtfsResidentAttributeHeader*>(fixedRec.data() + attrOff);
+                        const size_t valOff = attrOff + rh->valueOffset;
+                        if (valOff + rh->valueLength <= bpr) {
+                            outData.assign(fixedRec.data() + valOff,
+                                           fixedRec.data() + valOff + rh->valueLength);
+                            dataSize = rh->valueLength;
+                        }
+                    } else {
+                        const auto* nrh = reinterpret_cast<const NtfsNonResidentAttributeHeader*>(fixedRec.data() + attrOff);
+                        dataSize = static_cast<uint64_t>(nrh->dataSize);
+                        const size_t runOff = attrOff + nrh->dataRunsOffset;
+                        if (runOff < bpr)
+                            dataRuns = DecodeDataRuns(fixedRec.data() + runOff, bpr - runOff);
+                    }
+                }
+
+                attrOff += ah->length;
+            }
+
+            if (!nameMatch) continue;
+            if (dataSize == 0 || dataSize > 512ULL * 1024ULL * 1024ULL) continue;
+
+            // Resident data already populated above
+            if (!outData.empty()) {
+                Utils::Logger::Info("ArtifactExtractor: Recovered {} bytes (resident) for {}",
+                    outData.size(), Utils::StringUtils::ToNarrow(baseName));
+                return true;
+            }
+
+            // Non-resident: read clusters from data runs
+            if (dataRuns.empty()) continue;
+            outData.reserve(static_cast<size_t>(dataSize));
+
+            std::vector<uint8_t> clusterBuf(static_cast<size_t>(bpc));
+            uint64_t remaining = dataSize;
+
+            for (const auto& run : dataRuns) {
+                if (remaining == 0) break;
+                for (uint64_t c = 0; c < run.length && remaining > 0; ++c) {
+                    LARGE_INTEGER clusterSeek{};
+                    clusterSeek.QuadPart = static_cast<LONGLONG>(
+                        static_cast<uint64_t>(run.lcn + static_cast<int64_t>(c)) * bpc);
+                    if (!::SetFilePointerEx(hVol, clusterSeek, nullptr, FILE_BEGIN)) {
+                        outData.clear();
+                        return false;
+                    }
+                    DWORD clRead = 0;
+                    if (!::ReadFile(hVol, clusterBuf.data(),
+                        static_cast<DWORD>(clusterBuf.size()), &clRead, nullptr) || clRead == 0) {
+                        outData.clear();
+                        return false;
+                    }
+                    const size_t take = static_cast<size_t>(
+                        std::min<uint64_t>(remaining, static_cast<uint64_t>(clRead)));
+                    outData.insert(outData.end(), clusterBuf.begin(), clusterBuf.begin() + take);
+                    remaining -= take;
+                }
+            }
+
+            if (outData.size() < dataSize) { outData.clear(); return false; }
+            outData.resize(static_cast<size_t>(dataSize));
+
+            Utils::Logger::Info("ArtifactExtractor: Recovered {} bytes for {}",
+                outData.size(), Utils::StringUtils::ToNarrow(baseName));
+            return true;
+        }
+
+        Utils::Logger::Warn("ArtifactExtractor: Deleted file not found in MFT: {}", Utils::StringUtils::ToNarrow(fileName));
         return false;
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: File recovery failed - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: File recovery failed - {}",
+                           e.what());
         return false;
     }
 }
@@ -3084,19 +3691,19 @@ bool ArtifactExtractor::ArtifactExtractorImpl::RecoverFileInternal(
 // IMPL: CALLBACKS
 // ============================================================================
 
-void ArtifactExtractor::ArtifactExtractorImpl::InvokeArtifactCallback(const BaseArtifact& artifact) {
+void ArtifactExtractorImpl::InvokeArtifactCallback(const BaseArtifact& artifact) {
     std::lock_guard lock(m_callbacksMutex);
     if (m_artifactCallback) {
         try {
             m_artifactCallback(artifact);
         } catch (const std::exception& e) {
-            Utils::Logger::Error(L"ArtifactExtractor: Artifact callback error - {}",
-                               Utils::StringUtils::Utf8ToWide(e.what()));
+            Utils::Logger::Error("ArtifactExtractor: Artifact callback error - {}",
+                               e.what());
         }
     }
 }
 
-void ArtifactExtractor::ArtifactExtractorImpl::InvokeProgressCallback(
+void ArtifactExtractorImpl::InvokeProgressCallback(
     ArtifactType type,
     uint32_t percentage,
     const std::wstring& item)
@@ -3106,8 +3713,8 @@ void ArtifactExtractor::ArtifactExtractorImpl::InvokeProgressCallback(
         try {
             m_progressCallback(type, percentage, item);
         } catch (const std::exception& e) {
-            Utils::Logger::Error(L"ArtifactExtractor: Progress callback error - {}",
-                               Utils::StringUtils::Utf8ToWide(e.what()));
+            Utils::Logger::Error("ArtifactExtractor: Progress callback error - {}",
+                               e.what());
         }
     }
 }
@@ -3135,14 +3742,14 @@ bool ArtifactExtractor::HasInstance() noexcept {
 ArtifactExtractor::ArtifactExtractor()
     : m_impl(std::make_unique<ArtifactExtractorImpl>())
 {
-    Utils::Logger::Info(L"ArtifactExtractor: Constructor called");
+    Utils::Logger::Info("ArtifactExtractor: Constructor called");
 }
 
 ArtifactExtractor::~ArtifactExtractor() {
     if (m_impl) {
         m_impl->Shutdown();
     }
-    Utils::Logger::Info(L"ArtifactExtractor: Destructor called");
+    Utils::Logger::Info("ArtifactExtractor: Destructor called");
 }
 
 bool ArtifactExtractor::Initialize(const ExtractionConfiguration& config) {
@@ -3382,7 +3989,7 @@ void ArtifactExtractor::ResetStatistics() {
 // ============================================================================
 
 bool ArtifactExtractor::SelfTest() {
-    Utils::Logger::Info(L"ArtifactExtractor: Running self-test...");
+    Utils::Logger::Info("ArtifactExtractor: Running self-test...");
 
     try {
         // Test 1: Initialization
@@ -3393,22 +4000,21 @@ bool ArtifactExtractor::SelfTest() {
         config.timeoutMs = 60000;
 
         if (!Initialize(config)) {
-            Utils::Logger::Error(L"ArtifactExtractor: Self-test failed - Initialization");
+            Utils::Logger::Error("ArtifactExtractor: Self-test failed - Initialization");
             return false;
         }
 
         // Test 2: Configuration validation
         if (!config.IsValid()) {
-            Utils::Logger::Error(L"ArtifactExtractor: Self-test failed - Configuration invalid");
+            Utils::Logger::Error("ArtifactExtractor: Self-test failed - Configuration invalid");
             return false;
         }
 
         // Test 3: Statistics
-        auto stats = GetStatistics();
         ResetStatistics();
-        stats = GetStatistics();
+        auto stats = GetStatistics();
         if (stats.totalExtractions.load() != 0) {
-            Utils::Logger::Error(L"ArtifactExtractor: Self-test failed - Statistics reset");
+            Utils::Logger::Error("ArtifactExtractor: Self-test failed - Statistics reset");
             return false;
         }
 
@@ -3416,7 +4022,7 @@ bool ArtifactExtractor::SelfTest() {
         std::string id1 = GenerateArtifactId();
         std::string id2 = GenerateArtifactId();
         if (id1 == id2) {
-            Utils::Logger::Error(L"ArtifactExtractor: Self-test failed - Duplicate artifact IDs");
+            Utils::Logger::Error("ArtifactExtractor: Self-test failed - Duplicate artifact IDs");
             return false;
         }
 
@@ -3424,16 +4030,16 @@ bool ArtifactExtractor::SelfTest() {
         std::wstring encoded = L"URYYBJBEYQ";  // "HELLOWORLD" in ROT13
         std::wstring decoded = DecodeROT13Internal(encoded);
         if (decoded != L"HELLOWORLD") {
-            Utils::Logger::Error(L"ArtifactExtractor: Self-test failed - ROT13 decode");
+            Utils::Logger::Error("ArtifactExtractor: Self-test failed - ROT13 decode");
             return false;
         }
 
-        Utils::Logger::Info(L"ArtifactExtractor: Self-test PASSED");
+        Utils::Logger::Info("ArtifactExtractor: Self-test PASSED");
         return true;
 
     } catch (const std::exception& e) {
-        Utils::Logger::Error(L"ArtifactExtractor: Self-test exception - {}",
-                           Utils::StringUtils::Utf8ToWide(e.what()));
+        Utils::Logger::Error("ArtifactExtractor: Self-test exception - {}",
+                           e.what());
         return false;
     }
 }

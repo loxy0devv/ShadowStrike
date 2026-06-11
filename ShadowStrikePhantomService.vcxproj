@@ -266,6 +266,192 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <ObjectFileName>$(IntDir)EDR\ProcessInspector.obj</ObjectFileName>
     </ClCompile>
+    <!-- EDR full subsystem — Config -->
+    <ClCompile Include="src\Products\Community\PhantomEDR\Config\EDRConfigRegistration.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\EDRConfigRegistration.obj</ObjectFileName>
+    </ClCompile>
+    <!-- EDR full subsystem — Forensics -->
+    <ClCompile Include="src\Products\Community\PhantomEDR\Forensics\ArtifactExtractor.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\ArtifactExtractor.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\Forensics\IncidentRecorder.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\IncidentRecorder.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\Forensics\MemoryDumper.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\MemoryDumper.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\Forensics\NetworkCapture.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\NetworkCapture.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\Forensics\TimelineAnalyzer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\TimelineAnalyzer.obj</ObjectFileName>
+    </ClCompile>
+    <!-- EDR full subsystem — ThreatHunting -->
+    <ClCompile Include="src\Products\Community\PhantomEDR\ThreatHunting\HuntRuleManager.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\HuntRuleManager.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\ThreatHunting\HuntScheduler.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\HuntScheduler.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\ThreatHunting\IOCScanner.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\IOCScanner.obj</ObjectFileName>
+    </ClCompile>
+    <!-- EDR full subsystem — IncidentResponse -->
+    <ClCompile Include="src\Products\Community\PhantomEDR\IncidentResponse\AlertCorrelator.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\AlertCorrelator.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\IncidentResponse\ContainmentEngine.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\ContainmentEngine.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\IncidentResponse\RemediationEngine.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\RemediationEngine.obj</ObjectFileName>
+    </ClCompile>
+    <!-- EDR full subsystem — LiveResponse -->
+    <ClCompile Include="src\Products\Community\PhantomEDR\LiveResponse\FileInspector.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\FileInspector.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\LiveResponse\RegistryInspector.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\RegistryInspector.obj</ObjectFileName>
+    </ClCompile>
+    <!-- EDR full subsystem — Telemetry -->
+    <ClCompile Include="src\Products\Community\PhantomEDR\Telemetry\TelemetryCollector.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\EDRTelemetryCollector.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\Telemetry\TelemetryFilter.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\TelemetryFilter.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\Telemetry\TelemetrySerializer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\TelemetrySerializer.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\Telemetry\LocalTelemetryStore.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\LocalTelemetryStore.obj</ObjectFileName>
+    </ClCompile>
+    <!-- EDR full subsystem — Playbooks -->
+    <ClCompile Include="src\Products\Community\PhantomEDR\Playbooks\PlaybookAction.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\PlaybookAction.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\Playbooks\PlaybookLibrary.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\PlaybookLibrary.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\Playbooks\PlaybookScheduler.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\PlaybookScheduler.obj</ObjectFileName>
+    </ClCompile>
+    <!-- EDR full subsystem — AssetInventory -->
+    <ClCompile Include="src\Products\Community\PhantomEDR\AssetInventory\AssetDatabase.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\AssetDatabase.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\AssetInventory\AssetDiscovery.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\AssetDiscovery.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\AssetInventory\SoftwareInventory.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\SoftwareInventory.obj</ObjectFileName>
+    </ClCompile>
+    <!-- EDR full subsystem — Vulnerability -->
+    <ClCompile Include="src\Products\Community\PhantomEDR\Vulnerability\VulnDatabase.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\VulnDatabase.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\Vulnerability\PatchAssessment.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\PatchAssessment.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\Vulnerability\RiskScorer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\RiskScorer.obj</ObjectFileName>
+    </ClCompile>
+    <!-- EDR full subsystem — DeviceControl -->
+    <ClCompile Include="src\Products\Community\PhantomEDR\DeviceControl\DevicePolicyEngine.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\DevicePolicyEngine.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\DeviceControl\DeviceExceptions.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\DeviceExceptions.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\DeviceControl\DeviceAuditLog.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\DeviceAuditLog.obj</ObjectFileName>
+    </ClCompile>
+    <!-- EDR full subsystem — Compliance -->
+    <ClCompile Include="src\Products\Community\PhantomEDR\Compliance\ComplianceEngine.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\ComplianceEngine.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\Compliance\CompliancePolicies.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\CompliancePolicies.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\Compliance\ComplianceReporter.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\ComplianceReporter.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\Compliance\HardeningAdvisor.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\HardeningAdvisor.obj</ObjectFileName>
+    </ClCompile>
+    <!-- EDR full subsystem — Sandboxing -->
+    <ClCompile Include="src\Products\Community\PhantomEDR\Sandboxing\LocalSandbox.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\LocalSandbox.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\Sandboxing\SandboxAnalyzer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\SandboxAnalyzer.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\Sandboxing\SandboxPolicy.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\SandboxPolicy.obj</ObjectFileName>
+    </ClCompile>
+    <!-- EDR full subsystem — Reporting -->
+    <ClCompile Include="src\Products\Community\PhantomEDR\Reporting\ReportGenerator.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\EDRReportGenerator.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\Reporting\ExecutiveSummary.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\ExecutiveSummary.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\Reporting\IncidentReport.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\IncidentReport.obj</ObjectFileName>
+    </ClCompile>
+    <!-- EDR full subsystem — PolicyEngine -->
+    <ClCompile Include="src\Products\Community\PhantomEDR\PolicyEngine\PolicyManager.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\EDRPolicyManager.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\PolicyEngine\PolicyEnforcer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\PolicyEnforcer.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomEDR\PolicyEngine\PolicyAuditLog.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)EDR\PolicyAuditLog.obj</ObjectFileName>
+    </ClCompile>
   </ItemGroup>
 
   <!-- XDR subsystem implementations required by XDRIpcDispatcher + TierSelector -->
@@ -297,6 +483,73 @@
     <ClCompile Include="src\Products\Community\PhantomXDR\SOARLocal\SOAREngine.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <ObjectFileName>$(IntDir)XDR\SOAREngine.obj</ObjectFileName>
+    </ClCompile>
+    <!-- XDR full subsystem — Orchestrator + Config -->
+    <ClCompile Include="src\Products\Community\PhantomXDR\XDRProductOrchestrator.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)XDR\XDRProductOrchestrator.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomXDR\Config\XDRConfigRegistration.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)XDR\XDRConfigRegistration.obj</ObjectFileName>
+    </ClCompile>
+    <!-- XDR full subsystem — Correlation -->
+    <ClCompile Include="src\Products\Community\PhantomXDR\XDRCorrelation\CorrelationRules.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)XDR\CorrelationRules.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomXDR\XDRCorrelation\IncidentScorer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)XDR\IncidentScorer.obj</ObjectFileName>
+    </ClCompile>
+    <!-- XDR full subsystem — NetworkDetection -->
+    <ClCompile Include="src\Products\Community\PhantomXDR\NetworkDetection\BeaconDetector.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)XDR\BeaconDetector.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomXDR\NetworkDetection\DNSAnalyzer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)XDR\DNSAnalyzer.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomXDR\NetworkDetection\LateralMovementDetector.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)XDR\LateralMovementDetector.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomXDR\NetworkDetection\TLSInspector.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)XDR\TLSInspector.obj</ObjectFileName>
+    </ClCompile>
+    <!-- XDR full subsystem — SOAR -->
+    <ClCompile Include="src\Products\Community\PhantomXDR\SOARLocal\SOARPlaybooks.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)XDR\SOARPlaybooks.obj</ObjectFileName>
+    </ClCompile>
+    <!-- XDR full subsystem — EmailThreat -->
+    <ClCompile Include="src\Products\Community\PhantomXDR\EmailThreat\PhishingCorrelator.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)XDR\PhishingCorrelator.obj</ObjectFileName>
+    </ClCompile>
+    <!-- XDR full subsystem — IdentityProtection -->
+    <ClCompile Include="src\Products\Community\PhantomXDR\IdentityProtection\CredentialProtection.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)XDR\CredentialProtection.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomXDR\IdentityProtection\IdentityAnalytics.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)XDR\IdentityAnalytics.obj</ObjectFileName>
+    </ClCompile>
+    <!-- XDR full subsystem — AIAssistant -->
+    <ClCompile Include="src\Products\Community\PhantomXDR\AIAssistant\SOCAssistant.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)XDR\SOCAssistant.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomXDR\AIAssistant\IncidentSummarizer.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)XDR\IncidentSummarizer.obj</ObjectFileName>
+    </ClCompile>
+    <ClCompile Include="src\Products\Community\PhantomXDR\AIAssistant\QueryTranslator.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <ObjectFileName>$(IntDir)XDR\QueryTranslator.obj</ObjectFileName>
     </ClCompile>
   </ItemGroup>
 

@@ -148,6 +148,8 @@ private:
     void ComputeEntropy(std::span<const uint8_t> bytes, StaticReport& out);
     void ComputeHashes(std::span<const uint8_t> bytes, StaticReport& out);
     void DetectPackers(StaticReport& out);
+    void DetectEmbeddedPE(StaticReport& out);
+    void DetectDriverCharacteristics(StaticReport& out);
     void ScoreReport(StaticReport& out);
     void ApplyDescriptiveTags(StaticReport& out);
 

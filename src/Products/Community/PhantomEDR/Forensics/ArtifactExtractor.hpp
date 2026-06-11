@@ -811,7 +811,19 @@ struct ExtractionStatistics {
     
     /// @brief Start time
     TimePoint startTime = Clock::now();
-    
+
+    ExtractionStatistics() = default;
+    ExtractionStatistics(const ExtractionStatistics& o) noexcept
+        : totalExtractions  (o.totalExtractions  .load(std::memory_order_relaxed))
+        , totalArtifacts    (o.totalArtifacts    .load(std::memory_order_relaxed))
+        , mftRecordsParsed  (o.mftRecordsParsed  .load(std::memory_order_relaxed))
+        , prefetchFilesParsed(o.prefetchFilesParsed.load(std::memory_order_relaxed))
+        , deletedFilesFound (o.deletedFilesFound .load(std::memory_order_relaxed))
+        , filesRecovered    (o.filesRecovered    .load(std::memory_order_relaxed))
+        , browserEntriesFound(o.browserEntriesFound.load(std::memory_order_relaxed))
+        , startTime(o.startTime)
+    {}
+
     /**
      * @brief Reset statistics
      */

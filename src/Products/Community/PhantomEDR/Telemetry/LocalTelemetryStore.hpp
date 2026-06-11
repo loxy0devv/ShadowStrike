@@ -58,6 +58,12 @@ public:
     LocalTelemetryStore(LocalTelemetryStore&&) = delete;
     LocalTelemetryStore& operator=(LocalTelemetryStore&&) = delete;
 
+    /// @brief Meyers singleton — one store per process lifetime.
+    static LocalTelemetryStore& Instance() {
+        static LocalTelemetryStore s_instance;
+        return s_instance;
+    }
+
     // -- ITelemetryStore interface -------------------------------------------
 
     [[nodiscard]] bool Initialize(const StoreConfig& config) override;

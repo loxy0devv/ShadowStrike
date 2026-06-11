@@ -175,15 +175,6 @@ jobs:
             $env:WPO_OVERRIDE $env:MP_OVERRIDE `
             /m:1 /nologo /flp:"LogFile=build_tray.log;Verbosity=minimal"
 
-      - name: Build ShadowStrikePhantomUI
-        shell: pwsh
-        run: |
-          msbuild ShadowStrikePhantomUI.vcxproj `
-            /t:Rebuild /p:Configuration=Release /p:Platform=$env:PLATFORM `
-            /p:PlatformToolset=$env:PLATFORM_TOOLSET /p:PreferredToolArchitecture=$env:PREFER_TOOL_ARCH `
-            $env:WPO_OVERRIDE $env:MP_OVERRIDE `
-            /m:1 /nologo /flp:"LogFile=build_ui.log;Verbosity=minimal"
-
       - name: Upload build logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -194,7 +185,6 @@ jobs:
             build_corelib.log
             build_service.log
             build_tray.log
-            build_ui.log
           retention-days: 7
 
       # Stage all user-mode binaries into one flat directory for the
@@ -204,9 +194,9 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force usermode-staging | Out-Null
-          $exes = Get-ChildItem "x64\Release\*.exe" -ErrorAction SilentlyContinue
+          $exes = Get-ChildItem "bin\Release\*.exe" -ErrorAction SilentlyContinue
           if (-not $exes) {
-            Write-Error "No .exe files found in x64\Release — build may have failed"
+            Write-Error "No .exe files found in bin\Release — build may have failed"
             exit 1
           }
           $exes | Copy-Item -Destination usermode-staging\
@@ -337,11 +327,64 @@ jobs:
           retention-days: 1
 
   # ============================================================================
-  # Job 3: React dashboard
-  # Runs on ubuntu-latest (faster Node.js builds, no Windows licensing overhead).
+  # Job 3: CLI — build the interactive terminal control surface.
+  # The web UI has been removed; the CLI is the operator interface until
+  # a new native GUI is ready.
   # ============================================================================
-  build-frontend:
-    name: React dashboard
+  build-cli:
+    name: CLI (x64 Release)
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build ShadowStrikePhantomCLI
+        shell: pwsh
+        run: |
+          msbuild ShadowStrikePhantomCLI.vcxproj `
+            /t:Rebuild /p:Configuration=Release /p:Platform=$env:PLATFORM `
+            /p:PlatformToolset=$env:PLATFORM_TOOLSET /p:PreferredToolArchitecture=$env:PREFER_TOOL_ARCH `
+            $env:WPO_OVERRIDE `
+            /m:1 /nologo /flp:"LogFile=build_cli.log;Verbosity=minimal"
+
+      - name: Verify CLI binary
+        shell: pwsh
+        run: |
+          $cli = "x64\Release\ShadowStrikePhantomCLI.exe"
+          if (-not (Test-Path $cli)) {
+            Write-Error "ShadowStrikePhantomCLI.exe not found after build"
+            exit 1
+          }
+          $size = [math]::Round((Get-Item $cli).Length / 1KB, 1)
+          Write-Host "CLI binary: $size KB"
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-cli
+          path: build_cli.log
+          retention-days: 7
+
+      - name: Upload CLI binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-bin
+          path: x64/Release/ShadowStrikePhantomCLI.exe
+          retention-days: 1
+
+  # ============================================================================
+  # Job 4: Rule validation — parse all rule corpora and fail if any corpus
+  # produces zero rules, has duplicate IDs, or has parse errors above threshold.
+  # Runs on ubuntu for speed (Python is faster to bootstrap than MSBuild here).
+  # ============================================================================
+  validate-rules:
+    name: Rule corpus validation
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -349,44 +392,252 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js 24
-        uses: actions/setup-node@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          node-version: '24'
+          python-version: '3.12'
 
-      - name: Install dependencies
-        working-directory: frontend
-        # Use npm install (not npm ci) — package-lock.json may not yet be committed.
-        # Once you commit the lockfile, switch this to: npm ci --prefer-offline
-        run: npm install
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml
 
-      - name: Build
-        working-directory: frontend
-        run: npm run build
-        env:
-          # The dashboard is static; VITE_API_URL bakes into the bundle.
-          # Override at deploy time by rebuilding with the real service URL.
-          VITE_API_URL: https://localhost:9443
+      - name: Validate native rules (rules/native/)
+        run: |
+          python - <<'PYEOF'
+          import os, sys, yaml, collections
 
-      - name: Upload dashboard dist
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-dist
-          path: frontend/dist/
-          retention-days: 1
+          rules_dir = "rules/native"
+          errors = []
+          warnings = []
+          ids_seen = collections.Counter()
+          rule_count = 0
+          category_counts = collections.defaultdict(int)
+
+          for category in sorted(os.listdir(rules_dir)):
+            cat_path = os.path.join(rules_dir, category)
+            if not os.path.isdir(cat_path):
+              continue
+            for rule_id in sorted(os.listdir(cat_path)):
+              rule_path = os.path.join(cat_path, rule_id, "rule.yaml")
+              if not os.path.exists(rule_path):
+                warnings.append(f"Missing rule.yaml: {cat_path}/{rule_id}")
+                continue
+              with open(rule_path, "r", encoding="utf-8") as f:
+                try:
+                  doc = yaml.safe_load(f)
+                except yaml.YAMLError as e:
+                  errors.append(f"YAML parse error in {rule_path}: {e}")
+                  continue
+              if not isinstance(doc, dict):
+                errors.append(f"Root is not a map: {rule_path}")
+                continue
+              rid = doc.get("id", "")
+              if not rid:
+                errors.append(f"Missing 'id' field: {rule_path}")
+              else:
+                ids_seen[rid] += 1
+                if rid != rule_id:
+                  warnings.append(f"ID mismatch: file folder '{rule_id}' vs rule id '{rid}' in {rule_path}")
+              required = ["detection_name", "scope", "severity", "logic"]
+              for field in required:
+                if field not in doc:
+                  errors.append(f"Missing required field '{field}': {rule_path}")
+              if "logic" in doc and doc["logic"] is None:
+                errors.append(f"Empty logic block: {rule_path}")
+              rule_count += 1
+              category_counts[category] += 1
+
+          # Duplicate ID check
+          for rid, count in ids_seen.items():
+            if count > 1:
+              errors.append(f"Duplicate rule ID '{rid}' appears {count} times")
+
+          print(f"Native rules validated: {rule_count}")
+          for cat, n in sorted(category_counts.items()):
+            print(f"  {cat:30s}: {n}")
+
+          if warnings:
+            print(f"\nWarnings ({len(warnings)}):")
+            for w in warnings:
+              print(f"  WARN  {w}")
+
+          if errors:
+            print(f"\nErrors ({len(errors)}):")
+            for e in errors:
+              print(f"  ERROR {e}")
+            sys.exit(1)
+          elif rule_count == 0:
+            print("ERROR: no native rules found — rules/native/ appears empty")
+            sys.exit(1)
+          else:
+            print(f"\nAll {rule_count} native rules passed validation.")
+          PYEOF
+
+      - name: Validate external capa rules (spot-check)
+        run: |
+          python - <<'PYEOF'
+          import os, sys, yaml
+
+          capa_root = "rules/external/capa"
+          if not os.path.isdir(capa_root):
+            print(f"WARNING: {capa_root} not found — skipping capa validation")
+            sys.exit(0)
+
+          count = 0; errors = 0
+          for root, dirs, files in os.walk(capa_root):
+            for fn in files:
+              if not fn.endswith((".yaml", ".yml")):
+                continue
+              fp = os.path.join(root, fn)
+              with open(fp, "r", encoding="utf-8", errors="replace") as f:
+                text = f.read()
+              if "rule:" not in text:
+                continue
+              try:
+                yaml.safe_load(text)
+                count += 1
+              except yaml.YAMLError:
+                errors += 1
+
+          print(f"capa rules parseable: {count}, errors: {errors}")
+          if errors > 20:
+            print(f"ERROR: {errors} capa YAML parse errors exceeds threshold")
+            sys.exit(1)
+          PYEOF
+
+      - name: Check Sigma corpus is present
+        run: |
+          sigma_dir="rules/external/sigma"
+          if [ ! -d "$sigma_dir" ]; then
+            echo "ERROR: rules/external/sigma not found"
+            exit 1
+          fi
+          count=$(find "$sigma_dir" -name "*.yaml" -o -name "*.yml" | wc -l)
+          echo "Sigma rules found: $count"
+          if [ "$count" -lt 100 ]; then
+            echo "ERROR: too few Sigma rules ($count) — corpus may be missing"
+            exit 1
+          fi
+
+      - name: Check Elastic corpus is present
+        run: |
+          ndjson="rules/external/elastic/custom-consolidated-rules.ndjson"
+          if [ ! -f "$ndjson" ]; then
+            echo "ERROR: $ndjson not found"
+            exit 1
+          fi
+          lines=$(wc -l < "$ndjson")
+          echo "Elastic rules (NDJSON lines): $lines"
 
   # ============================================================================
-  # Job 4: Package — assemble all artifacts into a single downloadable ZIP.
-  # Runs only after all three build jobs succeed.
+  # Job 5: Detection unit tests — build and run RuleParserTest + RuleSmokeTest.
+  # These tests exercise the rule parser and store in isolation (no service).
+  # ============================================================================
+  unit-tests:
+    name: Detection unit tests (x64 Release)
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Bootstrap GTest static library
+        shell: pwsh
+        run: |
+          $gtestVer = "1.14.0"
+          Invoke-WebRequest `
+            "https://github.com/google/googletest/archive/refs/tags/v${gtestVer}.zip" `
+            -OutFile gtest-src.zip -UseBasicParsing -TimeoutSec 120
+          Expand-Archive gtest-src.zip -DestinationPath . -Force
+          $gdir = "googletest-${gtestVer}\googletest"
+
+          # Locate vcvarsall.bat via vswhere
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+          if (-not $vsPath) { throw "vswhere: Visual Studio with VC tools not found" }
+          $vcvars = Join-Path $vsPath "VC\Auxiliary\Build\vcvarsall.bat"
+          Write-Host "vcvars: $vcvars"
+
+          # Compile gtest-all.cc directly with the same flags as the test project.
+          # Avoids any cmake/generator ABI mismatch with the repo's gtest headers.
+          # Array approach avoids YAML-breaking @"..."@ heredoc at column 0.
+          $bat = @(
+            '@echo off',
+            "call `"$vcvars`" x64",
+            'if %errorlevel% neq 0 (echo vcvarsall failed & exit /b 1)',
+            "cl.exe /c /nologo /EHsc /MD /O2 /std:c++20 /DWIN32 /DNDEBUG /D_UNICODE /DUNICODE /I`"$gdir\include`" /I`"$gdir`" /Fo`"gtest-all.obj`" `"$gdir\src\gtest-all.cc`"",
+            'if %errorlevel% neq 0 (echo cl.exe failed & exit /b 1)',
+            'lib.exe /nologo /OUT:"vendor\gtest_framework\gtest.lib" "gtest-all.obj"',
+            'if %errorlevel% neq 0 (echo lib.exe failed & exit /b 1)'
+          )
+          $bat | Set-Content "build_gtest.bat" -Encoding ASCII
+          cmd /c "build_gtest.bat"
+          if ($LASTEXITCODE -ne 0) { throw "GTest static build failed (exit $LASTEXITCODE)" }
+
+          # Replace repo gtest headers with matching 1.14.0 headers
+          Copy-Item "$gdir\include\gtest" include\ -Recurse -Force
+          Write-Host "GTest static lib: $([int]((Get-Item 'vendor\gtest_framework\gtest.lib').Length/1KB)) KB"
+
+      - name: Build detection unit tests
+        shell: pwsh
+        run: |
+          msbuild ShadowStrikeDetectionUnitTests.vcxproj `
+            /t:Rebuild /p:Configuration=Release /p:Platform=x64 `
+            /p:PlatformToolset=v143 `
+            /m:1 /nologo /flp:"LogFile=build_tests.log;Verbosity=minimal"
+
+      - name: Run unit tests
+        shell: pwsh
+        run: |
+          $exe = "x64\Release\tests\ShadowStrikeDetectionUnitTests.exe"
+          if (-not (Test-Path $exe)) {
+            Write-Error "Test binary not found: $exe"
+            exit 1
+          }
+          # Run tests; copy rules/ to exe dir so FindRulesRoot locates them
+          $testDir = Split-Path $exe
+          if (-not (Test-Path "$testDir\rules")) {
+            New-Item -ItemType Junction -Path "$testDir\rules" -Target (Resolve-Path "rules").Path | Out-Null
+          }
+          & $exe --gtest_output="xml:test_results.xml" 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Unit tests FAILED (exit $LASTEXITCODE)"
+            exit $LASTEXITCODE
+          }
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-unit-tests
+          path: build_tests.log
+          retention-days: 7
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results
+          path: test_results.xml
+          retention-days: 7
+
+  # ============================================================================
+  # Job 6: Package — assemble all artifacts into a single downloadable ZIP.
+  # Runs only after all build and validation jobs succeed.
   # ============================================================================
   package:
     name: Package release ZIP
     runs-on: windows-2022
-    needs: [build-usermode, build-driver, build-frontend]
+    needs: [build-usermode, build-driver, build-cli, validate-rules, unit-tests]
     timeout-minutes: 15
 
     steps:
-      - name: Checkout (for rules corpus + ORT DLLs)
+      - name: Checkout (for ORT DLLs and release docs)
         uses: actions/checkout@v4
 
       - name: Download user-mode binaries
@@ -401,18 +652,31 @@ jobs:
           name: driver-bin
           path: dist/driver/
 
-      - name: Download dashboard
+      - name: Download CLI binary
         uses: actions/download-artifact@v4
         with:
-          name: frontend-dist
-          path: dist/dashboard/
+          name: cli-bin
+          path: dist/
 
       - name: Assemble package layout
         shell: pwsh
         run: |
           # ONNX Runtime — required at runtime (no static build available)
-          Copy-Item vendor\onnxruntime\onnxruntime.dll                 dist\
-          Copy-Item vendor\onnxruntime\onnxruntime_providers_shared.dll dist\
+          Copy-Item vendor\onnxruntime\lib\onnxruntime.dll                  dist\
+          Copy-Item vendor\onnxruntime\lib\onnxruntime_providers_shared.dll dist\
+
+          # Verify all required binaries are present before packaging
+          $required = @(
+            'dist\ShadowStrikePhantomService.exe',
+            'dist\ShadowStrikePhantomCLI.exe',
+            'dist\driver\PhantomSensor.sys',
+            'dist\onnxruntime.dll'
+          )
+          $missing = $required | Where-Object { -not (Test-Path $_) }
+          if ($missing) {
+            Write-Error "Required files missing from package layout:`n$($missing -join "`n")"
+            exit 1
+          }
 
           # NOTE: rule corpus is compiled directly into ShadowStrikePhantomService.exe
           # as an XOR-obfuscated binary blob. No rules/ directory is needed or included.
@@ -420,25 +684,41 @@ jobs:
           # Version stamp
           $sha  = "${{ github.sha }}".Substring(0, 8)
           $ref  = "${{ github.ref_name }}"
-          @"
-          ShadowStrike Phantom
-          Ref  : $ref
-          SHA  : $sha
-          Date : $(Get-Date -Format 'yyyy-MM-dd HH:mm UTC')
-
-          Detection rules: compiled into ShadowStrikePhantomService.exe (embedded, not on disk).
-          ONNX model files (.onnx) are NOT included.
-          Deploy trained models to %ProgramData%\ShadowStrike\models\ separately.
-          The service runs without models; ML scoring is inactive until models are present.
-          "@ | Out-File dist\VERSION.txt -Encoding utf8
+          @(
+            "ShadowStrike Phantom",
+            "Ref  : $ref",
+            "SHA  : $sha",
+            "Date : $(Get-Date -Format 'yyyy-MM-dd HH:mm UTC')",
+            "",
+            "Detection rules: compiled into ShadowStrikePhantomService.exe (embedded, not on disk).",
+            "ONNX model files (.onnx) are NOT included.",
+            "Deploy trained models to %ProgramData%\ShadowStrike\models\ separately.",
+            "The service runs without models; ML scoring is inactive until models are present."
+          ) | Out-File dist\VERSION.txt -Encoding utf8
 
           Write-Host "=== Package layout ==="
           Get-ChildItem dist -Recurse | Select-Object FullName
 
+      - name: Generate release documentation
+        shell: pwsh
+        run: |
+          $sha = "${{ github.sha }}".Substring(0, 8)
+          $ref = "${{ github.ref_name }}"
+          $date = Get-Date -Format "yyyy-MM-dd"
+
+          $template = Get-Content "docs\RELEASE_TEMPLATE.md" -Raw
+          $doc = $template.Replace('{{REF}}', $ref).Replace('{{SHA}}', $sha).Replace('{{DATE}}', $date)
+          $doc | Out-File dist\RELEASE.md -Encoding utf8 -NoNewline:$false
+          Write-Host "Generated RELEASE.md ($([math]::Round($doc.Length / 1KB, 1)) KB)"
+
+          if (-not (Test-Path 'dist\RELEASE.md')) {
+            Write-Error "RELEASE.md missing from dist/"
+            exit 1
+          }
+
       - name: Create ZIP
         shell: pwsh
         run: |
-          # Sanitise ref_name: slashes (branch names) become dashes
           $version = "${{ github.ref_name }}" -replace '[/\\]', '-'
           $zipName      = "ShadowStrike-${version}-x64.zip"
           $artifactName = "ShadowStrike-${version}-x64"
@@ -447,6 +727,27 @@ jobs:
           Write-Host "Created: $zipName (${sizeMB} MB)"
           "ZIP_NAME=$zipName"           | Out-File $env:GITHUB_ENV -Append
           "ARTIFACT_NAME=$artifactName" | Out-File $env:GITHUB_ENV -Append
+
+      - name: Verify ZIP completeness
+        shell: pwsh
+        run: |
+          # Extract the zip and verify all required files exist
+          Expand-Archive -Path $env:ZIP_NAME -DestinationPath "verify-dist" -Force
+          $required = @(
+            'ShadowStrikePhantomService.exe',
+            'ShadowStrikePhantomCLI.exe',
+            'onnxruntime.dll',
+            'driver\PhantomSensor.sys',
+            'RELEASE.md',
+            'VERSION.txt'
+          )
+          $missing = $required | Where-Object { -not (Test-Path "verify-dist\$_") }
+          if ($missing) {
+            Write-Error "ZIP is missing required files:`n$($missing -join "`n")"
+            exit 1
+          }
+          Write-Host "ZIP verified — all required files present."
+          Remove-Item verify-dist -Recurse -Force
 
       - name: Upload ZIP artifact
         uses: actions/upload-artifact@v4
@@ -467,34 +768,38 @@ jobs:
 
             ### Quick install (elevated CMD)
             ```cmd
-            rem 1. Enable test-signing (once, then reboot) — skip if using production EV cert
+            rem 1. Enable test-signing (once, then reboot) — skip if using EV cert
             bcdedit /set testsigning on
 
-            rem 2. Install the driver
+            rem 2. Install the kernel driver
             pnputil /add-driver driver\PhantomSensor.inf /install
 
-            rem 3. Install & start the service
+            rem 3. Install and start the service
             ShadowStrikePhantomService.exe --install
             ShadowStrikePhantomService.exe --start
+
+            rem 4. Launch the CLI operator interface
+            ShadowStrikePhantomCLI.exe
             ```
 
             ### Package contents
             | Path | Description |
             |------|-------------|
-            | `ShadowStrikePhantomService.exe` | Windows service — detection engine, IPC server, **~3,400 rules compiled in** |
+            | `ShadowStrikePhantomService.exe` | Windows service — detection engine, **~3,400+ rules compiled in** |
+            | `ShadowStrikePhantomCLI.exe` | **Interactive terminal control interface** |
             | `ShadowStrikePhantomTray.exe` | System-tray status app |
-            | `ShadowStrikePhantomUI.exe` | Native UI |
+            | `ShadowStrikePhantomUI.exe` | Native UI (preview) |
             | `onnxruntime.dll` | ONNX Runtime — required for ML inference |
             | `onnxruntime_providers_shared.dll` | ONNX Runtime provider |
-            | `dashboard/` | React dashboard (open `index.html` or serve statically) |
             | `driver/PhantomSensor.sys` | Kernel minifilter (test-signed) |
             | `driver/PhantomSensor.inf` | Driver INF for pnputil |
+            | `RELEASE.md` | Full setup and troubleshooting guide |
 
             > **Detection rules are compiled into `ShadowStrikePhantomService.exe`** as an
-            > obfuscated binary blob. No plaintext rule files are included or required.
-            > To update rules, rebuild from source and redeploy the service binary.
+            > obfuscated binary blob. No plaintext rule files are included.
+
+            > **Web UI removed.** Use `ShadowStrikePhantomCLI.exe` as the operator
+            > interface. Run `help` for available commands.
 
             > **ML models not included.** Deploy trained `.onnx` files to
-            > `%ProgramData%\ShadowStrike\models\` and set
-            > `HKLM\SOFTWARE\ShadowStrike\PhantomCortex\ModelDirectory` accordingly.
-            > The service operates without them — ML scoring is simply inactive.
+            > `%ProgramData%\ShadowStrike\models\` separately.

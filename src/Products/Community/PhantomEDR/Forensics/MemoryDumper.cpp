@@ -496,12 +496,13 @@ bool MemoryDumper::Initialize(const MemoryDumperConfiguration& config) {
         }
 
         // Initialize thread pool
-        m_impl->m_threadPool = std::make_unique<Utils::ThreadPool>(
-            config.maxConcurrentDumps);
+        Utils::ThreadPoolConfig tpConfig;
+        tpConfig.maxThreads = static_cast<size_t>(config.maxConcurrentDumps);
+        tpConfig.minThreads = std::min(tpConfig.minThreads, tpConfig.maxThreads);
+        m_impl->m_threadPool = std::make_unique<Utils::ThreadPool>(std::move(tpConfig));
 
         // Initialize statistics
-        m_impl->m_stats = MemoryDumperStatistics{};
-        m_impl->m_stats.startTime = Clock::now();
+        m_impl->m_stats.Reset();
 
         m_impl->m_status = ModuleStatus::Running;
 
@@ -515,7 +516,7 @@ bool MemoryDumper::Initialize(const MemoryDumperConfiguration& config) {
         m_impl->m_status = ModuleStatus::Error;
         return false;
     } catch (...) {
-        Utils::Logger::Critical("MemoryDumper: Initialization failed (unknown exception)");
+        Utils::Logger::Fatal("MemoryDumper: Initialization failed (unknown exception)");
         m_impl->m_status = ModuleStatus::Error;
         return false;
     }
@@ -557,7 +558,7 @@ void MemoryDumper::Shutdown() {
     } catch (const std::exception& ex) {
         Utils::Logger::Error("MemoryDumper: Shutdown error: {}", ex.what());
     } catch (...) {
-        Utils::Logger::Critical("MemoryDumper: Shutdown failed");
+        Utils::Logger::Fatal("MemoryDumper: Shutdown failed");
     }
 }
 
@@ -812,8 +813,8 @@ std::string MemoryDumper::StartAsyncDump(uint32_t pid, std::wstring_view outputP
 
         // Submit to thread pool
         if (m_impl->m_threadPool) {
-            m_impl->m_threadPool->Enqueue([this, pid, path = std::wstring(outputPath),
-                                           options, dumpId]() {
+            (void)m_impl->m_threadPool->Submit([this, pid, path = std::wstring(outputPath),
+                                                options, dumpId](const Utils::TaskContext&) {
                 auto result = DumpProcess(pid, path, options);
 
                 {
@@ -1857,8 +1858,7 @@ void MemoryDumper::ResetStatistics() {
     try {
         std::unique_lock lock(m_impl->m_mutex);
 
-        m_impl->m_stats = MemoryDumperStatistics{};
-        m_impl->m_stats.startTime = Clock::now();
+        m_impl->m_stats.Reset();
 
         Utils::Logger::Info("MemoryDumper: Statistics reset");
 
@@ -1931,7 +1931,7 @@ bool MemoryDumper::SelfTest() {
         Utils::Logger::Error("MemoryDumper: Self-test failed with exception: {}", ex.what());
         return false;
     } catch (...) {
-        Utils::Logger::Critical("MemoryDumper: Self-test failed (unknown exception)");
+        Utils::Logger::Fatal("MemoryDumper: Self-test failed (unknown exception)");
         return false;
     }
 }

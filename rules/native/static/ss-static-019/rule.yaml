@@ -1,0 +1,59 @@
+id: ss-static-019
+detection_name: "Win32/Emotet.LoaderStrings"
+description: "Binary contains string patterns consistent with Emotet/IcedID loader infrastructure: hardcoded C2 beacon paths, module names, and RC4/ChaCha obfuscation markers."
+scope: static
+severity: critical
+status: stable
+source: native
+confidence: 0.88
+weight: 3.5
+version: 1
+
+attack:
+  - tactic: TA0002
+    technique: T1059
+    name: "Command and Scripting Interpreter"
+  - tactic: TA0005
+    technique: T1027
+    name: "Obfuscated Files or Information"
+
+references:
+  - url: "https://attack.mitre.org/software/S0367/"
+    title: "ATT&CK Emotet"
+
+logic:
+  and:
+    - or:
+        - field_contains:
+            field: static.strings
+            value: "GetModuleHandleA"
+        - field_contains:
+            field: static.strings
+            value: "VirtualAllocEx"
+    - or:
+        - field_regex:
+            field: static.strings
+            pattern: '(?i)\\\w{4,12}\\\w{4,12}\.exe\s+/[a-z]'
+        - field_contains:
+            field: static.strings
+            value: "rundll32.exe"
+        - field_contains:
+            field: static.strings
+            value: "Control_RunDLL"
+    - or:
+        - field_regex:
+            field: static.strings
+            pattern: "(?i)(emotet|heodo|geodo|feodo)"
+        - and:
+            - field_regex:
+                field: static.strings
+                pattern: "(?i)(softwareupdate|systeminfo|processorid)"
+            - field_regex:
+                field: static.strings
+                pattern: "(?i)/[a-f0-9]{8,16}"
+    - feature: EntropyAbove
+      threshold: 6.8
+
+fp_guard:
+  notes:
+    - "Legitimate software updaters may share some string patterns. Require entropy above 6.8 to reduce FPs."

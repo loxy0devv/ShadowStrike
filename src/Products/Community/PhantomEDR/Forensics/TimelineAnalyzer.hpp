@@ -772,6 +772,18 @@ struct TimelineStatistics {
     /// @brief Start time
     TimePoint startTime = Clock::now();
     
+    TimelineStatistics() = default;
+    TimelineStatistics(const TimelineStatistics& o) noexcept
+        : totalEvents         (o.totalEvents         .load(std::memory_order_relaxed))
+        , attackChainsDetected(o.attackChainsDetected.load(std::memory_order_relaxed))
+        , causalLinksCreated  (o.causalLinksCreated  .load(std::memory_order_relaxed))
+        , analysesPerformed   (o.analysesPerformed   .load(std::memory_order_relaxed))
+        , startTime(o.startTime)
+    {
+        for (size_t i = 0; i < eventsByType.size(); ++i)
+            eventsByType[i].store(o.eventsByType[i].load(std::memory_order_relaxed), std::memory_order_relaxed);
+    }
+
     /**
      * @brief Reset statistics
      */

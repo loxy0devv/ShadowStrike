@@ -4,9 +4,9 @@
 // ===========================================================================
 #include "pch.h"
 #include "EDRConfigRegistration.hpp"
-#include "../../PhantomCore/Config/ConfigManager.hpp"
-#include "../../PhantomCore/Config/PolicyManager.hpp"
-#include "../../PhantomCore/Config/ProfileManager.hpp"
+#include "PhantomCore/Config/ConfigManager.hpp"
+#include "PhantomCore/Config/PolicyManager.hpp"
+#include "PhantomCore/Config/ProfileManager.hpp"
 
 namespace ShadowStrike::Products::PhantomEDR::Config {
 
@@ -14,7 +14,7 @@ using CM = ShadowStrike::Config::ConfigManager;
 using PM = ShadowStrike::Config::PolicyManager;
 using ProfM = ShadowStrike::Config::ProfileManager;
 using Meta = ShadowStrike::Config::ConfigKeyMetadata;
-using ValueType = ShadowStrike::Config::ConfigValueType;
+using ValueType = ShadowStrike::Config::ValueType;
 using Layer = ShadowStrike::Config::ConfigLayer;
 
 // ============================================================================
@@ -47,8 +47,8 @@ bool RegKeyRange(const std::string& key, const std::string& category,
     meta.category = category;
     meta.displayName = displayName;
     meta.defaultValue = ShadowStrike::Config::ConfigValue(defaultValue);
-    meta.minValue = ShadowStrike::Config::ConfigValue(minVal);
-    meta.maxValue = ShadowStrike::Config::ConfigValue(maxVal);
+    meta.minValue = static_cast<double>(minVal);
+    meta.maxValue = static_cast<double>(maxVal);
     meta.requiresRestart = requiresRestart;
     return CM::Instance().RegisterKeyMetadata(meta);
 }
@@ -235,6 +235,7 @@ bool RegKeyRange(const std::string& key, const std::string& category,
     using EnforcementLevel = ShadowStrike::Config::EnforcementLevel;
     using Policy = ShadowStrike::Config::Policy;
     using PolicySetting = ShadowStrike::Config::PolicySetting;
+    using PolicyValue   = ShadowStrike::Config::PolicyValue;
 
     bool ok = true;
 
@@ -247,14 +248,14 @@ bool RegKeyRange(const std::string& key, const std::string& category,
         baseline.enforcement = EnforcementLevel::Mandatory;
         baseline.description = "Minimum protection requirements for all EDR endpoints";
 
-        baseline.settings.push_back({std::string(Keys::ScanOnExecute), "true", EnforcementLevel::Mandatory});
-        baseline.settings.push_back({std::string(Keys::BehaviorMonitoring), "true", EnforcementLevel::Mandatory});
-        baseline.settings.push_back({std::string(Keys::TamperProtection), "true", EnforcementLevel::Mandatory});
-        baseline.settings.push_back({std::string(Keys::DriverProtection), "true", EnforcementLevel::Mandatory});
-        baseline.settings.push_back({std::string(Keys::RansomwareProtection), "true", EnforcementLevel::Mandatory});
-        baseline.settings.push_back({std::string(Keys::ProcessInjectionDetection), "true", EnforcementLevel::Mandatory});
-        baseline.settings.push_back({std::string(Keys::CertificatePinning), "true", EnforcementLevel::Mandatory});
-        baseline.settings.push_back({std::string(Keys::LiveResponseAuditAll), "true", EnforcementLevel::Mandatory});
+        { auto _k_ = std::string(Keys::ScanOnExecute); baseline.settings[_k_] = PolicySetting{_k_, _k_, PolicyValue{std::string("true")}, EnforcementLevel::Mandatory}; };
+        { auto _k_ = std::string(Keys::BehaviorMonitoring); baseline.settings[_k_] = PolicySetting{_k_, _k_, PolicyValue{std::string("true")}, EnforcementLevel::Mandatory}; };
+        { auto _k_ = std::string(Keys::TamperProtection); baseline.settings[_k_] = PolicySetting{_k_, _k_, PolicyValue{std::string("true")}, EnforcementLevel::Mandatory}; };
+        { auto _k_ = std::string(Keys::DriverProtection); baseline.settings[_k_] = PolicySetting{_k_, _k_, PolicyValue{std::string("true")}, EnforcementLevel::Mandatory}; };
+        { auto _k_ = std::string(Keys::RansomwareProtection); baseline.settings[_k_] = PolicySetting{_k_, _k_, PolicyValue{std::string("true")}, EnforcementLevel::Mandatory}; };
+        { auto _k_ = std::string(Keys::ProcessInjectionDetection); baseline.settings[_k_] = PolicySetting{_k_, _k_, PolicyValue{std::string("true")}, EnforcementLevel::Mandatory}; };
+        { auto _k_ = std::string(Keys::CertificatePinning); baseline.settings[_k_] = PolicySetting{_k_, _k_, PolicyValue{std::string("true")}, EnforcementLevel::Mandatory}; };
+        { auto _k_ = std::string(Keys::LiveResponseAuditAll); baseline.settings[_k_] = PolicySetting{_k_, _k_, PolicyValue{std::string("true")}, EnforcementLevel::Mandatory}; };
 
         ok &= PM::Instance().ApplyPolicy(baseline);
     }
@@ -268,12 +269,12 @@ bool RegKeyRange(const std::string& key, const std::string& category,
         scanPolicy.enforcement = EnforcementLevel::Default;
         scanPolicy.description = "Default scan configuration for EDR endpoints";
 
-        scanPolicy.settings.push_back({std::string(Keys::ScanOnOpen), "true", EnforcementLevel::Default});
-        scanPolicy.settings.push_back({std::string(Keys::ScanOnWrite), "true", EnforcementLevel::Default});
-        scanPolicy.settings.push_back({std::string(Keys::ScanArchives), "true", EnforcementLevel::Default});
-        scanPolicy.settings.push_back({std::string(Keys::ScanMaxFileSize), "256", EnforcementLevel::Default});
-        scanPolicy.settings.push_back({std::string(Keys::ScanHeuristicLevel), "2", EnforcementLevel::Default});
-        scanPolicy.settings.push_back({std::string(Keys::ScanCloudLookupEnabled), "false", EnforcementLevel::Default});
+        { auto _k_ = std::string(Keys::ScanOnOpen); scanPolicy.settings[_k_] = PolicySetting{_k_, _k_, PolicyValue{std::string("true")}, EnforcementLevel::Default}; };
+        { auto _k_ = std::string(Keys::ScanOnWrite); scanPolicy.settings[_k_] = PolicySetting{_k_, _k_, PolicyValue{std::string("true")}, EnforcementLevel::Default}; };
+        { auto _k_ = std::string(Keys::ScanArchives); scanPolicy.settings[_k_] = PolicySetting{_k_, _k_, PolicyValue{std::string("true")}, EnforcementLevel::Default}; };
+        { auto _k_ = std::string(Keys::ScanMaxFileSize); scanPolicy.settings[_k_] = PolicySetting{_k_, _k_, PolicyValue{std::string("256")}, EnforcementLevel::Default}; };
+        { auto _k_ = std::string(Keys::ScanHeuristicLevel); scanPolicy.settings[_k_] = PolicySetting{_k_, _k_, PolicyValue{std::string("2")}, EnforcementLevel::Default}; };
+        { auto _k_ = std::string(Keys::ScanCloudLookupEnabled); scanPolicy.settings[_k_] = PolicySetting{_k_, _k_, PolicyValue{std::string("false")}, EnforcementLevel::Default}; };
 
         ok &= PM::Instance().ApplyPolicy(scanPolicy);
     }
@@ -287,9 +288,9 @@ bool RegKeyRange(const std::string& key, const std::string& category,
         lrPolicy.enforcement = EnforcementLevel::Mandatory;
         lrPolicy.description = "Security constraints for live response sessions";
 
-        lrPolicy.settings.push_back({std::string(Keys::LiveResponseRequireMFA), "true", EnforcementLevel::Mandatory});
-        lrPolicy.settings.push_back({std::string(Keys::LiveResponseAllowExec), "false", EnforcementLevel::Mandatory});
-        lrPolicy.settings.push_back({std::string(Keys::LiveResponseAllowRegistry), "false", EnforcementLevel::Mandatory});
+        { auto _k_ = std::string(Keys::LiveResponseRequireMFA); lrPolicy.settings[_k_] = PolicySetting{_k_, _k_, PolicyValue{std::string("true")}, EnforcementLevel::Mandatory}; };
+        { auto _k_ = std::string(Keys::LiveResponseAllowExec); lrPolicy.settings[_k_] = PolicySetting{_k_, _k_, PolicyValue{std::string("false")}, EnforcementLevel::Mandatory}; };
+        { auto _k_ = std::string(Keys::LiveResponseAllowRegistry); lrPolicy.settings[_k_] = PolicySetting{_k_, _k_, PolicyValue{std::string("false")}, EnforcementLevel::Mandatory}; };
 
         ok &= PM::Instance().ApplyPolicy(lrPolicy);
     }
@@ -315,22 +316,22 @@ bool RegKeyRange(const std::string& key, const std::string& category,
     // Server Profile — high availability, minimal user disruption
     {
         ProfileDef server{};
-        server.type = SystemProfile::Server;
-        server.name = "EDR Server";
+        server.profileType = SystemProfile::Server;
+        server.customName = "EDR Server";
         server.description = "Optimized for server workloads — high availability, low I/O impact";
 
         server.resources.maxCpuPercent = 15;
-        server.resources.maxMemoryMB = 256;
+        server.resources.maxMemoryMb = 256;
         server.resources.ioPriority = 0;  // Lowest I/O priority
         server.resources.maxConcurrentScans = 2;
-        server.resources.threadPriority = -1; // Below normal
+        server.resources.scanThreadPriority = -1; // Below normal
 
-        server.scanSettings.realTimeProtection = true;
-        server.scanSettings.behaviorMonitoring = true;
-        server.scanSettings.archiveScanning = false; // Skip archives on servers for perf
-        server.scanSettings.scanNetworkFiles = false;
-        server.scanSettings.heuristicLevel = 1;
-        server.scanSettings.cloudLookup = true;
+        server.scan.realtimeProtection = true;
+        server.scan.behaviorMonitoring = true;
+        server.scan.scanArchives = false; // Skip archives on servers for perf
+        server.scan.scanNetworkFiles = false;
+        server.scan.heuristicLevel = 1;
+        server.scan.cloudLookupEnabled = true;
 
         ok &= ProfM::Instance().CreateCustomProfile(server);
     }
@@ -338,22 +339,22 @@ bool RegKeyRange(const std::string& key, const std::string& category,
     // Workstation Profile — balanced for endpoint users
     {
         ProfileDef ws{};
-        ws.type = SystemProfile::Standard;
-        ws.name = "EDR Workstation";
+        ws.profileType = SystemProfile::Standard;
+        ws.customName = "EDR Workstation";
         ws.description = "Balanced protection for workstation endpoints";
 
         ws.resources.maxCpuPercent = 30;
-        ws.resources.maxMemoryMB = 512;
+        ws.resources.maxMemoryMb = 512;
         ws.resources.ioPriority = 1;
         ws.resources.maxConcurrentScans = 4;
-        ws.resources.threadPriority = 0;
+        ws.resources.scanThreadPriority = 0;
 
-        ws.scanSettings.realTimeProtection = true;
-        ws.scanSettings.behaviorMonitoring = true;
-        ws.scanSettings.archiveScanning = true;
-        ws.scanSettings.scanNetworkFiles = false;
-        ws.scanSettings.heuristicLevel = 2;
-        ws.scanSettings.cloudLookup = true;
+        ws.scan.realtimeProtection = true;
+        ws.scan.behaviorMonitoring = true;
+        ws.scan.scanArchives = true;
+        ws.scan.scanNetworkFiles = false;
+        ws.scan.heuristicLevel = 2;
+        ws.scan.cloudLookupEnabled = true;
 
         ok &= ProfM::Instance().CreateCustomProfile(ws);
     }
@@ -361,22 +362,22 @@ bool RegKeyRange(const std::string& key, const std::string& category,
     // High-Security Profile — maximum detection, higher resource cost
     {
         ProfileDef hs{};
-        hs.type = SystemProfile::HighSecurity;
-        hs.name = "EDR High-Security";
+        hs.profileType = SystemProfile::HighSecurity;
+        hs.customName = "EDR High-Security";
         hs.description = "Maximum detection for high-value targets (executives, finance, R&D)";
 
         hs.resources.maxCpuPercent = 50;
-        hs.resources.maxMemoryMB = 1024;
+        hs.resources.maxMemoryMb = 1024;
         hs.resources.ioPriority = 2;
         hs.resources.maxConcurrentScans = 8;
-        hs.resources.threadPriority = 1; // Above normal
+        hs.resources.scanThreadPriority = 1; // Above normal
 
-        hs.scanSettings.realTimeProtection = true;
-        hs.scanSettings.behaviorMonitoring = true;
-        hs.scanSettings.archiveScanning = true;
-        hs.scanSettings.scanNetworkFiles = true;
-        hs.scanSettings.heuristicLevel = 4; // Maximum
-        hs.scanSettings.cloudLookup = true;
+        hs.scan.realtimeProtection = true;
+        hs.scan.behaviorMonitoring = true;
+        hs.scan.scanArchives = true;
+        hs.scan.scanNetworkFiles = true;
+        hs.scan.heuristicLevel = 4; // Maximum
+        hs.scan.cloudLookupEnabled = true;
 
         ok &= ProfM::Instance().CreateCustomProfile(hs);
     }

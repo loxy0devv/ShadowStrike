@@ -662,8 +662,8 @@ jobs:
         shell: pwsh
         run: |
           # ONNX Runtime — required at runtime (no static build available)
-          Copy-Item vendor\onnxruntime\onnxruntime.dll                  dist\
-          Copy-Item vendor\onnxruntime\onnxruntime_providers_shared.dll dist\
+          Copy-Item vendor\onnxruntime\lib\onnxruntime.dll                  dist\
+          Copy-Item vendor\onnxruntime\lib\onnxruntime_providers_shared.dll dist\
 
           # Verify all required binaries are present before packaging
           $required = @(

@@ -194,9 +194,9 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force usermode-staging | Out-Null
-          $exes = Get-ChildItem "x64\Release\*.exe" -ErrorAction SilentlyContinue
+          $exes = Get-ChildItem "bin\Release\*.exe" -ErrorAction SilentlyContinue
           if (-not $exes) {
-            Write-Error "No .exe files found in x64\Release — build may have failed"
+            Write-Error "No .exe files found in bin\Release — build may have failed"
             exit 1
           }
           $exes | Copy-Item -Destination usermode-staging\

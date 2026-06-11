@@ -115,7 +115,6 @@
 #include <SQLiteCpp/sqlite3.h>
 #include <nlohmann/json.hpp>
 
-#pragma comment(lib, "sqlite3.lib")
 
 namespace ShadowStrike {
 namespace Forensics {

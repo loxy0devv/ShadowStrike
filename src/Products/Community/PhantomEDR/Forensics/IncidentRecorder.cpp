@@ -70,7 +70,6 @@
 #include <fstream>
 #include <filesystem>
 
-#pragma comment(lib, "sqlite3.lib")
 
 namespace fs = std::filesystem;
 

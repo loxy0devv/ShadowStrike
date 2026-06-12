@@ -188,10 +188,10 @@ typedef struct _INJ_DETECTOR_INTERNAL {
     //
     // Lookaside lists
     //
-    NPAGED_LOOKASIDE_LIST OperationLookaside;
-    NPAGED_LOOKASIDE_LIST ChainLookaside;
-    NPAGED_LOOKASIDE_LIST ContextLookaside;
-    NPAGED_LOOKASIDE_LIST ResultLookaside;
+    LOOKASIDE_LIST_EX OperationLookaside;
+    LOOKASIDE_LIST_EX ChainLookaside;
+    LOOKASIDE_LIST_EX ContextLookaside;
+    LOOKASIDE_LIST_EX ResultLookaside;
     BOOLEAN LookasideInitialized;
 
     //
@@ -520,41 +520,45 @@ Return Value:
     //
     // Initialize lookaside lists
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &Internal->OperationLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(INJ_OPERATION),
         INJ_POOL_TAG_OP,
         0
         );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &Internal->ChainLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(INJ_CHAIN),
         INJ_POOL_TAG_CHAIN,
         0
         );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &Internal->ContextLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(INJ_PROCESS_CONTEXT),
         INJ_POOL_TAG_CTX,
         0
         );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &Internal->ResultLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(INJ_DETECTION_RESULT),
         INJ_POOL_TAG,
         0
@@ -654,10 +658,10 @@ Return Value:
 
 Cleanup:
     if (Internal->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&Internal->OperationLookaside);
-        ExDeleteNPagedLookasideList(&Internal->ChainLookaside);
-        ExDeleteNPagedLookasideList(&Internal->ContextLookaside);
-        ExDeleteNPagedLookasideList(&Internal->ResultLookaside);
+        ExDeleteLookasideListEx(&Internal->OperationLookaside);
+        ExDeleteLookasideListEx(&Internal->ChainLookaside);
+        ExDeleteLookasideListEx(&Internal->ContextLookaside);
+        ExDeleteLookasideListEx(&Internal->ResultLookaside);
     }
 
     // Cancel timer if it was created before failure
@@ -784,7 +788,7 @@ Arguments:
             // InjpLookupProcessContext seeds RefCount = 2 (one for the hash table, one
             // for the caller); a context may legitimately have RefCount > 1 if any
             // outstanding consumer (InjDetectInjection path) is still in flight. Direct
-            // ExFreeToNPagedLookasideList here would yank the structure out from under
+            // ExFreeToLookasideListEx here would yank the structure out from under
             // the live consumer -> use-after-free. Decrementing the hash-table
             // ownership reference frees only when the last live reference is released.
             //
@@ -800,10 +804,10 @@ Arguments:
     // Delete lookaside lists
     //
     if (Internal->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&Internal->OperationLookaside);
-        ExDeleteNPagedLookasideList(&Internal->ChainLookaside);
-        ExDeleteNPagedLookasideList(&Internal->ContextLookaside);
-        ExDeleteNPagedLookasideList(&Internal->ResultLookaside);
+        ExDeleteLookasideListEx(&Internal->OperationLookaside);
+        ExDeleteLookasideListEx(&Internal->ChainLookaside);
+        ExDeleteLookasideListEx(&Internal->ContextLookaside);
+        ExDeleteLookasideListEx(&Internal->ResultLookaside);
     }
 
     //
@@ -1732,7 +1736,7 @@ InjpAllocateOperation(
 {
     PINJ_OPERATION Operation;
 
-    Operation = (PINJ_OPERATION)ExAllocateFromNPagedLookasideList(
+    Operation = (PINJ_OPERATION)ExAllocateFromLookasideListEx(
         &Detector->OperationLookaside
         );
 
@@ -1751,7 +1755,7 @@ InjpFreeOperation(
     _In_ PINJ_OPERATION Operation
     )
 {
-    ExFreeToNPagedLookasideList(&Detector->OperationLookaside, Operation);
+    ExFreeToLookasideListEx(&Detector->OperationLookaside, Operation);
 }
 
 static NTSTATUS
@@ -1820,7 +1824,7 @@ InjpFreeProcessContext(
     _In_ PINJ_PROCESS_CONTEXT Context
     )
 {
-    ExFreeToNPagedLookasideList(&Detector->ContextLookaside, Context);
+    ExFreeToLookasideListEx(&Detector->ContextLookaside, Context);
 }
 
 static PINJ_PROCESS_CONTEXT
@@ -1865,11 +1869,11 @@ InjpLookupProcessContext(
     }
 
     //
-    // Allocate under lock is OK since ExAllocateFromNPagedLookasideList is fast
+    // Allocate under lock is OK since ExAllocateFromLookasideListEx is fast
     // and we only hold one bucket lock. This prevents the TOCTOU race of
     // releasing the lock, allocating, and re-acquiring.
     //
-    NewContext = (PINJ_PROCESS_CONTEXT)ExAllocateFromNPagedLookasideList(
+    NewContext = (PINJ_PROCESS_CONTEXT)ExAllocateFromLookasideListEx(
         &Detector->ContextLookaside
         );
 
@@ -1923,7 +1927,7 @@ InjpAllocateChain(
     PINJ_CHAIN Chain;
     static volatile LONG64 NextChainId = 0;
 
-    Chain = (PINJ_CHAIN)ExAllocateFromNPagedLookasideList(
+    Chain = (PINJ_CHAIN)ExAllocateFromLookasideListEx(
         &Detector->ChainLookaside
         );
 
@@ -1978,7 +1982,7 @@ InjpFreeChain(
         InjpFreeOperation(Detector, Operation);
     }
 
-    ExFreeToNPagedLookasideList(&Detector->ChainLookaside, Chain);
+    ExFreeToLookasideListEx(&Detector->ChainLookaside, Chain);
 }
 
 //
@@ -2445,7 +2449,7 @@ InjpAllocateResult(
 {
     PINJ_DETECTION_RESULT Result;
 
-    Result = (PINJ_DETECTION_RESULT)ExAllocateFromNPagedLookasideList(
+    Result = (PINJ_DETECTION_RESULT)ExAllocateFromLookasideListEx(
         &Detector->ResultLookaside
         );
 
@@ -2462,7 +2466,7 @@ InjpFreeResult(
     _In_ PINJ_DETECTION_RESULT Result
     )
 {
-    ExFreeToNPagedLookasideList(&Detector->ResultLookaside, Result);
+    ExFreeToLookasideListEx(&Detector->ResultLookaside, Result);
 }
 
 static NTSTATUS

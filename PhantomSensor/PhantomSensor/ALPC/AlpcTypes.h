@@ -584,10 +584,10 @@ typedef struct _SHADOW_ALPC_MONITOR_STATE {
     //
     // Lookaside lists for fast allocation
     //
-    NPAGED_LOOKASIDE_LIST PortEntryLookaside;
-    NPAGED_LOOKASIDE_LIST ConnectionLookaside;
-    NPAGED_LOOKASIDE_LIST EventLookaside;
-    NPAGED_LOOKASIDE_LIST WorkItemLookaside;
+    LOOKASIDE_LIST_EX PortEntryLookaside;
+    LOOKASIDE_LIST_EX ConnectionLookaside;
+    LOOKASIDE_LIST_EX EventLookaside;
+    LOOKASIDE_LIST_EX WorkItemLookaside;
     BOOLEAN LookasideInitialized;
 
     //

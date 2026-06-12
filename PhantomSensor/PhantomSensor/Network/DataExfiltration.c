@@ -294,8 +294,8 @@ struct _DX_DETECTOR {
     //
     // Lookaside lists (pattern + transfer only; alerts use pool)
     //
-    NPAGED_LOOKASIDE_LIST PatternLookaside;
-    NPAGED_LOOKASIDE_LIST TransferLookaside;
+    LOOKASIDE_LIST_EX PatternLookaside;
+    LOOKASIDE_LIST_EX TransferLookaside;
     BOOLEAN LookasideInitialized;
 
     //
@@ -564,21 +564,23 @@ DxInitialize(
     //
     // Initialize lookaside lists (pattern + transfer only)
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &detector->PatternLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(DX_PATTERN),
         DX_POOL_TAG_PATTERN,
         DX_LOOKASIDE_DEPTH
     );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &detector->TransferLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(DX_TRANSFER_CONTEXT),
         DX_POOL_TAG_CONTEXT,
         DX_LOOKASIDE_DEPTH
@@ -630,8 +632,8 @@ DxInitialize(
 
         if (!NT_SUCCESS(status)) {
             if (detector->LookasideInitialized) {
-                ExDeleteNPagedLookasideList(&detector->PatternLookaside);
-                ExDeleteNPagedLookasideList(&detector->TransferLookaside);
+                ExDeleteLookasideListEx(&detector->PatternLookaside);
+                ExDeleteLookasideListEx(&detector->TransferLookaside);
             }
             ExFreePoolWithTag(detector->TransferBuckets, DX_POOL_TAG_HASH);
             ExFreePoolWithTag(detector, DX_POOL_TAG_CONTEXT);
@@ -738,7 +740,7 @@ DxShutdown(
             ExFreePoolWithTag(pattern->Pattern, DX_POOL_TAG_PATTERN);
         }
 
-        ExFreeToNPagedLookasideList(&Detector->PatternLookaside, pattern);
+        ExFreeToLookasideListEx(&Detector->PatternLookaside, pattern);
     }
 
     DxpReleasePushLockExclusive(&Detector->PatternLock);
@@ -783,8 +785,8 @@ DxShutdown(
     // Delete lookaside lists
     //
     if (Detector->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&Detector->PatternLookaside);
-        ExDeleteNPagedLookasideList(&Detector->TransferLookaside);
+        ExDeleteLookasideListEx(&Detector->PatternLookaside);
+        ExDeleteLookasideListEx(&Detector->TransferLookaside);
         Detector->LookasideInitialized = FALSE;
     }
 
@@ -929,7 +931,7 @@ DxAddPattern(
     //
     // Allocate pattern from lookaside
     //
-    newPattern = (PDX_PATTERN)ExAllocateFromNPagedLookasideList(
+    newPattern = (PDX_PATTERN)ExAllocateFromLookasideListEx(
         &Detector->PatternLookaside
     );
 
@@ -967,7 +969,7 @@ DxAddPattern(
     );
 
     if (newPattern->Pattern == NULL) {
-        ExFreeToNPagedLookasideList(&Detector->PatternLookaside, newPattern);
+        ExFreeToLookasideListEx(&Detector->PatternLookaside, newPattern);
         ExReleaseRundownProtection(&Detector->RundownRef);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
@@ -1004,7 +1006,7 @@ DxAddPattern(
         if (newPattern->Pattern != NULL) {
             ExFreePoolWithTag(newPattern->Pattern, DX_POOL_TAG_PATTERN);
         }
-        ExFreeToNPagedLookasideList(&Detector->PatternLookaside, newPattern);
+        ExFreeToLookasideListEx(&Detector->PatternLookaside, newPattern);
         ExReleaseRundownProtection(&Detector->RundownRef);
         return STATUS_QUOTA_EXCEEDED;
     }
@@ -1070,7 +1072,7 @@ DxRemovePattern(
         ExFreePoolWithTag(foundPattern->Pattern, DX_POOL_TAG_PATTERN);
     }
 
-    ExFreeToNPagedLookasideList(&Detector->PatternLookaside, foundPattern);
+    ExFreeToLookasideListEx(&Detector->PatternLookaside, foundPattern);
 
     ExReleaseRundownProtection(&Detector->RundownRef);
     return STATUS_SUCCESS;
@@ -2369,7 +2371,7 @@ DxpGetOrCreateTransfer(
     // Pre-allocate outside the lock to minimize hold time
     //
     if ((ULONG)Detector->TransferCount < DX_MAX_TRANSFERS) {
-        newTransfer = (PDX_TRANSFER_CONTEXT)ExAllocateFromNPagedLookasideList(
+        newTransfer = (PDX_TRANSFER_CONTEXT)ExAllocateFromLookasideListEx(
             &Detector->TransferLookaside
         );
     }
@@ -2408,7 +2410,7 @@ DxpGetOrCreateTransfer(
                 // Free pre-allocated entry we don't need
                 //
                 if (newTransfer != NULL) {
-                    ExFreeToNPagedLookasideList(&Detector->TransferLookaside, newTransfer);
+                    ExFreeToLookasideListEx(&Detector->TransferLookaside, newTransfer);
                 }
                 return transfer;
             }
@@ -2421,7 +2423,7 @@ DxpGetOrCreateTransfer(
     if (newTransfer == NULL || (ULONG)Detector->TransferCount >= DX_MAX_TRANSFERS) {
         DxpReleasePushLockExclusive(&hashBucket->Lock);
         if (newTransfer != NULL) {
-            ExFreeToNPagedLookasideList(&Detector->TransferLookaside, newTransfer);
+            ExFreeToLookasideListEx(&Detector->TransferLookaside, newTransfer);
         }
         return NULL;
     }
@@ -2478,7 +2480,7 @@ DxpDereferenceTransfer(
     NT_ASSERT(newRef >= 0);
 
     if (newRef == 0) {
-        ExFreeToNPagedLookasideList(&Detector->TransferLookaside, Transfer);
+        ExFreeToLookasideListEx(&Detector->TransferLookaside, Transfer);
     }
 }
 

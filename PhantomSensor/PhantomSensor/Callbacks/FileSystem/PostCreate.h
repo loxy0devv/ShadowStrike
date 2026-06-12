@@ -468,8 +468,8 @@ typedef struct _POC_GLOBAL_STATE {
     //
     // Lookaside lists
     //
-    NPAGED_LOOKASIDE_LIST CompletionContextLookaside;
-    NPAGED_LOOKASIDE_LIST HandleContextLookaside;
+    LOOKASIDE_LIST_EX CompletionContextLookaside;
+    LOOKASIDE_LIST_EX HandleContextLookaside;
     BOOLEAN LookasideInitialized;
     UINT8 Reserved2[7];
 
@@ -667,7 +667,7 @@ PocReleaseStreamContext(
 
 //
 // NOTE: PocAllocateHandleContext has been removed â€” it allocated from
-// NPAGED_LOOKASIDE_LIST (raw pool), incompatible with FltSetStreamHandleContext.
+// LOOKASIDE_LIST_EX (raw pool), incompatible with FltSetStreamHandleContext.
 // Use PocGetOrCreateHandleContext instead (uses FltAllocateContext correctly).
 //
 

@@ -134,7 +134,7 @@ typedef struct _DSD_DETECTOR_INTERNAL {
     //
     // Lookaside list for detection allocations
     //
-    NPAGED_LOOKASIDE_LIST DetectionLookaside;
+    LOOKASIDE_LIST_EX DetectionLookaside;
     BOOLEAN LookasideInitialized;
 
     //
@@ -410,11 +410,12 @@ DsdInitialize(
     InitializeListHead(&detector->Base.WhitelistPatterns);
     ExInitializePushLock(&detector->Base.WhitelistLock);
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &detector->DetectionLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(DSD_DETECTION_INTERNAL),
         DSD_DETECTION_TAG,
         DSD_DETECTION_LOOKASIDE_DEPTH
@@ -495,7 +496,7 @@ DsdShutdown(
     // Delete lookaside
     //
     if (detector->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&detector->DetectionLookaside);
+        ExDeleteLookasideListEx(&detector->DetectionLookaside);
         detector->LookasideInitialized = FALSE;
     }
 
@@ -1295,7 +1296,7 @@ DsdpAllocateDetection(
     *Detection = NULL;
 
     if (Detector->LookasideInitialized) {
-        detection = (PDSD_DETECTION_INTERNAL)ExAllocateFromNPagedLookasideList(
+        detection = (PDSD_DETECTION_INTERNAL)ExAllocateFromLookasideListEx(
             &Detector->DetectionLookaside
         );
         if (detection != NULL) {
@@ -1345,7 +1346,7 @@ DsdpFreeDetectionInternal(
     //
     if (Detection->AllocSource == DsdAllocSource_Lookaside &&
         Detector->LookasideInitialized) {
-        ExFreeToNPagedLookasideList(&Detector->DetectionLookaside, Detection);
+        ExFreeToLookasideListEx(&Detector->DetectionLookaside, Detection);
     } else {
         ShadowStrikeFreePoolWithTag(Detection, DSD_DETECTION_TAG);
     }

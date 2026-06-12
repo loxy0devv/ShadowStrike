@@ -113,7 +113,7 @@ typedef struct _HS_DETECTOR_INTERNAL {
     //
     // Process context pool
     //
-    NPAGED_LOOKASIDE_LIST ProcessContextLookaside;
+    LOOKASIDE_LIST_EX ProcessContextLookaside;
 
     //
     // Shutdown flag (interlocked for cross-CPU visibility)
@@ -386,11 +386,12 @@ Return Value:
     //
     // Initialize process context lookaside list
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &detectorInternal->ProcessContextLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(HS_PROCESS_CONTEXT),
         HS_POOL_TAG_CONTEXT,
         0
@@ -536,7 +537,7 @@ Arguments:
     //
     // Delete lookaside list
     //
-    ExDeleteNPagedLookasideList(&detectorInternal->ProcessContextLookaside);
+    ExDeleteLookasideListEx(&detectorInternal->ProcessContextLookaside);
 
     //
     // Clear signature and free
@@ -1662,7 +1663,7 @@ Routine Description:
     //
     // Allocate new context
     //
-    context = (PHS_PROCESS_CONTEXT)ExAllocateFromNPagedLookasideList(
+    context = (PHS_PROCESS_CONTEXT)ExAllocateFromLookasideListEx(
         &detectorInternal->ProcessContextLookaside
         );
 
@@ -1745,7 +1746,7 @@ Routine Description:
             if (context->Process != NULL) {
                 ObDereferenceObject(context->Process);
             }
-            ExFreeToNPagedLookasideList(
+            ExFreeToLookasideListEx(
                 &detectorInternal->ProcessContextLookaside,
                 context
                 );
@@ -1850,7 +1851,7 @@ Routine Description:
     //
     // Return to lookaside list
     //
-    ExFreeToNPagedLookasideList(&DetectorInternal->ProcessContextLookaside, Context);
+    ExFreeToLookasideListEx(&DetectorInternal->ProcessContextLookaside, Context);
 }
 
 

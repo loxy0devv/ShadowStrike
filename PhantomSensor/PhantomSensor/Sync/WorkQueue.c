@@ -185,9 +185,9 @@ ShadowStrikeWorkQueueInitializeEx(
     g_WqManager.NextItemId = 1;
 
     // Lookaside list
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_WqManager.WorkItemLookaside,
-        NULL, NULL, 0,
+        NULL, NULL, NonPagedPoolNx, 0,
         sizeof(SHADOWSTRIKE_WORK_ITEM),
         SHADOW_WQ_ITEM_TAG,
         g_WqManager.Config.LookasideDepth);
@@ -358,13 +358,13 @@ ShadowStrikeWorkQueueShutdown(
 
         PSHADOWSTRIKE_WORK_ITEM Item = CONTAINING_RECORD(
             Entry, SHADOWSTRIKE_WORK_ITEM, FreeListEntry);
-        ExFreeToNPagedLookasideList(&g_WqManager.WorkItemLookaside, Item);
+        ExFreeToLookasideListEx(&g_WqManager.WorkItemLookaside, Item);
         InterlockedDecrement(&g_WqManager.FreeCount);
     }
 
     // Destroy lookaside
     if (g_WqManager.LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&g_WqManager.WorkItemLookaside);
+        ExDeleteLookasideListEx(&g_WqManager.WorkItemLookaside);
         g_WqManager.LookasideInitialized = FALSE;
     }
 
@@ -410,7 +410,7 @@ WqiAllocateWorkItem(VOID)
         Item = CONTAINING_RECORD(Entry, SHADOWSTRIKE_WORK_ITEM, FreeListEntry);
         InterlockedDecrement(&g_WqManager.FreeCount);
     } else {
-        Item = (PSHADOWSTRIKE_WORK_ITEM)ExAllocateFromNPagedLookasideList(
+        Item = (PSHADOWSTRIKE_WORK_ITEM)ExAllocateFromLookasideListEx(
             &g_WqManager.WorkItemLookaside);
         if (Item == NULL) {
             return NULL;
@@ -470,7 +470,7 @@ WqiFreeWorkItem(
         InterlockedPushEntrySList(&g_WqManager.FreeList, &Item->FreeListEntry);
         InterlockedIncrement(&g_WqManager.FreeCount);
     } else {
-        ExFreeToNPagedLookasideList(&g_WqManager.WorkItemLookaside, Item);
+        ExFreeToLookasideListEx(&g_WqManager.WorkItemLookaside, Item);
     }
 }
 
@@ -854,10 +854,10 @@ WqiCompleteWorkItem(
 
     //
     // FIX WQ-C1: Dereference (which may push back to FreeList SLIST or
-    // ExFreeToNPagedLookasideList via WqiFreeWorkItem) MUST happen while
+    // ExFreeToLookasideListEx via WqiFreeWorkItem) MUST happen while
     // we still hold rundown protection. Otherwise, releasing rundown
     // unblocks ShadowStrikeWorkQueueShutdown's ExWaitForRundownProtection
-    // Release, which then proceeds to ExDeleteNPagedLookasideList while
+    // Release, which then proceeds to ExDeleteLookasideListEx while
     // we are still in the middle of pushing/freeing into that very
     // lookaside â€” classic use-after-delete bugcheck. Holding rundown
     // across the free is the cheapest correctness fix.

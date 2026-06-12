@@ -336,10 +336,10 @@ typedef struct _SHADOWSTRIKE_DRIVER_DATA {
     // =========================================================================
 
     /// @brief Lookaside list for message allocations
-    NPAGED_LOOKASIDE_LIST MessageLookaside;
+    LOOKASIDE_LIST_EX MessageLookaside;
 
     /// @brief Lookaside list for stream context allocations
-    NPAGED_LOOKASIDE_LIST StreamContextLookaside;
+    LOOKASIDE_LIST_EX StreamContextLookaside;
 
     /// @brief Lookaside lists initialized
     BOOLEAN LookasideInitialized;

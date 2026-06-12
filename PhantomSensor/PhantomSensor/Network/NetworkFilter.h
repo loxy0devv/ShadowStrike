@@ -346,9 +346,9 @@ typedef struct _NETWORK_FILTER_GLOBALS {
     volatile LONG BlockedDomainCount;
     
     // Lookaside lists
-    NPAGED_LOOKASIDE_LIST ConnectionLookaside;
-    NPAGED_LOOKASIDE_LIST DnsLookaside;
-    NPAGED_LOOKASIDE_LIST EventLookaside;
+    LOOKASIDE_LIST_EX ConnectionLookaside;
+    LOOKASIDE_LIST_EX DnsLookaside;
+    LOOKASIDE_LIST_EX EventLookaside;
     
     // Statistics (lock-free atomic access)
     volatile LONG64 TotalConnectionsMonitored;

@@ -312,7 +312,7 @@ typedef struct _PA_ANALYZER_INTERNAL {
     //
     // Lookaside list for analysis allocations
     //
-    NPAGED_LOOKASIDE_LIST AnalysisLookaside;
+    LOOKASIDE_LIST_EX AnalysisLookaside;
     BOOLEAN LookasideInitialized;
 
     //
@@ -585,11 +585,12 @@ PaInitialize(
     //
     // Initialize lookaside list for analysis allocations
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &Internal->AnalysisLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(PA_ANALYSIS_INTERNAL),
         PA_POOL_TAG_ANALYSIS,
         0
@@ -784,7 +785,7 @@ Cleanup:
     }
 
     if (Internal->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&Internal->AnalysisLookaside);
+        ExDeleteLookasideListEx(&Internal->AnalysisLookaside);
     }
 
     // Cancel timer if it was created before failure
@@ -945,7 +946,7 @@ PaShutdown(
     // Delete lookaside list
     //
     if (Internal->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&Internal->AnalysisLookaside);
+        ExDeleteLookasideListEx(&Internal->AnalysisLookaside);
     }
 
     //
@@ -1410,7 +1411,7 @@ PapAllocateAnalysis(
 {
     PPA_ANALYSIS_INTERNAL Analysis;
 
-    Analysis = (PPA_ANALYSIS_INTERNAL)ExAllocateFromNPagedLookasideList(
+    Analysis = (PPA_ANALYSIS_INTERNAL)ExAllocateFromLookasideListEx(
         &Analyzer->AnalysisLookaside
         );
 
@@ -1467,7 +1468,7 @@ PapFreeAnalysisInternal(
     // unless we ever allocate overflow buffers (which we don't currently)
     //
 
-    ExFreeToNPagedLookasideList(&Analyzer->AnalysisLookaside, Analysis);
+    ExFreeToLookasideListEx(&Analyzer->AnalysisLookaside, Analysis);
 }
 
 static LONG

@@ -246,7 +246,7 @@ typedef struct _SHADOWSTRIKE_SCAN_CACHE {
     SHADOWSTRIKE_CACHE_BUCKET Buckets[SHADOWSTRIKE_CACHE_BUCKET_COUNT];
 
     /// @brief Lookaside list for entry allocations
-    NPAGED_LOOKASIDE_LIST EntryLookaside;
+    LOOKASIDE_LIST_EX EntryLookaside;
 
     /// @brief Lookaside initialized
     BOOLEAN LookasideInitialized;

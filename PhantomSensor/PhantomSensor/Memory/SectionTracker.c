@@ -115,8 +115,8 @@ typedef struct _SEC_TRACKER_INTERNAL {
 
     ULONG CleanupTimerId;
 
-    NPAGED_LOOKASIDE_LIST EntryLookaside;
-    NPAGED_LOOKASIDE_LIST MapLookaside;
+    LOOKASIDE_LIST_EX EntryLookaside;
+    LOOKASIDE_LIST_EX MapLookaside;
     BOOLEAN LookasideInitialized;
 
     volatile LONG ShuttingDown;
@@ -347,21 +347,23 @@ SecInitialize(
     //
     // Initialize lookaside lists
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &internal->EntryLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(SECTION_ENTRY),
         SEC_POOL_TAG_ENTRY,
         0
     );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &internal->MapLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(SEC_MAP_ENTRY),
         SEC_POOL_TAG_MAP,
         0
@@ -425,8 +427,8 @@ Cleanup:
         }
 
         if (internal->LookasideInitialized) {
-            ExDeleteNPagedLookasideList(&internal->EntryLookaside);
-            ExDeleteNPagedLookasideList(&internal->MapLookaside);
+            ExDeleteLookasideListEx(&internal->EntryLookaside);
+            ExDeleteLookasideListEx(&internal->MapLookaside);
         }
 
         // Cancel timer if it was created before failure
@@ -546,8 +548,8 @@ SecShutdown(
     // Delete lookaside lists
     //
     if (internal->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&internal->EntryLookaside);
-        ExDeleteNPagedLookasideList(&internal->MapLookaside);
+        ExDeleteLookasideListEx(&internal->EntryLookaside);
+        ExDeleteLookasideListEx(&internal->MapLookaside);
         internal->LookasideInitialized = FALSE;
     }
 
@@ -1855,7 +1857,7 @@ SecpAllocateEntry(
         return NULL;
     }
 
-    return (PSECTION_ENTRY)ExAllocateFromNPagedLookasideList(&Tracker->EntryLookaside);
+    return (PSECTION_ENTRY)ExAllocateFromLookasideListEx(&Tracker->EntryLookaside);
 }
 
 /**
@@ -1897,7 +1899,7 @@ SecpFreeEntryToPool(
     )
 {
     if (Tracker->LookasideInitialized && Entry != NULL) {
-        ExFreeToNPagedLookasideList(&Tracker->EntryLookaside, Entry);
+        ExFreeToLookasideListEx(&Tracker->EntryLookaside, Entry);
     }
 }
 
@@ -1910,7 +1912,7 @@ SecpAllocateMapEntry(
         return NULL;
     }
 
-    return (PSEC_MAP_ENTRY)ExAllocateFromNPagedLookasideList(&Tracker->MapLookaside);
+    return (PSEC_MAP_ENTRY)ExAllocateFromLookasideListEx(&Tracker->MapLookaside);
 }
 
 static VOID
@@ -1920,7 +1922,7 @@ SecpFreeMapEntry(
     )
 {
     if (Tracker->LookasideInitialized && MapEntry != NULL) {
-        ExFreeToNPagedLookasideList(&Tracker->MapLookaside, MapEntry);
+        ExFreeToLookasideListEx(&Tracker->MapLookaside, MapEntry);
     }
 }
 

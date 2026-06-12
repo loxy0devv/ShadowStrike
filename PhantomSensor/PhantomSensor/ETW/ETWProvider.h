@@ -424,7 +424,7 @@ typedef struct _ETW_PROVIDER_GLOBALS {
     UINT32 Reserved4;
 
     // Lookaside list â€” sized to the largest event structure
-    NPAGED_LOOKASIDE_LIST EventBufferLookaside;
+    LOOKASIDE_LIST_EX EventBufferLookaside;
 } ETW_PROVIDER_GLOBALS, *PETW_PROVIDER_GLOBALS;
 
 // ============================================================================

@@ -221,7 +221,7 @@ typedef struct _PE_CONTEXT {
     // Lookaside lists (centralized if available, raw fallback)
     //
     PLL_LOOKASIDE PidEntryLookaside;
-    NPAGED_LOOKASIDE_LIST PidEntryLookasideFallback;
+    LOOKASIDE_LIST_EX PidEntryLookasideFallback;
     BOOLEAN LookasideInitialized;
     BOOLEAN UseManagedLookaside;
 
@@ -564,9 +564,9 @@ ShadowStrikeProcessExclusionInitialize(
         }
 
         if (!ctx->UseManagedLookaside) {
-            ExInitializeNPagedLookasideList(
+            ExInitializeLookasideListEx(
                 &ctx->PidEntryLookasideFallback,
-                NULL, NULL, POOL_NX_ALLOCATION,
+                NULL, NULL, NonPagedPoolNx, 0,
                 sizeof(PE_PID_ENTRY),
                 PE_PID_TAG, 0
             );
@@ -738,7 +738,7 @@ ShadowStrikeProcessExclusionShutdown(
             }
             ctx->PidEntryLookaside = NULL;
         } else {
-            ExDeleteNPagedLookasideList(&ctx->PidEntryLookasideFallback);
+            ExDeleteLookasideListEx(&ctx->PidEntryLookasideFallback);
         }
         ctx->LookasideInitialized = FALSE;
     }
@@ -1868,7 +1868,7 @@ PepAllocatePidEntry(
         if (ctx->UseManagedLookaside && ctx->PidEntryLookaside != NULL) {
             entry = (PPE_PID_ENTRY)LlAllocate(ctx->PidEntryLookaside);
         } else {
-            entry = (PPE_PID_ENTRY)ExAllocateFromNPagedLookasideList(
+            entry = (PPE_PID_ENTRY)ExAllocateFromLookasideListEx(
                 &ctx->PidEntryLookasideFallback
             );
         }
@@ -1909,7 +1909,7 @@ PepFreePidEntry(
         if (ctx->UseManagedLookaside && ctx->PidEntryLookaside != NULL) {
             LlFree(ctx->PidEntryLookaside, Entry);
         } else {
-            ExFreeToNPagedLookasideList(&ctx->PidEntryLookasideFallback, Entry);
+            ExFreeToLookasideListEx(&ctx->PidEntryLookasideFallback, Entry);
         }
     } else {
         ExFreePoolWithTag(Entry, PE_PID_TAG);

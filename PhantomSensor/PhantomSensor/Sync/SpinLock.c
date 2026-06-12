@@ -82,7 +82,7 @@ typedef struct _SHADOWSTRIKE_LOCK_SUBSYSTEM {
 #if SHADOWSTRIKE_DEADLOCK_DETECTION
     LIST_ENTRY ThreadStateList;
     KSPIN_LOCK ThreadStateLock;
-    NPAGED_LOOKASIDE_LIST ThreadStateLookaside;
+    LOOKASIDE_LIST_EX ThreadStateLookaside;
 #endif
 
 #if SHADOWSTRIKE_LOCK_STATISTICS
@@ -236,7 +236,7 @@ ShadowGetOrCreateThreadLockState(
 
     if (Found == NULL) {
         Found = (PSHADOWSTRIKE_THREAD_LOCK_STATE)
-            ExAllocateFromNPagedLookasideList(&g_LockSubsystem.ThreadStateLookaside);
+            ExAllocateFromLookasideListEx(&g_LockSubsystem.ThreadStateLookaside);
         if (Found != NULL) {
             RtlZeroMemory(Found, sizeof(SHADOWSTRIKE_THREAD_LOCK_STATE));
             Found->ThreadId = CurrentThread;
@@ -302,7 +302,7 @@ ShadowRecordLockRelease(
                 KeAcquireSpinLock(&g_LockSubsystem.ThreadStateLock, &OldIrql);
                 RemoveEntryList(&State->ListEntry);
                 KeReleaseSpinLock(&g_LockSubsystem.ThreadStateLock, OldIrql);
-                ExFreeToNPagedLookasideList(
+                ExFreeToLookasideListEx(
                     &g_LockSubsystem.ThreadStateLookaside, State);
             }
             break;
@@ -332,11 +332,12 @@ ShadowStrikeLockSubsystemInitialize(
     InitializeListHead(&g_LockSubsystem.ThreadStateList);
     KeInitializeSpinLock(&g_LockSubsystem.ThreadStateLock);
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_LockSubsystem.ThreadStateLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(SHADOWSTRIKE_THREAD_LOCK_STATE),
         SHADOW_LOCK_TAG,
         0
@@ -367,12 +368,12 @@ ShadowStrikeLockSubsystemCleanup(
             PLIST_ENTRY Entry = RemoveHeadList(&g_LockSubsystem.ThreadStateList);
             PSHADOWSTRIKE_THREAD_LOCK_STATE State = CONTAINING_RECORD(
                 Entry, SHADOWSTRIKE_THREAD_LOCK_STATE, ListEntry);
-            ExFreeToNPagedLookasideList(
+            ExFreeToLookasideListEx(
                 &g_LockSubsystem.ThreadStateLookaside, State);
         }
 
         KeReleaseSpinLock(&g_LockSubsystem.ThreadStateLock, OldIrql);
-        ExDeleteNPagedLookasideList(&g_LockSubsystem.ThreadStateLookaside);
+        ExDeleteLookasideListEx(&g_LockSubsystem.ThreadStateLookaside);
     }
 #endif
 }

@@ -247,11 +247,10 @@ ShadowStrikeCacheInitialize(
     //
     // Initialize lookaside list for entry allocations
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_ScanCache.EntryLookaside,
         NULL,                           // Allocate function (use default)
-        NULL,                           // Free function (use default)
-        POOL_NX_ALLOCATION,             // Flags
+        NULL,                           NonPagedPoolNx,                           0,             // Flags
         sizeof(SHADOWSTRIKE_CACHE_ENTRY),
         SHADOWSTRIKE_CACHE_POOL_TAG,
         0                               // Depth (0 = system default)
@@ -443,7 +442,7 @@ ShadowStrikeCacheShutdown(
     // Step 6: Delete lookaside list
     //
     if (g_ScanCache.LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&g_ScanCache.EntryLookaside);
+        ExDeleteLookasideListEx(&g_ScanCache.EntryLookaside);
         g_ScanCache.LookasideInitialized = FALSE;
     }
 
@@ -742,7 +741,7 @@ ShadowStrikeCacheInsert(
     //
     // Allocate new entry from lookaside list
     //
-    entry = (PSHADOWSTRIKE_CACHE_ENTRY)ExAllocateFromNPagedLookasideList(
+    entry = (PSHADOWSTRIKE_CACHE_ENTRY)ExAllocateFromLookasideListEx(
         &g_ScanCache.EntryLookaside
     );
 
@@ -1404,7 +1403,7 @@ ShadowStrikeCacheFreeEntry(
     )
 {
     if (Entry != NULL && g_ScanCache.LookasideInitialized) {
-        ExFreeToNPagedLookasideList(&g_ScanCache.EntryLookaside, Entry);
+        ExFreeToLookasideListEx(&g_ScanCache.EntryLookaside, Entry);
     }
 }
 

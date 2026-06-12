@@ -202,7 +202,7 @@ typedef struct _EM_MONITOR {
     //
     // Lookaside list for environment variable allocations
     //
-    NPAGED_LOOKASIDE_LIST EnvVarLookaside;
+    LOOKASIDE_LIST_EX EnvVarLookaside;
     BOOLEAN LookasideInitialized;
 
     //

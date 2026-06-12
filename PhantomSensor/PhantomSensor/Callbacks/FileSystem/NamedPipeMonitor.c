@@ -273,8 +273,8 @@ typedef struct _NPM_MONITOR_STATE {
     //
     // Lookaside lists
     //
-    NPAGED_LOOKASIDE_LIST EntryLookaside;
-    NPAGED_LOOKASIDE_LIST EventLookaside;
+    LOOKASIDE_LIST_EX EntryLookaside;
+    LOOKASIDE_LIST_EX EventLookaside;
     BOOLEAN LookasideInitialized;
 
     //
@@ -282,7 +282,7 @@ typedef struct _NPM_MONITOR_STATE {
     // here because the documented IRQL contract is <= DISPATCH_LEVEL while
     // ExAcquireRundownProtection requires <= APC_LEVEL. Shutdown clears
     // LookasideInitialized, issues a full memory barrier, then spins on this
-    // counter to ensure no Free path is mid-call before ExDeleteNPagedLookasideList.
+    // counter to ensure no Free path is mid-call before ExDeleteLookasideListEx.
     //
     volatile LONG FreeEventInFlight;
 
@@ -460,19 +460,21 @@ NpMonInitialize(
     //
     // Initialize lookaside lists
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_NpmState.EntryLookaside,
         NULL, NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(NPM_PIPE_ENTRY),
         NPM_POOL_TAG_ENTRY,
         0
     );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_NpmState.EventLookaside,
         NULL, NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(NPM_PIPE_EVENT),
         NPM_POOL_TAG_EVENT,
         0
@@ -535,7 +537,7 @@ NpMonShutdown(
         while (!IsListEmpty(&g_NpmState.HashTable[i].List)) {
             PLIST_ENTRY entry = RemoveHeadList(&g_NpmState.HashTable[i].List);
             PNPM_PIPE_ENTRY pipeEntry = CONTAINING_RECORD(entry, NPM_PIPE_ENTRY, ListEntry);
-            ExFreeToNPagedLookasideList(&g_NpmState.EntryLookaside, pipeEntry);
+            ExFreeToLookasideListEx(&g_NpmState.EntryLookaside, pipeEntry);
         }
     }
 
@@ -548,7 +550,7 @@ NpMonShutdown(
         while (!IsListEmpty(&g_NpmState.EventQueue)) {
             PLIST_ENTRY entry = RemoveHeadList(&g_NpmState.EventQueue);
             PNPM_PIPE_EVENT evt = CONTAINING_RECORD(entry, NPM_PIPE_EVENT, ListEntry);
-            ExFreeToNPagedLookasideList(&g_NpmState.EventLookaside, evt);
+            ExFreeToLookasideListEx(&g_NpmState.EventLookaside, evt);
         }
         g_NpmState.EventCount = 0;
         KeReleaseSpinLock(&g_NpmState.EventLock, oldIrql);
@@ -563,7 +565,7 @@ NpMonShutdown(
     //      NpMonFreeEvent so that any Free that has already incremented
     //      FreeEventInFlight observes a TRUE LookasideInitialized, and any
     //      Free that observes FALSE has not yet (and will not) call
-    //      ExFreeToNPagedLookasideList.
+    //      ExFreeToLookasideListEx.
     //   3. Spin until FreeEventInFlight drains to zero. Bounded by
     //      DISPATCH_LEVEL execution windows; should be microseconds.
     //   4. Delete the lookaside lists.
@@ -575,14 +577,14 @@ NpMonShutdown(
         //
         // Drain any in-flight NpMonFreeEvent callers that already passed the
         // InterlockedIncrement but have not yet completed the
-        // LookasideInitialized check + ExFreeToNPagedLookasideList.
+        // LookasideInitialized check + ExFreeToLookasideListEx.
         //
         while (InterlockedCompareExchange(&g_NpmState.FreeEventInFlight, 0, 0) != 0) {
             KeStallExecutionProcessor(10);
         }
 
-        ExDeleteNPagedLookasideList(&g_NpmState.EntryLookaside);
-        ExDeleteNPagedLookasideList(&g_NpmState.EventLookaside);
+        ExDeleteLookasideListEx(&g_NpmState.EntryLookaside);
+        ExDeleteLookasideListEx(&g_NpmState.EventLookaside);
     }
 
     InterlockedExchange(&g_NpmState.State, NPM_STATE_UNINITIALIZED);
@@ -1030,7 +1032,7 @@ NpMonFreeEvent(
     InterlockedIncrement(&g_NpmState.FreeEventInFlight);
 
     if (g_NpmState.LookasideInitialized) {
-        ExFreeToNPagedLookasideList(&g_NpmState.EventLookaside, Event);
+        ExFreeToLookasideListEx(&g_NpmState.EventLookaside, Event);
     } else {
         //
         // Shutdown has torn down the lookaside list (or is about to). Bounded
@@ -1392,7 +1394,7 @@ NpmAllocateEntry(
 {
     PNPM_PIPE_ENTRY entry;
 
-    entry = (PNPM_PIPE_ENTRY)ExAllocateFromNPagedLookasideList(
+    entry = (PNPM_PIPE_ENTRY)ExAllocateFromLookasideListEx(
         &g_NpmState.EntryLookaside
     );
 
@@ -1409,7 +1411,7 @@ NpmFreeEntry(
     _In_ PNPM_PIPE_ENTRY Entry
     )
 {
-    ExFreeToNPagedLookasideList(&g_NpmState.EntryLookaside, Entry);
+    ExFreeToLookasideListEx(&g_NpmState.EntryLookaside, Entry);
 }
 
 static NTSTATUS
@@ -1558,7 +1560,7 @@ NpmQueueEvent(
         return STATUS_QUOTA_EXCEEDED;
     }
 
-    evt = (PNPM_PIPE_EVENT)ExAllocateFromNPagedLookasideList(
+    evt = (PNPM_PIPE_EVENT)ExAllocateFromLookasideListEx(
         &g_NpmState.EventLookaside
     );
 

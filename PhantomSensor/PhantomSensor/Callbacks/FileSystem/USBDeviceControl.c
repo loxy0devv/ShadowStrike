@@ -91,7 +91,7 @@ typedef struct _UDC_STATE {
     //
     // Lookaside
     //
-    NPAGED_LOOKASIDE_LIST VolumeLookaside;
+    LOOKASIDE_LIST_EX VolumeLookaside;
 
 } UDC_STATE, *PUDC_STATE;
 
@@ -245,10 +245,11 @@ UdcInitialize(VOID)
     // since Windows 8+. POOL_FLAG_NON_PAGED (0x40) is for ExAllocatePool2,
     // NOT for ExInitializeNPagedLookasideList.
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_UdcState.VolumeLookaside,
         NULL,
         NULL,
+        NonPagedPoolNx,
         0,
         sizeof(UDC_TRACKED_VOLUME),
         UDC_DEVICE_POOL_TAG,
@@ -300,7 +301,7 @@ UdcShutdown(VOID)
         ListEntry = RemoveHeadList(&g_UdcState.VolumeListHead);
         PUDC_TRACKED_VOLUME Vol = CONTAINING_RECORD(
             ListEntry, UDC_TRACKED_VOLUME, Link);
-        ExFreeToNPagedLookasideList(&g_UdcState.VolumeLookaside, Vol);
+        ExFreeToLookasideListEx(&g_UdcState.VolumeLookaside, Vol);
     }
     FltReleasePushLock(&g_UdcState.VolumeLock);
 
@@ -322,7 +323,7 @@ UdcShutdown(VOID)
     }
     FltReleasePushLock(&g_UdcState.RulesLock);
 
-    ExDeleteNPagedLookasideList(&g_UdcState.VolumeLookaside);
+    ExDeleteLookasideListEx(&g_UdcState.VolumeLookaside);
     FltDeletePushLock(&g_UdcState.RulesLock);
     FltDeletePushLock(&g_UdcState.VolumeLock);
 
@@ -644,7 +645,7 @@ UdcNotifyVolumeMount(
         return;
     }
 
-    Volume = (PUDC_TRACKED_VOLUME)ExAllocateFromNPagedLookasideList(
+    Volume = (PUDC_TRACKED_VOLUME)ExAllocateFromLookasideListEx(
         &g_UdcState.VolumeLookaside);
 
     if (Volume == NULL) {
@@ -716,7 +717,7 @@ UdcNotifyVolumeMount(
         UdcpFindVolumeUnlocked(FltObjects->Instance) != NULL) {
 
         FltReleasePushLock(&g_UdcState.VolumeLock);
-        ExFreeToNPagedLookasideList(&g_UdcState.VolumeLookaside, Volume);
+        ExFreeToLookasideListEx(&g_UdcState.VolumeLookaside, Volume);
         UdcpLeaveOperation();
         return;
     }
@@ -774,7 +775,7 @@ UdcNotifyVolumeDismount(
                        Volume->WriteAttempts,
                        Volume->WriteBlocked);
 
-            ExFreeToNPagedLookasideList(&g_UdcState.VolumeLookaside, Volume);
+            ExFreeToLookasideListEx(&g_UdcState.VolumeLookaside, Volume);
             UdcpLeaveOperation();
             return;
         }

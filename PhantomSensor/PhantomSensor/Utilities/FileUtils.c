@@ -257,7 +257,7 @@ static PFLT_FILTER g_FileUtilsFilterHandle = NULL;
 /**
  * @brief Lookaside list for file read buffers
  */
-static NPAGED_LOOKASIDE_LIST g_FileBufferLookaside;
+static LOOKASIDE_LIST_EX g_FileBufferLookaside;
 
 /**
  * @brief Lookaside list initialized flag (0 = not init, 1 = init)
@@ -440,11 +440,10 @@ ShadowStrikeInitializeFileUtils(
     //
     // Initialize lookaside list for file read buffers
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_FileBufferLookaside,
         NULL,                           // Allocate function
-        NULL,                           // Free function
-        POOL_NX_ALLOCATION,             // Flags
+        NULL,                           NonPagedPoolNx,                           0,             // Flags
         SHADOW_FILE_READ_CHUNK_SIZE,    // Size
         SHADOW_FILEBUF_TAG,             // Tag
         0                               // Depth (0 = system default)
@@ -485,7 +484,7 @@ ShadowStrikeCleanupFileUtils(
         // This prevents use-after-free if a thread is mid-operation.
         //
         ExWaitForRundownProtectionRelease(&g_LookasideRundown);
-        ExDeleteNPagedLookasideList(&g_FileBufferLookaside);
+        ExDeleteLookasideListEx(&g_FileBufferLookaside);
     }
 
     g_FileUtilsFilterHandle = NULL;
@@ -2820,7 +2819,7 @@ ShadowStrikeInitFileReadContext(
         ChunkSize == SHADOW_FILE_READ_CHUNK_SIZE) {
 
         if (ExAcquireRundownProtection(&g_LookasideRundown)) {
-            Context->Buffer = ExAllocateFromNPagedLookasideList(&g_FileBufferLookaside);
+            Context->Buffer = ExAllocateFromLookasideListEx(&g_FileBufferLookaside);
             if (Context->Buffer != NULL) {
                 Context->UsedLookaside = TRUE;
             } else {
@@ -2933,7 +2932,7 @@ ShadowStrikeCleanupFileReadContext(
             // Return to lookaside list, then release rundown protection.
             // The rundown was acquired in InitFileReadContext.
             //
-            ExFreeToNPagedLookasideList(&g_FileBufferLookaside, Context->Buffer);
+            ExFreeToLookasideListEx(&g_FileBufferLookaside, Context->Buffer);
             ExReleaseRundownProtection(&g_LookasideRundown);
         } else {
             ExFreePoolWithTag(Context->Buffer, SHADOW_FILEBUF_TAG);

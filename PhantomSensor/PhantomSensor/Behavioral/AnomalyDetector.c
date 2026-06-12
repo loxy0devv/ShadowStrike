@@ -264,9 +264,9 @@ typedef struct _AD_DETECTOR {
     //
     // Lookaside lists
     //
-    NPAGED_LOOKASIDE_LIST BaselineLookaside;
-    NPAGED_LOOKASIDE_LIST AnomalyLookaside;
-    NPAGED_LOOKASIDE_LIST ProcessBaselineLookaside;
+    LOOKASIDE_LIST_EX BaselineLookaside;
+    LOOKASIDE_LIST_EX AnomalyLookaside;
+    LOOKASIDE_LIST_EX ProcessBaselineLookaside;
     BOOLEAN LookasideInitialized;
 
     //
@@ -558,31 +558,34 @@ AdInitialize(
     //
     // Initialize lookaside lists
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &detector->BaselineLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(AD_BASELINE_INTERNAL),
         AD_POOL_TAG,
         0
     );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &detector->AnomalyLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(AD_ANOMALY_INTERNAL),
         AD_POOL_TAG,
         0
     );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &detector->ProcessBaselineLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(AD_PROCESS_BASELINE),
         AD_POOL_TAG,
         0
@@ -639,16 +642,16 @@ AdInitialize(
                 PAD_BASELINE_INTERNAL bl = CONTAINING_RECORD(
                     entry, AD_BASELINE_INTERNAL, ListEntry
                 );
-                ExFreeToNPagedLookasideList(&detector->BaselineLookaside, bl);
+                ExFreeToLookasideListEx(&detector->BaselineLookaside, bl);
             }
 
             ExReleasePushLockExclusive(&detector->GlobalBaselineLock);
             KeLeaveCriticalRegion();
 
             if (detector->LookasideInitialized) {
-                ExDeleteNPagedLookasideList(&detector->BaselineLookaside);
-                ExDeleteNPagedLookasideList(&detector->AnomalyLookaside);
-                ExDeleteNPagedLookasideList(&detector->ProcessBaselineLookaside);
+                ExDeleteLookasideListEx(&detector->BaselineLookaside);
+                ExDeleteLookasideListEx(&detector->AnomalyLookaside);
+                ExDeleteLookasideListEx(&detector->ProcessBaselineLookaside);
             }
 
             ExFreePoolWithTag(detector->ScratchBuffer, AD_POOL_TAG);
@@ -702,15 +705,15 @@ AdInitialize(
                 PAD_BASELINE_INTERNAL bl = CONTAINING_RECORD(
                     be, AD_BASELINE_INTERNAL, ListEntry
                 );
-                ExFreeToNPagedLookasideList(&detector->BaselineLookaside, bl);
+                ExFreeToLookasideListEx(&detector->BaselineLookaside, bl);
             }
             ExReleasePushLockExclusive(&detector->GlobalBaselineLock);
             KeLeaveCriticalRegion();
 
             if (detector->LookasideInitialized) {
-                ExDeleteNPagedLookasideList(&detector->BaselineLookaside);
-                ExDeleteNPagedLookasideList(&detector->AnomalyLookaside);
-                ExDeleteNPagedLookasideList(&detector->ProcessBaselineLookaside);
+                ExDeleteLookasideListEx(&detector->BaselineLookaside);
+                ExDeleteLookasideListEx(&detector->AnomalyLookaside);
+                ExDeleteLookasideListEx(&detector->ProcessBaselineLookaside);
             }
 
             ExFreePoolWithTag(detector->ScratchBuffer, AD_POOL_TAG);
@@ -774,15 +777,15 @@ AdInitialize(
                 PAD_BASELINE_INTERNAL bl = CONTAINING_RECORD(
                     be, AD_BASELINE_INTERNAL, ListEntry
                 );
-                ExFreeToNPagedLookasideList(&detector->BaselineLookaside, bl);
+                ExFreeToLookasideListEx(&detector->BaselineLookaside, bl);
             }
             ExReleasePushLockExclusive(&detector->GlobalBaselineLock);
             KeLeaveCriticalRegion();
 
             if (detector->LookasideInitialized) {
-                ExDeleteNPagedLookasideList(&detector->BaselineLookaside);
-                ExDeleteNPagedLookasideList(&detector->AnomalyLookaside);
-                ExDeleteNPagedLookasideList(&detector->ProcessBaselineLookaside);
+                ExDeleteLookasideListEx(&detector->BaselineLookaside);
+                ExDeleteLookasideListEx(&detector->AnomalyLookaside);
+                ExDeleteLookasideListEx(&detector->ProcessBaselineLookaside);
             }
 
             ExFreePoolWithTag(detector->ScratchBuffer, AD_POOL_TAG);
@@ -915,7 +918,7 @@ AdShutdown(
     while (!IsListEmpty(&Detector->GlobalBaselines)) {
         entry = RemoveHeadList(&Detector->GlobalBaselines);
         baseline = CONTAINING_RECORD(entry, AD_BASELINE_INTERNAL, ListEntry);
-        ExFreeToNPagedLookasideList(&Detector->BaselineLookaside, baseline);
+        ExFreeToLookasideListEx(&Detector->BaselineLookaside, baseline);
     }
 
     ExReleasePushLockExclusive(&Detector->GlobalBaselineLock);
@@ -944,7 +947,7 @@ AdShutdown(
     while (!IsListEmpty(&Detector->AnomalyList)) {
         entry = RemoveHeadList(&Detector->AnomalyList);
         anomaly = CONTAINING_RECORD(entry, AD_ANOMALY_INTERNAL, ListEntry);
-        ExFreeToNPagedLookasideList(&Detector->AnomalyLookaside, anomaly);
+        ExFreeToLookasideListEx(&Detector->AnomalyLookaside, anomaly);
     }
 
     KeReleaseSpinLock(&Detector->AnomalyLock, oldIrql);
@@ -965,9 +968,9 @@ AdShutdown(
     // Delete lookaside lists
     //
     if (Detector->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&Detector->BaselineLookaside);
-        ExDeleteNPagedLookasideList(&Detector->AnomalyLookaside);
-        ExDeleteNPagedLookasideList(&Detector->ProcessBaselineLookaside);
+        ExDeleteLookasideListEx(&Detector->BaselineLookaside);
+        ExDeleteLookasideListEx(&Detector->AnomalyLookaside);
+        ExDeleteLookasideListEx(&Detector->ProcessBaselineLookaside);
     }
 
     //
@@ -1762,7 +1765,7 @@ AdpCleanupWorkerThread(
             if (anomaly->Info.DetectionTime.QuadPart < cutoffTime.QuadPart) {
                 RemoveEntryList(&anomaly->ListEntry);
                 InterlockedDecrement(&detector->AnomalyCount);
-                ExFreeToNPagedLookasideList(&detector->AnomalyLookaside, anomaly);
+                ExFreeToLookasideListEx(&detector->AnomalyLookaside, anomaly);
             }
         }
 
@@ -1797,7 +1800,7 @@ AdpCleanupWorkerThread(
                 RemoveEntryList(&pb->ListEntry);
                 RemoveEntryList(&pb->HashEntry);
                 InterlockedDecrement(&detector->ProcessBaselineCount);
-                ExFreeToNPagedLookasideList(
+                ExFreeToLookasideListEx(
                     &detector->ProcessBaselineLookaside, pb
                 );
             }
@@ -1907,7 +1910,7 @@ AdpCreateGlobalBaseline(
 {
     PAD_BASELINE_INTERNAL baseline;
 
-    baseline = (PAD_BASELINE_INTERNAL)ExAllocateFromNPagedLookasideList(
+    baseline = (PAD_BASELINE_INTERNAL)ExAllocateFromLookasideListEx(
         &Detector->BaselineLookaside
     );
 
@@ -1974,7 +1977,7 @@ AdpCreateProcessBaseline(
         return NULL;
     }
 
-    processBaseline = (PAD_PROCESS_BASELINE)ExAllocateFromNPagedLookasideList(
+    processBaseline = (PAD_PROCESS_BASELINE)ExAllocateFromLookasideListEx(
         &Detector->ProcessBaselineLookaside
     );
 
@@ -2016,7 +2019,7 @@ AdpCreateProcessBaseline(
         ExReleasePushLockExclusive(&Detector->ProcessBaselineListLock);
         KeLeaveCriticalRegion();
 
-        ExFreeToNPagedLookasideList(&Detector->ProcessBaselineLookaside, processBaseline);
+        ExFreeToLookasideListEx(&Detector->ProcessBaselineLookaside, processBaseline);
 
         AdpReferenceProcessBaseline(existing);
         return existing;
@@ -2061,7 +2064,7 @@ AdpFreeProcessBaseline(
     _Inout_ PAD_PROCESS_BASELINE ProcessBaseline
     )
 {
-    ExFreeToNPagedLookasideList(&Detector->ProcessBaselineLookaside, ProcessBaseline);
+    ExFreeToLookasideListEx(&Detector->ProcessBaselineLookaside, ProcessBaseline);
 }
 
 // ============================================================================
@@ -2460,7 +2463,7 @@ AdpAddAnomalyToList(
     PLIST_ENTRY oldest;
     KIRQL oldIrql;
 
-    anomaly = (PAD_ANOMALY_INTERNAL)ExAllocateFromNPagedLookasideList(
+    anomaly = (PAD_ANOMALY_INTERNAL)ExAllocateFromLookasideListEx(
         &Detector->AnomalyLookaside
     );
 
@@ -2488,7 +2491,7 @@ AdpAddAnomalyToList(
             // No separate buffer to free - ProcessName is embedded
             // [FIX: P1 - Memory leak on eviction - N/A with new design]
             //
-            ExFreeToNPagedLookasideList(&Detector->AnomalyLookaside, oldAnomaly);
+            ExFreeToLookasideListEx(&Detector->AnomalyLookaside, oldAnomaly);
         }
     }
 

@@ -321,10 +321,10 @@ typedef struct _SHADOW_KTM_MONITOR_STATE {
     // Lookaside Lists
     //
 
-    NPAGED_LOOKASIDE_LIST TransactionLookaside;
+    LOOKASIDE_LIST_EX TransactionLookaside;
     BOOLEAN TransactionLookasideInitialized;
 
-    NPAGED_LOOKASIDE_LIST AlertLookaside;
+    LOOKASIDE_LIST_EX AlertLookaside;
     BOOLEAN AlertLookasideInitialized;
 
     //

@@ -73,7 +73,7 @@ typedef struct _EC_ELAM_CALLBACKS_INTERNAL {
     volatile LONG CurrentPhase;
 
     // Lookaside for driver allocations
-    NPAGED_LOOKASIDE_LIST DriverLookaside;
+    LOOKASIDE_LIST_EX DriverLookaside;
     BOOLEAN LookasideInitialized;
 
     // Phase completion events
@@ -137,7 +137,7 @@ ElcbpAllocateBootDriver(
         return NULL;
     }
 
-    driver = (PEC_BOOT_DRIVER_INTERNAL)ExAllocateFromNPagedLookasideList(
+    driver = (PEC_BOOT_DRIVER_INTERNAL)ExAllocateFromLookasideListEx(
         &Internal->DriverLookaside
         );
 
@@ -158,7 +158,7 @@ ElcbpFreeBootDriver(
     )
 {
     if (Driver != NULL && Internal->LookasideInitialized) {
-        ExFreeToNPagedLookasideList(&Internal->DriverLookaside, Driver);
+        ExFreeToLookasideListEx(&Internal->DriverLookaside, Driver);
     }
 }
 
@@ -312,11 +312,12 @@ ElcbInitialize(
     ExInitializePushLock(&internal->Public.DriverLock);
 
     // Initialize lookaside list for driver entries
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &internal->DriverLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(EC_BOOT_DRIVER_INTERNAL),
         EC_POOL_TAG,
         0
@@ -394,7 +395,7 @@ ElcbShutdown(
 
     // Delete lookaside list
     if (internal->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&internal->DriverLookaside);
+        ExDeleteLookasideListEx(&internal->DriverLookaside);
         internal->LookasideInitialized = FALSE;
     }
 

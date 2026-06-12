@@ -394,41 +394,45 @@ ShadowAlpcInitialize(
     //
     // Initialize lookaside lists for fast allocation
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &state->PortEntryLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(SHADOW_ALPC_PORT_ENTRY),
         SHADOW_ALPC_PORT_TAG,
         0
     );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &state->ConnectionLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(SHADOW_ALPC_CONNECTION),
         SHADOW_ALPC_CONN_TAG,
         0
     );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &state->EventLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(SHADOW_ALPC_EVENT),
         SHADOW_ALPC_EVENT_TAG,
         0
     );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &state->WorkItemLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(SHADOW_ALPC_WORK_ITEM),
         SHADOW_ALPC_WORK_TAG,
         0
@@ -715,10 +719,10 @@ ShadowAlpcCleanup(
     // Delete lookaside lists
     //
     if (state->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&state->PortEntryLookaside);
-        ExDeleteNPagedLookasideList(&state->ConnectionLookaside);
-        ExDeleteNPagedLookasideList(&state->EventLookaside);
-        ExDeleteNPagedLookasideList(&state->WorkItemLookaside);
+        ExDeleteLookasideListEx(&state->PortEntryLookaside);
+        ExDeleteLookasideListEx(&state->ConnectionLookaside);
+        ExDeleteLookasideListEx(&state->EventLookaside);
+        ExDeleteLookasideListEx(&state->WorkItemLookaside);
         state->LookasideInitialized = FALSE;
     }
 
@@ -1705,7 +1709,7 @@ ShadowAlpcFreeEvent(
     PSHADOW_ALPC_MONITOR_STATE state = &g_AlpcPortMonitorState;
 
     if (Event != NULL && state->LookasideInitialized) {
-        ExFreeToNPagedLookasideList(&state->EventLookaside, Event);
+        ExFreeToLookasideListEx(&state->EventLookaside, Event);
     }
 }
 
@@ -2443,7 +2447,7 @@ ShadowAlpcpAllocatePortEntry(
         return NULL;
     }
 
-    entry = (PSHADOW_ALPC_PORT_ENTRY)ExAllocateFromNPagedLookasideList(
+    entry = (PSHADOW_ALPC_PORT_ENTRY)ExAllocateFromLookasideListEx(
         &State->PortEntryLookaside
     );
 
@@ -2480,7 +2484,7 @@ ShadowAlpcpFreePortEntry(
     }
 
     if (State->LookasideInitialized) {
-        ExFreeToNPagedLookasideList(&State->PortEntryLookaside, Entry);
+        ExFreeToLookasideListEx(&State->PortEntryLookaside, Entry);
     }
 }
 
@@ -2495,7 +2499,7 @@ ShadowAlpcpAllocateConnection(
         return NULL;
     }
 
-    connection = (PSHADOW_ALPC_CONNECTION)ExAllocateFromNPagedLookasideList(
+    connection = (PSHADOW_ALPC_CONNECTION)ExAllocateFromLookasideListEx(
         &State->ConnectionLookaside
     );
 
@@ -2514,7 +2518,7 @@ ShadowAlpcpFreeConnection(
     )
 {
     if (Connection != NULL && State->LookasideInitialized) {
-        ExFreeToNPagedLookasideList(&State->ConnectionLookaside, Connection);
+        ExFreeToLookasideListEx(&State->ConnectionLookaside, Connection);
     }
 }
 
@@ -2529,7 +2533,7 @@ ShadowAlpcpAllocateEvent(
         return NULL;
     }
 
-    event = (PSHADOW_ALPC_EVENT)ExAllocateFromNPagedLookasideList(
+    event = (PSHADOW_ALPC_EVENT)ExAllocateFromLookasideListEx(
         &State->EventLookaside
     );
 

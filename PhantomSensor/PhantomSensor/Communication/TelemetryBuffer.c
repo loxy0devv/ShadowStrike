@@ -654,11 +654,12 @@ TbInitialize(
     //
     // Initialize batch lookaside list (manager-local, not global)
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &manager->BatchLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(TB_BATCH_DESCRIPTOR),
         TB_POOL_TAG_BATCH,
         0
@@ -668,11 +669,12 @@ TbInitialize(
     //
     // Initialize reservation lookaside list
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &manager->ReservationLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(TB_RESERVATION_CONTEXT),
         TB_POOL_TAG_RESERVATION,
         0
@@ -763,11 +765,11 @@ Cleanup:
         // Destroy lookaside lists if initialized
         //
         if (InterlockedCompareExchange(&manager->BatchLookasideInitialized, 0, 1) == 1) {
-            ExDeleteNPagedLookasideList(&manager->BatchLookaside);
+            ExDeleteLookasideListEx(&manager->BatchLookaside);
         }
 
         if (InterlockedCompareExchange(&manager->ReservationLookasideInitialized, 0, 1) == 1) {
-            ExDeleteNPagedLookasideList(&manager->ReservationLookaside);
+            ExDeleteLookasideListEx(&manager->ReservationLookaside);
         }
 
         //
@@ -887,7 +889,7 @@ TbShutdown(
         // Only free to lookaside if still initialized
         //
         if (Manager->BatchLookasideInitialized) {
-            ExFreeToNPagedLookasideList(&Manager->BatchLookaside, batch);
+            ExFreeToLookasideListEx(&Manager->BatchLookaside, batch);
         }
     }
     KeReleaseSpinLock(&Manager->BatchListLock, oldIrql);
@@ -912,11 +914,11 @@ TbShutdown(
     // Delete lookaside lists
     //
     if (InterlockedCompareExchange(&Manager->BatchLookasideInitialized, 0, 1) == 1) {
-        ExDeleteNPagedLookasideList(&Manager->BatchLookaside);
+        ExDeleteLookasideListEx(&Manager->BatchLookaside);
     }
 
     if (InterlockedCompareExchange(&Manager->ReservationLookasideInitialized, 0, 1) == 1) {
-        ExDeleteNPagedLookasideList(&Manager->ReservationLookaside);
+        ExDeleteLookasideListEx(&Manager->ReservationLookaside);
     }
 
     //
@@ -1449,7 +1451,7 @@ TbReserve(
     //
     // Allocate reservation context
     //
-    reservation = (PTB_RESERVATION_CONTEXT)ExAllocateFromNPagedLookasideList(
+    reservation = (PTB_RESERVATION_CONTEXT)ExAllocateFromLookasideListEx(
         &Manager->ReservationLookaside
     );
 
@@ -1481,7 +1483,7 @@ TbReserve(
     //
     if (Size > targetBuffer->EntrySlotSize) {
         KeLowerIrql(oldIrql);
-        ExFreeToNPagedLookasideList(&Manager->ReservationLookaside, reservation);
+        ExFreeToLookasideListEx(&Manager->ReservationLookaside, reservation);
         return STATUS_BUFFER_OVERFLOW;
     }
 
@@ -1492,7 +1494,7 @@ TbReserve(
     if (usage >= (targetBuffer->BufferSize * TB_CRITICAL_WATER_PERCENT / 100)) {
         KeLowerIrql(oldIrql);
         InterlockedIncrement(&targetBuffer->DropCount);
-        ExFreeToNPagedLookasideList(&Manager->ReservationLookaside, reservation);
+        ExFreeToLookasideListEx(&Manager->ReservationLookaside, reservation);
         return STATUS_DEVICE_BUSY;
     }
 
@@ -1511,7 +1513,7 @@ TbReserve(
         KeReleaseSpinLockFromDpcLevel(&targetBuffer->ProducerLock);
         KeLowerIrql(oldIrql);
         InterlockedIncrement(&targetBuffer->DropCount);
-        ExFreeToNPagedLookasideList(&Manager->ReservationLookaside, reservation);
+        ExFreeToLookasideListEx(&Manager->ReservationLookaside, reservation);
         return STATUS_DEVICE_BUSY;
     }
 
@@ -1533,7 +1535,7 @@ TbReserve(
         //
         KeReleaseSpinLockFromDpcLevel(&targetBuffer->ProducerLock);
         KeLowerIrql(oldIrql);
-        ExFreeToNPagedLookasideList(&Manager->ReservationLookaside, reservation);
+        ExFreeToLookasideListEx(&Manager->ReservationLookaside, reservation);
         return STATUS_DEVICE_BUSY;
     }
 
@@ -1665,7 +1667,7 @@ TbCommit(
     //
     Context->IsValid = FALSE;
     if (Manager->ReservationLookasideInitialized) {
-        ExFreeToNPagedLookasideList(&Manager->ReservationLookaside, Context);
+        ExFreeToLookasideListEx(&Manager->ReservationLookaside, Context);
     }
 }
 
@@ -1724,7 +1726,7 @@ Cleanup:
     //
     Context->IsValid = FALSE;
     if (Manager->ReservationLookasideInitialized) {
-        ExFreeToNPagedLookasideList(&Manager->ReservationLookaside, Context);
+        ExFreeToLookasideListEx(&Manager->ReservationLookaside, Context);
     }
 }
 
@@ -1927,7 +1929,7 @@ TbDequeueBatch(
     //
     // Allocate batch descriptor
     //
-    batch = (PTB_BATCH_DESCRIPTOR)ExAllocateFromNPagedLookasideList(&Manager->BatchLookaside);
+    batch = (PTB_BATCH_DESCRIPTOR)ExAllocateFromLookasideListEx(&Manager->BatchLookaside);
     if (batch == NULL) {
         ExFreePoolWithTag(batchBuffer, TB_POOL_TAG_BATCH);
         return STATUS_INSUFFICIENT_RESOURCES;
@@ -2011,7 +2013,7 @@ TbFreeBatch(
     // Free descriptor only if lookaside still initialized
     //
     if (Manager->BatchLookasideInitialized) {
-        ExFreeToNPagedLookasideList(&Manager->BatchLookaside, Batch);
+        ExFreeToLookasideListEx(&Manager->BatchLookaside, Batch);
     }
 }
 

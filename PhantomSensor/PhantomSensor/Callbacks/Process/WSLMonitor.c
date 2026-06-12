@@ -72,7 +72,7 @@ typedef struct _WSL_STATE {
     //
     // Allocation
     //
-    NPAGED_LOOKASIDE_LIST ProcessLookaside;
+    LOOKASIDE_LIST_EX ProcessLookaside;
 
     //
     // Global capacity tracking to prevent NonPagedPool exhaustion under
@@ -230,11 +230,12 @@ WslMonInitialize(VOID)
         g_WslState.ProcessBuckets[i].Count = 0;
     }
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_WslState.ProcessLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(WSL_TRACKED_PROCESS),
         WSL_PROCESS_POOL_TAG,
         0
@@ -275,13 +276,13 @@ WslMonShutdown(VOID)
             LIST_ENTRY *Entry = RemoveHeadList(&g_WslState.ProcessBuckets[i].Head);
             PWSL_TRACKED_PROCESS Proc = CONTAINING_RECORD(
                 Entry, WSL_TRACKED_PROCESS, Link);
-            ExFreeToNPagedLookasideList(&g_WslState.ProcessLookaside, Proc);
+            ExFreeToLookasideListEx(&g_WslState.ProcessLookaside, Proc);
             freedCount++;
         }
         FltDeletePushLock(&g_WslState.ProcessBuckets[i].Lock);
     }
 
-    ExDeleteNPagedLookasideList(&g_WslState.ProcessLookaside);
+    ExDeleteLookasideListEx(&g_WslState.ProcessLookaside);
 
     DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
                "[ShadowStrike/WSL] Shutdown complete. "
@@ -431,7 +432,7 @@ WslMonCheckProcessCreate(
     //
     // Step 4: Allocate and populate tracking entry.
     //
-    NewProc = (PWSL_TRACKED_PROCESS)ExAllocateFromNPagedLookasideList(
+    NewProc = (PWSL_TRACKED_PROCESS)ExAllocateFromLookasideListEx(
         &g_WslState.ProcessLookaside);
 
     if (NewProc == NULL) {
@@ -474,7 +475,7 @@ WslMonCheckProcessCreate(
             // capacity reservation.
             //
             FltReleasePushLock(&g_WslState.ProcessBuckets[Bucket].Lock);
-            ExFreeToNPagedLookasideList(&g_WslState.ProcessLookaside, NewProc);
+            ExFreeToLookasideListEx(&g_WslState.ProcessLookaside, NewProc);
             InterlockedDecrement(&g_WslState.TotalTrackedCount);
 
             DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_TRACE_LEVEL,
@@ -545,7 +546,7 @@ WslMonProcessTerminated(
     //
     if (Found != NULL) {
         InterlockedDecrement(&g_WslState.TotalTrackedCount);
-        ExFreeToNPagedLookasideList(&g_WslState.ProcessLookaside, Found);
+        ExFreeToLookasideListEx(&g_WslState.ProcessLookaside, Found);
     }
 
     WslpLeaveOperation();

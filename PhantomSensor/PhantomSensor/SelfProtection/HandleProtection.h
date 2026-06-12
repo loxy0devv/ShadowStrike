@@ -509,9 +509,9 @@ typedef struct _HP_PROTECTION_ENGINE {
     //
     // Lookaside lists
     //
-    NPAGED_LOOKASIDE_LIST HandleEntryLookaside;
-    NPAGED_LOOKASIDE_LIST ProcessContextLookaside;
-    NPAGED_LOOKASIDE_LIST EventLookaside;
+    LOOKASIDE_LIST_EX HandleEntryLookaside;
+    LOOKASIDE_LIST_EX ProcessContextLookaside;
+    LOOKASIDE_LIST_EX EventLookaside;
     BOOLEAN LookasideInitialized;
     UINT8 Reserved2[7];
 

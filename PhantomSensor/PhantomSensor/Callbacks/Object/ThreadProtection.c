@@ -281,11 +281,12 @@ TpInitializeThreadProtection(
     //
     // Initialize lookaside list for tracker allocations
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_TpState.TrackerLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(TP_ACTIVITY_TRACKER),
         TP_TRACKER_TAG,
         TP_TRACKER_LOOKASIDE_DEPTH
@@ -418,7 +419,7 @@ TpShutdownThreadProtection(
     // Delete lookaside list (already disabled above)
     //
     if (lookasideWasActive) {
-        ExDeleteNPagedLookasideList(&g_TpState.TrackerLookaside);
+        ExDeleteLookasideListEx(&g_TpState.TrackerLookaside);
     }
 
     //
@@ -1447,7 +1448,7 @@ TppAllocateTracker(
     // Try lookaside first
     //
     if (InterlockedCompareExchange(&g_TpState.LookasideInitialized, 0, 0) == 1) {
-        tracker = (PTP_ACTIVITY_TRACKER)ExAllocateFromNPagedLookasideList(
+        tracker = (PTP_ACTIVITY_TRACKER)ExAllocateFromLookasideListEx(
             &g_TpState.TrackerLookaside
         );
 
@@ -1516,7 +1517,7 @@ TppFreeTracker(
     //
     if (Tracker->AllocSource == TpAllocSourceLookaside &&
         InterlockedCompareExchange(&g_TpState.LookasideInitialized, 0, 0) == 1) {
-        ExFreeToNPagedLookasideList(&g_TpState.TrackerLookaside, Tracker);
+        ExFreeToLookasideListEx(&g_TpState.TrackerLookaside, Tracker);
     } else {
         ShadowStrikeFreePoolWithTag(Tracker, TP_TRACKER_TAG);
     }

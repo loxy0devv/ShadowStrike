@@ -7,6 +7,11 @@ on:
   pull_request:
     branches: [main, master]
   workflow_dispatch:
+    inputs:
+      force_all:
+        description: 'Force every build job regardless of which files changed'
+        type: boolean
+        default: false
 
 # Cancel in-progress runs on the same ref (keeps queue clean on fast-push branches)
 concurrency:
@@ -32,6 +37,56 @@ env:
 
 jobs:
   # ============================================================================
+  # Job 0: Detect changed components (fast — ubuntu, no build tools)
+  # ============================================================================
+  # Each downstream build job checks the output of this job and skips itself
+  # when its source tree hasn't changed, avoiding full rebuilds on every push.
+  #
+  # Skipping rules:
+  #   driver    → PhantomSensor/** changed
+  #   usermode  → src/**, PhantomJIT/**, vendor/**, or rules/** changed
+  #   cli       → src/** changed
+  #   rules     → rules/** changed
+  #
+  # On workflow_dispatch and tag pushes every filter returns 'true' (all jobs run).
+  # The force_all input also overrides all filters.
+  # ============================================================================
+  changes:
+    name: Detect changed components
+    runs-on: ubuntu-latest
+    outputs:
+      driver:   ${{ steps.filter.outputs.driver }}
+      usermode: ${{ steps.filter.outputs.usermode }}
+      cli:      ${{ steps.filter.outputs.cli }}
+      rules:    ${{ steps.filter.outputs.rules }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Path-filter
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          # workflow_dispatch: dorny treats ALL files as changed → all outputs 'true'
+          filters: |
+            driver:
+              - 'PhantomSensor/**'
+              - '.github/workflows/build.yml'
+            usermode:
+              - 'src/**'
+              - 'PhantomJIT/**'
+              - 'vendor/**'
+              - 'rules/**'
+              - '.github/workflows/build.yml'
+            cli:
+              - 'src/**'
+              - '.github/workflows/build.yml'
+            rules:
+              - 'rules/**'
+              - '.github/workflows/build.yml'
+
+  # ============================================================================
   # Job 1: User-mode binaries
   # Build order: PhantomCoreLib (static lib) → Service → Tray → UI
   # The service vcxproj has a ProjectReference to PhantomCoreLib so MSBuild
@@ -39,6 +94,12 @@ jobs:
   # ============================================================================
   build-usermode:
     name: User-mode binaries (x64 Release)
+    needs: [changes]
+    # Run when: usermode sources changed, tag push, or force_all override
+    if: |
+      needs.changes.outputs.usermode == 'true' ||
+      inputs.force_all == true ||
+      startsWith(github.ref, 'refs/tags/')
     runs-on: windows-2022
     timeout-minutes: 90
 
@@ -255,6 +316,15 @@ jobs:
           path: usermode-staging/
           retention-days: 1
 
+      # Cache the binaries keyed to this commit so the packaging job can
+      # restore them even when this job is skipped in a later driver-only run.
+      - name: Save usermode to branch cache
+        uses: actions/cache/save@v4
+        if: success()
+        with:
+          path: usermode-staging/
+          key: cache-usermode-${{ github.ref_name }}-${{ github.sha }}
+
   # ============================================================================
   # Job 2: Kernel driver (PhantomSensor.sys)
   # windows-2022 GitHub-hosted runners include WDK 10.0.x pre-installed.
@@ -264,6 +334,12 @@ jobs:
   # ============================================================================
   build-driver:
     name: Kernel driver (x64 Release)
+    needs: [changes]
+    # Run when: kernel driver sources changed, tag push, or force_all override
+    if: |
+      needs.changes.outputs.driver == 'true' ||
+      inputs.force_all == true ||
+      startsWith(github.ref, 'refs/tags/')
     runs-on: windows-2022
     timeout-minutes: 30
 
@@ -372,6 +448,15 @@ jobs:
           path: driver-staging/
           retention-days: 1
 
+      # Cache keyed to this commit so the packaging job can restore the driver
+      # in a later run where only usermode/cli changed (driver job skipped).
+      - name: Save driver to branch cache
+        uses: actions/cache/save@v4
+        if: success()
+        with:
+          path: driver-staging/
+          key: cache-driver-${{ github.ref_name }}-${{ github.sha }}
+
   # ============================================================================
   # Job 3: CLI — build the interactive terminal control surface.
   # The web UI has been removed; the CLI is the operator interface until
@@ -379,6 +464,12 @@ jobs:
   # ============================================================================
   build-cli:
     name: CLI (x64 Release)
+    needs: [changes]
+    # Run when: src/ (which contains CLI code) changed, tag push, or force_all
+    if: |
+      needs.changes.outputs.cli == 'true' ||
+      inputs.force_all == true ||
+      startsWith(github.ref, 'refs/tags/')
     runs-on: windows-2022
     timeout-minutes: 30
 
@@ -424,6 +515,14 @@ jobs:
           path: x64/Release/ShadowStrikePhantomCLI.exe
           retention-days: 1
 
+      # Cache for cross-run packaging reuse
+      - name: Save CLI to branch cache
+        uses: actions/cache/save@v4
+        if: success()
+        with:
+          path: x64/Release/ShadowStrikePhantomCLI.exe
+          key: cache-cli-${{ github.ref_name }}-${{ github.sha }}
+
   # ============================================================================
   # Job 4: Rule validation — parse all rule corpora and fail if any corpus
   # produces zero rules, has duplicate IDs, or has parse errors above threshold.
@@ -431,6 +530,12 @@ jobs:
   # ============================================================================
   validate-rules:
     name: Rule corpus validation
+    needs: [changes]
+    # Run when: rule files changed, tag push, or force_all
+    if: |
+      needs.changes.outputs.rules == 'true' ||
+      inputs.force_all == true ||
+      startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -580,6 +685,13 @@ jobs:
   # ============================================================================
   unit-tests:
     name: Detection unit tests (x64 Release)
+    needs: [changes]
+    # Run when: engine sources or rules changed (tests cover both)
+    if: |
+      needs.changes.outputs.usermode == 'true' ||
+      needs.changes.outputs.rules == 'true' ||
+      inputs.force_all == true ||
+      startsWith(github.ref, 'refs/tags/')
     runs-on: windows-2022
     timeout-minutes: 30
 
@@ -674,35 +786,126 @@ jobs:
 
   # ============================================================================
   # Job 6: Package — assemble all artifacts into a single downloadable ZIP.
-  # Runs only after all build and validation jobs succeed.
+  #
+  # Smart packaging with cross-run cache fallback:
+  # If a build job was SKIPPED this run (its source files didn't change),
+  # the package job restores that component's binary from the branch cache
+  # (saved by the last successful build of that component on this branch).
+  # This means a driver-only push still produces a complete ZIP.
+  #
+  # Runs as long as no upstream job FAILED or was CANCELLED.
   # ============================================================================
   package:
     name: Package release ZIP
-    runs-on: windows-2022
-    needs: [build-usermode, build-driver, build-cli, validate-rules, unit-tests]
+    needs: [changes, build-usermode, build-driver, build-cli, validate-rules, unit-tests]
     timeout-minutes: 15
+    # Run when: no failures/cancellations. Skipped upstream jobs are acceptable.
+    if: |
+      always() &&
+      !cancelled() &&
+      !contains(needs.*.result, 'failure') &&
+      (needs.build-driver.result   == 'success' || needs.build-driver.result   == 'skipped') &&
+      (needs.build-usermode.result == 'success' || needs.build-usermode.result == 'skipped') &&
+      (needs.build-cli.result      == 'success' || needs.build-cli.result      == 'skipped') &&
+      (needs.validate-rules.result == 'success' || needs.validate-rules.result == 'skipped') &&
+      (needs.unit-tests.result     == 'success' || needs.unit-tests.result     == 'skipped')
+    runs-on: windows-2022
 
     steps:
       - name: Checkout (for ORT DLLs and release docs)
         uses: actions/checkout@v4
 
-      - name: Download user-mode binaries
+      # ------------------------------------------------------------------
+      # Driver: download from this run, or fall back to branch cache
+      # ------------------------------------------------------------------
+      - name: Download driver (this run)
+        id: dl-driver
         uses: actions/download-artifact@v4
-        with:
-          name: usermode-bin
-          path: dist/
-
-      - name: Download driver artifacts
-        uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: driver-bin
           path: dist/driver/
 
-      - name: Download CLI binary
+      - name: Restore driver from branch cache (skipped-job fallback)
+        if: steps.dl-driver.outcome != 'success'
+        id: cache-driver
+        uses: actions/cache/restore@v4
+        with:
+          path: dist/driver/
+          key: cache-driver-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            cache-driver-${{ github.ref_name }}-
+            cache-driver-
+
+      # ------------------------------------------------------------------
+      # User-mode binaries: download from this run, or fall back to cache
+      # ------------------------------------------------------------------
+      - name: Download user-mode binaries (this run)
+        id: dl-usermode
         uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: usermode-bin
+          path: dist/
+
+      - name: Restore usermode from branch cache (skipped-job fallback)
+        if: steps.dl-usermode.outcome != 'success'
+        id: cache-usermode
+        uses: actions/cache/restore@v4
+        with:
+          path: dist/
+          key: cache-usermode-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            cache-usermode-${{ github.ref_name }}-
+            cache-usermode-
+
+      # ------------------------------------------------------------------
+      # CLI: download from this run, or fall back to cache
+      # ------------------------------------------------------------------
+      - name: Download CLI binary (this run)
+        id: dl-cli
+        uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: cli-bin
           path: dist/
+
+      - name: Restore CLI from branch cache (skipped-job fallback)
+        if: steps.dl-cli.outcome != 'success'
+        id: cache-cli
+        uses: actions/cache/restore@v4
+        with:
+          path: dist/
+          key: cache-cli-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            cache-cli-${{ github.ref_name }}-
+            cache-cli-
+
+      # ------------------------------------------------------------------
+      # Verify all required artifacts are present before spending time packaging
+      # ------------------------------------------------------------------
+      - name: Verify required artifacts are available
+        shell: pwsh
+        run: |
+          $missing = @()
+          @(
+            @{ Path = 'dist\driver\PhantomSensor.sys'; Label = 'PhantomSensor.sys (build driver first)' },
+            @{ Path = 'dist\ShadowStrikePhantomService.exe'; Label = 'PhantomService.exe (build usermode first)' },
+            @{ Path = 'dist\ShadowStrikePhantomCLI.exe'; Label = 'PhantomCLI.exe (build cli first)' }
+          ) | ForEach-Object {
+            if (-not (Test-Path $_.Path)) { $missing += $_.Label }
+          }
+          if ($missing) {
+            Write-Host ""
+            Write-Host "=== MISSING ARTIFACTS ==="
+            $missing | ForEach-Object { Write-Host "  MISSING: $_" }
+            Write-Host ""
+            Write-Host "Tip: Push a commit that touches each component at least once on"
+            Write-Host "this branch to populate the branch cache, or use workflow_dispatch"
+            Write-Host "with 'Force all jobs' to build everything in one run."
+            exit 1
+          }
+          Write-Host "All required artifacts present."
 
       - name: Assemble package layout
         shell: pwsh

@@ -2943,31 +2943,34 @@ MmpInitializeLookasideLists(
     VOID
     )
 {
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_MemoryMonitor.RegionLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(MM_TRACKED_REGION),
         MM_POOL_TAG_GENERAL,
         0
     );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_MemoryMonitor.ContextLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(MM_PROCESS_CONTEXT),
         MM_POOL_TAG_CONTEXT,
         0
     );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_MemoryMonitor.EventLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(MEMORY_ALLOC_EVENT),
         MM_POOL_TAG_EVENT,
         0
@@ -2982,9 +2985,9 @@ MmpCleanupLookasideLists(
     VOID
     )
 {
-    ExDeleteNPagedLookasideList(&g_MemoryMonitor.RegionLookaside);
-    ExDeleteNPagedLookasideList(&g_MemoryMonitor.ContextLookaside);
-    ExDeleteNPagedLookasideList(&g_MemoryMonitor.EventLookaside);
+    ExDeleteLookasideListEx(&g_MemoryMonitor.RegionLookaside);
+    ExDeleteLookasideListEx(&g_MemoryMonitor.ContextLookaside);
+    ExDeleteLookasideListEx(&g_MemoryMonitor.EventLookaside);
 }
 
 static
@@ -3100,7 +3103,7 @@ MmpCreateProcessContext(
     //
     // Allocate context from lookaside
     //
-    NewContext = (PMM_PROCESS_CONTEXT)ExAllocateFromNPagedLookasideList(
+    NewContext = (PMM_PROCESS_CONTEXT)ExAllocateFromLookasideListEx(
         &g_MemoryMonitor.ContextLookaside
     );
 
@@ -3139,7 +3142,7 @@ MmpCreateProcessContext(
         if (NewContext->ProcessObject != NULL) {
             ObDereferenceObject(NewContext->ProcessObject);
         }
-        ExFreeToNPagedLookasideList(&g_MemoryMonitor.ContextLookaside, NewContext);
+        ExFreeToLookasideListEx(&g_MemoryMonitor.ContextLookaside, NewContext);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
@@ -3179,7 +3182,7 @@ MmpCreateProcessContext(
                 if (NewContext->ProcessObject != NULL) {
                     ObDereferenceObject(NewContext->ProcessObject);
                 }
-                ExFreeToNPagedLookasideList(&g_MemoryMonitor.ContextLookaside, NewContext);
+                ExFreeToLookasideListEx(&g_MemoryMonitor.ContextLookaside, NewContext);
                 return STATUS_SUCCESS;
             }
             CheckEntry = CheckEntry->Flink;
@@ -3254,7 +3257,7 @@ MmpFreeProcessContext(
     while (!IsListEmpty(&Context->TrackedRegions)) {
         Entry = RemoveHeadList(&Context->TrackedRegions);
         Region = CONTAINING_RECORD(Entry, MM_TRACKED_REGION, ListEntry);
-        ExFreeToNPagedLookasideList(&g_MemoryMonitor.RegionLookaside, Region);
+        ExFreeToLookasideListEx(&g_MemoryMonitor.RegionLookaside, Region);
     }
 
     ExfReleasePushLockExclusive(&Context->RegionLock);
@@ -3271,7 +3274,7 @@ MmpFreeProcessContext(
     //
     // Free context
     //
-    ExFreeToNPagedLookasideList(&g_MemoryMonitor.ContextLookaside, Context);
+    ExFreeToLookasideListEx(&g_MemoryMonitor.ContextLookaside, Context);
 }
 
 static
@@ -3314,7 +3317,7 @@ MmpAllocateRegion(
 {
     PMM_TRACKED_REGION Region;
 
-    Region = (PMM_TRACKED_REGION)ExAllocateFromNPagedLookasideList(
+    Region = (PMM_TRACKED_REGION)ExAllocateFromLookasideListEx(
         &g_MemoryMonitor.RegionLookaside
     );
 
@@ -3332,7 +3335,7 @@ MmpFreeRegion(
     )
 {
     if (Region != NULL) {
-        ExFreeToNPagedLookasideList(&g_MemoryMonitor.RegionLookaside, Region);
+        ExFreeToLookasideListEx(&g_MemoryMonitor.RegionLookaside, Region);
     }
 }
 

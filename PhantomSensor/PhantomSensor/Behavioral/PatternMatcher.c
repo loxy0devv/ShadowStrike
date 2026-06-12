@@ -172,9 +172,9 @@ typedef struct _PM_MATCHER_INTERNAL {
     //
     // Lookaside lists for efficient allocation
     //
-    NPAGED_LOOKASIDE_LIST PatternLookaside;
-    NPAGED_LOOKASIDE_LIST StateLookaside;
-    NPAGED_LOOKASIDE_LIST IndexEntryLookaside;
+    LOOKASIDE_LIST_EX PatternLookaside;
+    LOOKASIDE_LIST_EX StateLookaside;
+    LOOKASIDE_LIST_EX IndexEntryLookaside;
     volatile BOOLEAN LookasideInitialized;
 
     //
@@ -450,31 +450,34 @@ PtmInitialize(
     //
     // Initialize lookaside lists
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &matcher->PatternLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(PM_PATTERN),
         PTM_POOL_TAG,
         PM_LOOKASIDE_DEPTH
     );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &matcher->StateLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(PM_MATCH_STATE_INTERNAL),
         PTM_POOL_TAG_STATE,
         PM_LOOKASIDE_DEPTH
     );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &matcher->IndexEntryLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(PM_PATTERN_INDEX_ENTRY),
         PTM_POOL_TAG_INDEX,
         PM_LOOKASIDE_DEPTH
@@ -568,9 +571,9 @@ InitFailed:
         }
     }
     if (InterlockedExchange8((CHAR*)&matcher->LookasideInitialized, FALSE)) {
-        ExDeleteNPagedLookasideList(&matcher->PatternLookaside);
-        ExDeleteNPagedLookasideList(&matcher->StateLookaside);
-        ExDeleteNPagedLookasideList(&matcher->IndexEntryLookaside);
+        ExDeleteLookasideListEx(&matcher->PatternLookaside);
+        ExDeleteLookasideListEx(&matcher->StateLookaside);
+        ExDeleteLookasideListEx(&matcher->IndexEntryLookaside);
     }
     ExFreePoolWithTag(matcher, PTM_POOL_TAG);
     return status;
@@ -731,7 +734,7 @@ PtmShutdown(
         }
 
         if (matcher->LookasideInitialized) {
-            ExFreeToNPagedLookasideList(&matcher->StateLookaside, state);
+            ExFreeToLookasideListEx(&matcher->StateLookaside, state);
         } else {
             ExFreePoolWithTag(state, PTM_POOL_TAG_STATE);
         }
@@ -760,7 +763,7 @@ PtmShutdown(
         indexEntry = CONTAINING_RECORD(entry, PM_PATTERN_INDEX_ENTRY, ListEntry);
 
         if (matcher->LookasideInitialized) {
-            ExFreeToNPagedLookasideList(&matcher->IndexEntryLookaside, indexEntry);
+            ExFreeToLookasideListEx(&matcher->IndexEntryLookaside, indexEntry);
         } else {
             ExFreePoolWithTag(indexEntry, PTM_POOL_TAG_INDEX);
         }
@@ -787,7 +790,7 @@ PtmShutdown(
         pattern = CONTAINING_RECORD(entry, PM_PATTERN, ListEntry);
 
         if (matcher->LookasideInitialized) {
-            ExFreeToNPagedLookasideList(&matcher->PatternLookaside, pattern);
+            ExFreeToLookasideListEx(&matcher->PatternLookaside, pattern);
         } else {
             ExFreePoolWithTag(pattern, PTM_POOL_TAG);
         }
@@ -797,9 +800,9 @@ PtmShutdown(
     // Delete lookaside lists
     //
     if (InterlockedExchange8((CHAR*)&matcher->LookasideInitialized, FALSE)) {
-        ExDeleteNPagedLookasideList(&matcher->PatternLookaside);
-        ExDeleteNPagedLookasideList(&matcher->StateLookaside);
-        ExDeleteNPagedLookasideList(&matcher->IndexEntryLookaside);
+        ExDeleteLookasideListEx(&matcher->PatternLookaside);
+        ExDeleteLookasideListEx(&matcher->StateLookaside);
+        ExDeleteLookasideListEx(&matcher->IndexEntryLookaside);
     }
 
     //
@@ -880,7 +883,7 @@ PmLoadPattern(
     //
     // Allocate pattern from lookaside
     //
-    newPattern = (PPM_PATTERN)ExAllocateFromNPagedLookasideList(
+    newPattern = (PPM_PATTERN)ExAllocateFromLookasideListEx(
         &matcher->PatternLookaside
     );
 
@@ -1722,7 +1725,7 @@ PmpCreateMatchState(
 
     PAGED_CODE();
 
-    state = (PPM_MATCH_STATE_INTERNAL)ExAllocateFromNPagedLookasideList(
+    state = (PPM_MATCH_STATE_INTERNAL)ExAllocateFromLookasideListEx(
         &Matcher->StateLookaside
     );
 
@@ -1809,7 +1812,7 @@ PmpDereferenceState(
         PPM_PATTERN statePattern = State->Public.Pattern;
 
         if (Matcher->LookasideInitialized) {
-            ExFreeToNPagedLookasideList(&Matcher->StateLookaside, State);
+            ExFreeToLookasideListEx(&Matcher->StateLookaside, State);
         } else {
             ExFreePoolWithTag(State, PTM_POOL_TAG_STATE);
         }
@@ -2171,7 +2174,7 @@ PmpIndexPattern(
         // Only index first event or non-optional events
         //
         if (i == 0 || !Pattern->Events[i].Optional) {
-            indexEntry = (PPM_PATTERN_INDEX_ENTRY)ExAllocateFromNPagedLookasideList(
+            indexEntry = (PPM_PATTERN_INDEX_ENTRY)ExAllocateFromLookasideListEx(
                 &Matcher->IndexEntryLookaside
             );
 
@@ -2242,7 +2245,7 @@ PmpUnindexPattern(
         indexEntry = CONTAINING_RECORD(entry, PM_PATTERN_INDEX_ENTRY, ListEntry);
 
         if (Matcher->LookasideInitialized) {
-            ExFreeToNPagedLookasideList(&Matcher->IndexEntryLookaside, indexEntry);
+            ExFreeToLookasideListEx(&Matcher->IndexEntryLookaside, indexEntry);
         } else {
             ExFreePoolWithTag(indexEntry, PTM_POOL_TAG_INDEX);
         }
@@ -2385,7 +2388,7 @@ PmpDereferencePattern(
 
     if (newRef == 0 && Pattern->Unloading) {
         if (Matcher->LookasideInitialized) {
-            ExFreeToNPagedLookasideList(&Matcher->PatternLookaside, Pattern);
+            ExFreeToLookasideListEx(&Matcher->PatternLookaside, Pattern);
         } else {
             ExFreePoolWithTag(Pattern, PTM_POOL_TAG);
         }

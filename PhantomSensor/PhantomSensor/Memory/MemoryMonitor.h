@@ -192,9 +192,9 @@ typedef struct _MEMORY_MONITOR_GLOBALS {
     UINT32 Reserved2;
     
     // Lookaside lists for allocations
-    NPAGED_LOOKASIDE_LIST RegionLookaside;
-    NPAGED_LOOKASIDE_LIST ContextLookaside;
-    NPAGED_LOOKASIDE_LIST EventLookaside;
+    LOOKASIDE_LIST_EX RegionLookaside;
+    LOOKASIDE_LIST_EX ContextLookaside;
+    LOOKASIDE_LIST_EX EventLookaside;
     
     //
     // Sub-module detector instances.

@@ -374,10 +374,10 @@ typedef struct _BEHAVIOR_ENGINE_GLOBALS {
     UINT8 Reserved3[3];
     
     // Lookaside lists
-    NPAGED_LOOKASIDE_LIST EventLookaside;
-    NPAGED_LOOKASIDE_LIST ChainLookaside;
-    NPAGED_LOOKASIDE_LIST EntryLookaside;
-    NPAGED_LOOKASIDE_LIST ContextLookaside;
+    LOOKASIDE_LIST_EX EventLookaside;
+    LOOKASIDE_LIST_EX ChainLookaside;
+    LOOKASIDE_LIST_EX EntryLookaside;
+    LOOKASIDE_LIST_EX ContextLookaside;
     
     // Statistics
     volatile LONG64 TotalEventsProcessed;

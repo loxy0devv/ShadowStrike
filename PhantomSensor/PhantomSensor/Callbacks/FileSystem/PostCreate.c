@@ -332,21 +332,23 @@ PocInitialize(
     //
     // Initialize lookaside lists
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_PocState.CompletionContextLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(POC_COMPLETION_CONTEXT),
         POC_CONTEXT_TAG,
         POC_COMPLETION_LOOKASIDE_DEPTH
         );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_PocState.HandleContextLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(SHADOWSTRIKE_HANDLE_CONTEXT),
         POC_HANDLE_TAG,
         POC_HANDLE_LOOKASIDE_DEPTH
@@ -411,8 +413,8 @@ PocShutdown(
     if (g_PocState.LookasideInitialized) {
         g_PocState.LookasideInitialized = FALSE;
         MemoryBarrier();
-        ExDeleteNPagedLookasideList(&g_PocState.CompletionContextLookaside);
-        ExDeleteNPagedLookasideList(&g_PocState.HandleContextLookaside);
+        ExDeleteLookasideListEx(&g_PocState.CompletionContextLookaside);
+        ExDeleteLookasideListEx(&g_PocState.HandleContextLookaside);
     }
 
     DbgPrintEx(
@@ -1259,7 +1261,7 @@ PocReleaseStreamContext(
 // ============================================================================
 
 //
-// NOTE: PocAllocateHandleContext removed â€” it allocated from NPAGED_LOOKASIDE_LIST
+// NOTE: PocAllocateHandleContext removed â€” it allocated from LOOKASIDE_LIST_EX
 // which produces raw pool, incompatible with FltSetStreamHandleContext (requires
 // FltAllocateContext). Use PocGetOrCreateHandleContext instead, which correctly
 // uses FltAllocateContext for filter-managed handle contexts.
@@ -1453,7 +1455,7 @@ PocAllocateCompletionContext(
     //
     // Allocate from lookaside list for performance
     //
-    context = (PPOC_COMPLETION_CONTEXT)ExAllocateFromNPagedLookasideList(
+    context = (PPOC_COMPLETION_CONTEXT)ExAllocateFromLookasideListEx(
         &g_PocState.CompletionContextLookaside
         );
 
@@ -1542,7 +1544,7 @@ PocFreeCompletionContext(
     // Return to lookaside list
     //
     if (g_PocState.LookasideInitialized) {
-        ExFreeToNPagedLookasideList(&g_PocState.CompletionContextLookaside, ctx);
+        ExFreeToLookasideListEx(&g_PocState.CompletionContextLookaside, ctx);
     }
 }
 

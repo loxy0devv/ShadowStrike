@@ -221,7 +221,7 @@ typedef struct _TA_ANALYZER_INTERNAL {
     //
     // Lookaside list for token info allocations
     //
-    NPAGED_LOOKASIDE_LIST TokenInfoLookaside;
+    LOOKASIDE_LIST_EX TokenInfoLookaside;
     BOOLEAN LookasideInitialized;
 
     //
@@ -557,11 +557,12 @@ TaInitialize(
     //
     // Initialize lookaside list for token info allocations
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &analyzer->TokenInfoLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(TA_TOKEN_INFO_INTERNAL),
         TA_TOKEN_INFO_TAG,
         TA_TOKEN_INFO_LOOKASIDE_DEPTH
@@ -762,7 +763,7 @@ TaShutdown(
     // Delete lookaside list
     //
     if (analyzer->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&analyzer->TokenInfoLookaside);
+        ExDeleteLookasideListEx(&analyzer->TokenInfoLookaside);
         analyzer->LookasideInitialized = FALSE;
     }
 
@@ -1749,7 +1750,7 @@ TapAllocateTokenInfo(
     // Try lookaside list first
     //
     if (Analyzer->LookasideInitialized) {
-        tokenInfo = (PTA_TOKEN_INFO_INTERNAL)ExAllocateFromNPagedLookasideList(
+        tokenInfo = (PTA_TOKEN_INFO_INTERNAL)ExAllocateFromLookasideListEx(
             &Analyzer->TokenInfoLookaside
         );
     }
@@ -1845,7 +1846,7 @@ TapFreeTokenInfoInternal(
     // (post-shutdown / orphaned-allocation path).
     //
     if (accountAnalyzer != NULL && accountAnalyzer->LookasideInitialized) {
-        ExFreeToNPagedLookasideList(&accountAnalyzer->TokenInfoLookaside, TokenInfo);
+        ExFreeToLookasideListEx(&accountAnalyzer->TokenInfoLookaside, TokenInfo);
     } else {
         ShadowStrikeFreePoolWithTag(TokenInfo, TA_TOKEN_INFO_TAG);
     }

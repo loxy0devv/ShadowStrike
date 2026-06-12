@@ -86,7 +86,7 @@ typedef struct _CBMON_PROCESS_ENTRY {
 typedef struct _CBMON_STATE {
     volatile LONG InitState;
     EX_RUNDOWN_REF RundownRef;
-    NPAGED_LOOKASIDE_LIST EntryLookaside;
+    LOOKASIDE_LIST_EX EntryLookaside;
 
     // Per-PID tracking hash table
     LIST_ENTRY ProcessBuckets[CBMON_PROCESS_HASH_BUCKETS];
@@ -185,10 +185,11 @@ CbMonInitialize(VOID)
 
     ExInitializeRundownProtection(&g_CbState.RundownRef);
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_CbState.EntryLookaside,
         NULL, NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(CBMON_PROCESS_ENTRY),
         CBMON_POOL_TAG,
         0
@@ -246,7 +247,7 @@ CbMonShutdown(VOID)
         FltDeletePushLock(&g_CbState.BucketLocks[i]);
     }
 
-    ExDeleteNPagedLookasideList(&g_CbState.EntryLookaside);
+    ExDeleteLookasideListEx(&g_CbState.EntryLookaside);
 
     g_CbState.TrackedCount = 0;
     RtlZeroMemory(&g_CbState.Stats, sizeof(CBMON_STATISTICS));
@@ -572,7 +573,7 @@ CbMonpLookupProcess(
             return NULL;
         }
 
-        procEntry = (PCBMON_PROCESS_ENTRY)ExAllocateFromNPagedLookasideList(
+        procEntry = (PCBMON_PROCESS_ENTRY)ExAllocateFromLookasideListEx(
             &g_CbState.EntryLookaside);
 
         if (procEntry == NULL) {
@@ -609,7 +610,7 @@ CbMonpLookupProcess(
                     InterlockedIncrement(&existing->ReferenceCount);
                     FltReleasePushLock(&g_CbState.BucketLocks[bucket]);
                     KeLeaveCriticalRegion();
-                    ExFreeToNPagedLookasideList(&g_CbState.EntryLookaside, procEntry);
+                    ExFreeToLookasideListEx(&g_CbState.EntryLookaside, procEntry);
                     return existing;
                 }
             }
@@ -639,7 +640,7 @@ CbMonpReleaseEntry(
         return;
     }
     if (InterlockedDecrement(&Entry->ReferenceCount) == 0) {
-        ExFreeToNPagedLookasideList(&g_CbState.EntryLookaside, Entry);
+        ExFreeToLookasideListEx(&g_CbState.EntryLookaside, Entry);
     }
 }
 

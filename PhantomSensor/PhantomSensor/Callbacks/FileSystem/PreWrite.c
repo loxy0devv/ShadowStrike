@@ -254,8 +254,8 @@ typedef struct _PW_GLOBAL_STATE {
     //
     // Lookaside lists
     //
-    NPAGED_LOOKASIDE_LIST ContextLookaside;
-    NPAGED_LOOKASIDE_LIST EntropyLookaside;
+    LOOKASIDE_LIST_EX ContextLookaside;
+    LOOKASIDE_LIST_EX EntropyLookaside;
     volatile LONG LookasideInitialized;
 
     //
@@ -539,11 +539,12 @@ Return Value:
     //
     // Initialize lookaside list for completion contexts
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_PwState.ContextLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(PW_COMPLETION_CONTEXT),
         PW_CONTEXT_POOL_TAG,
         0
@@ -552,11 +553,12 @@ Return Value:
     //
     // Initialize lookaside list for entropy calculation buffers
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_PwState.EntropyLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(PW_ENTROPY_CONTEXT),
         PW_ENTROPY_POOL_TAG,
         0
@@ -652,8 +654,8 @@ Routine Description:
     // Now safe to delete lookaside lists
     //
     if (InterlockedExchange(&g_PwState.LookasideInitialized, FALSE)) {
-        ExDeleteNPagedLookasideList(&g_PwState.ContextLookaside);
-        ExDeleteNPagedLookasideList(&g_PwState.EntropyLookaside);
+        ExDeleteLookasideListEx(&g_PwState.ContextLookaside);
+        ExDeleteLookasideListEx(&g_PwState.EntropyLookaside);
     }
 
     DbgPrintEx(
@@ -1225,7 +1227,7 @@ PwpAllocateContext(
         return NULL;
     }
 
-    Context = (PPW_COMPLETION_CONTEXT)ExAllocateFromNPagedLookasideList(
+    Context = (PPW_COMPLETION_CONTEXT)ExAllocateFromLookasideListEx(
         &g_PwState.ContextLookaside
         );
 
@@ -1260,7 +1262,7 @@ PwpFreeContext(
     // Mark as freed to detect double-free
     //
     Context->Signature = PW_CONTEXT_SIGNATURE_FREED;
-    ExFreeToNPagedLookasideList(&g_PwState.ContextLookaside, Context);
+    ExFreeToLookasideListEx(&g_PwState.ContextLookaside, Context);
 
     InterlockedIncrement64(&g_PwState.Stats.ContextFrees);
 }
@@ -1579,7 +1581,7 @@ PwpCalculateBufferEntropy(
         return 0;
     }
 
-    EntropyCtx = (PPW_ENTROPY_CONTEXT)ExAllocateFromNPagedLookasideList(
+    EntropyCtx = (PPW_ENTROPY_CONTEXT)ExAllocateFromLookasideListEx(
         &g_PwState.EntropyLookaside
         );
 
@@ -1638,7 +1640,7 @@ PwpCalculateBufferEntropy(
     //
     // Return entropy context to lookaside
     //
-    ExFreeToNPagedLookasideList(&g_PwState.EntropyLookaside, EntropyCtx);
+    ExFreeToLookasideListEx(&g_PwState.EntropyLookaside, EntropyCtx);
 
     return EntropyValue;
 }

@@ -605,20 +605,22 @@ Routine Description:
     //
     // Initialize lookaside lists
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_TnMonitor.EventLookaside,
         NULL,
         NULL,
+        NonPagedPoolNx,
         0,
         sizeof(TN_THREAD_EVENT),
         TN_POOL_TAG_EVENT,
         0
         );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_TnMonitor.ContextLookaside,
         NULL,
         NULL,
+        NonPagedPoolNx,
         0,
         sizeof(TN_PROCESS_CONTEXT),
         TN_POOL_TAG_CONTEXT,
@@ -719,8 +721,8 @@ Routine Description:
     //
     // Delete lookaside lists
     //
-    ExDeleteNPagedLookasideList(&g_TnMonitor.EventLookaside);
-    ExDeleteNPagedLookasideList(&g_TnMonitor.ContextLookaside);
+    ExDeleteLookasideListEx(&g_TnMonitor.EventLookaside);
+    ExDeleteLookasideListEx(&g_TnMonitor.ContextLookaside);
 }
 
 
@@ -918,7 +920,7 @@ Routine Description:
         //
         // Allocate event structure
         //
-        event = (PTN_THREAD_EVENT)ExAllocateFromNPagedLookasideList(
+        event = (PTN_THREAD_EVENT)ExAllocateFromLookasideListEx(
             &g_TnMonitor.EventLookaside
             );
 
@@ -1244,7 +1246,7 @@ Routine Description:
         // Free event if not stored in list
         //
         if (!eventStoredInList && event != NULL) {
-            ExFreeToNPagedLookasideList(&g_TnMonitor.EventLookaside, event);
+            ExFreeToLookasideListEx(&g_TnMonitor.EventLookaside, event);
         }
     }
 
@@ -2456,7 +2458,7 @@ Routine Description:
     //
     // Allocate new context
     //
-    newContext = (PTN_PROCESS_CONTEXT)ExAllocateFromNPagedLookasideList(
+    newContext = (PTN_PROCESS_CONTEXT)ExAllocateFromLookasideListEx(
         &g_TnMonitor.ContextLookaside
         );
 
@@ -2507,7 +2509,7 @@ Routine Description:
             if (newContext->Process != NULL) {
                 ObDereferenceObject(newContext->Process);
             }
-            ExFreeToNPagedLookasideList(&g_TnMonitor.ContextLookaside, newContext);
+            ExFreeToLookasideListEx(&g_TnMonitor.ContextLookaside, newContext);
 
             return existing;
         }
@@ -2523,7 +2525,7 @@ Routine Description:
         if (newContext->Process != NULL) {
             ObDereferenceObject(newContext->Process);
         }
-        ExFreeToNPagedLookasideList(&g_TnMonitor.ContextLookaside, newContext);
+        ExFreeToLookasideListEx(&g_TnMonitor.ContextLookaside, newContext);
         return NULL;
     }
 
@@ -2643,7 +2645,7 @@ Routine Description:
     while (!IsListEmpty(&eventsToFree)) {
         entry = RemoveHeadList(&eventsToFree);
         event = CONTAINING_RECORD(entry, TN_THREAD_EVENT, ListEntry);
-        ExFreeToNPagedLookasideList(&g_TnMonitor.EventLookaside, event);
+        ExFreeToLookasideListEx(&g_TnMonitor.EventLookaside, event);
     }
 
     //
@@ -2662,7 +2664,7 @@ Routine Description:
     //
     // Free context
     //
-    ExFreeToNPagedLookasideList(&g_TnMonitor.ContextLookaside, Context);
+    ExFreeToLookasideListEx(&g_TnMonitor.ContextLookaside, Context);
 }
 
 
@@ -2817,7 +2819,7 @@ Routine Description:
     while (!IsListEmpty(&toFree)) {
         entry = RemoveHeadList(&toFree);
         event = CONTAINING_RECORD(entry, TN_THREAD_EVENT, ListEntry);
-        ExFreeToNPagedLookasideList(&g_TnMonitor.EventLookaside, event);
+        ExFreeToLookasideListEx(&g_TnMonitor.EventLookaside, event);
     }
 }
 

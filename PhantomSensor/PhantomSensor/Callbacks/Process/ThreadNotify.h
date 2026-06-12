@@ -335,8 +335,8 @@ typedef struct _TN_MONITOR {
     //
     // Lookaside lists
     //
-    NPAGED_LOOKASIDE_LIST EventLookaside;
-    NPAGED_LOOKASIDE_LIST ContextLookaside;
+    LOOKASIDE_LIST_EX EventLookaside;
+    LOOKASIDE_LIST_EX ContextLookaside;
 
     //
     // User callback (protected by lock)

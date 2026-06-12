@@ -487,11 +487,12 @@ EmInitialize(
     //
     // Initialize lookaside list for environment variable allocations
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &monitor->EnvVarLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(EM_ENV_VARIABLE),
         EM_ENV_VAR_TAG,
         EMP_LOOKASIDE_DEPTH
@@ -608,7 +609,7 @@ EmShutdown(
     // Delete lookaside list
     //
     if (Monitor->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&Monitor->EnvVarLookaside);
+        ExDeleteLookasideListEx(&Monitor->EnvVarLookaside);
         Monitor->LookasideInitialized = FALSE;
     }
 
@@ -1158,7 +1159,7 @@ EmpAllocateEnvVariable(
     // Try lookaside first if available
     //
     if (Monitor->LookasideInitialized) {
-        envVar = (PEM_ENV_VARIABLE)ExAllocateFromNPagedLookasideList(
+        envVar = (PEM_ENV_VARIABLE)ExAllocateFromLookasideListEx(
             &Monitor->EnvVarLookaside
         );
         if (envVar != NULL) {
@@ -1215,7 +1216,7 @@ EmpFreeEnvVariable(
     if (Variable->AllocSource == EmAllocSource_Lookaside &&
         Monitor != NULL &&
         Monitor->LookasideInitialized) {
-        ExFreeToNPagedLookasideList(&Monitor->EnvVarLookaside, Variable);
+        ExFreeToLookasideListEx(&Monitor->EnvVarLookaside, Variable);
     } else {
         ShadowStrikeFreePoolWithTag(Variable, EM_ENV_VAR_TAG);
     }

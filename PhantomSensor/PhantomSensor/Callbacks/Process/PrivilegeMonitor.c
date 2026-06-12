@@ -300,7 +300,7 @@ typedef struct _PM_MONITOR_INTERNAL {
     //
     // Lookaside lists
     //
-    NPAGED_LOOKASIDE_LIST BaselineLookaside;
+    LOOKASIDE_LIST_EX BaselineLookaside;
     BOOLEAN LookasideInitialized;
 
     //
@@ -782,11 +782,12 @@ Return Value:
     // Note: Events use direct pool allocation (not lookaside) because they
     // can outlive the monitor via reference counting. Only baselines use lookaside.
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &Internal->BaselineLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(PM_PROCESS_BASELINE),
         PM_BASELINE_POOL_TAG,
         0
@@ -868,7 +869,7 @@ Return Value:
 Cleanup:
     if (Internal != NULL) {
         if (Internal->LookasideInitialized) {
-            ExDeleteNPagedLookasideList(&Internal->BaselineLookaside);
+            ExDeleteLookasideListEx(&Internal->BaselineLookaside);
         }
         Internal->Signature = PM_MONITOR_SIGNATURE_DEAD;
         ShadowStrikeFreePoolWithTag(Internal, PM_POOL_TAG);
@@ -1008,7 +1009,7 @@ Arguments:
     // Delete lookaside lists
     //
     if (Internal->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&Internal->BaselineLookaside);
+        ExDeleteLookasideListEx(&Internal->BaselineLookaside);
         Internal->LookasideInitialized = FALSE;
     }
 
@@ -2006,7 +2007,7 @@ PmpAllocateBaseline(
 {
     PPM_PROCESS_BASELINE Baseline;
 
-    Baseline = (PPM_PROCESS_BASELINE)ExAllocateFromNPagedLookasideList(
+    Baseline = (PPM_PROCESS_BASELINE)ExAllocateFromLookasideListEx(
         &Monitor->BaselineLookaside
         );
 
@@ -2031,7 +2032,7 @@ PmpFreeBaseline(
         return;
     }
 
-    ExFreeToNPagedLookasideList(&Monitor->BaselineLookaside, Baseline);
+    ExFreeToLookasideListEx(&Monitor->BaselineLookaside, Baseline);
 }
 
 

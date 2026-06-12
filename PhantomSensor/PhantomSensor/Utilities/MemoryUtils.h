@@ -310,10 +310,10 @@ typedef enum _SHADOWSTRIKE_MDL_OPERATION {
  */
 typedef struct _SHADOWSTRIKE_LOOKASIDE {
     /// Actual lookaside list (non-paged)
-    NPAGED_LOOKASIDE_LIST NonPagedList;
+    LOOKASIDE_LIST_EX NonPagedList;
 
     /// Actual lookaside list (paged)
-    PAGED_LOOKASIDE_LIST PagedList;
+    LOOKASIDE_LIST_EX PagedList;
 
     /// Is this a paged pool lookaside
     BOOLEAN IsPaged;

@@ -480,8 +480,8 @@ typedef struct _PAS_GLOBAL_STATE {
     //
     // Lookaside lists
     //
-    NPAGED_LOOKASIDE_LIST RecordLookaside;
-    NPAGED_LOOKASIDE_LIST ContextLookaside;
+    LOOKASIDE_LIST_EX RecordLookaside;
+    LOOKASIDE_LIST_EX ContextLookaside;
     volatile BOOLEAN LookasideInitialized;
 
     //
@@ -1047,21 +1047,23 @@ PaspInitialize(
     //
     // Initialize lookaside lists
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_PasState.RecordLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(PAS_MAPPING_RECORD),
         PAS_POOL_TAG,
         0
         );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_PasState.ContextLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(PAS_PROCESS_CONTEXT),
         PAS_POOL_TAG,
         0
@@ -1205,7 +1207,7 @@ PaspShutdown(
         ExReleasePushLockExclusive(&g_PasState.MappingLock);
         KeLeaveCriticalRegion();
 
-        ExFreeToNPagedLookasideList(&g_PasState.RecordLookaside, Record);
+        ExFreeToLookasideListEx(&g_PasState.RecordLookaside, Record);
 
         KeEnterCriticalRegion();
         ExAcquirePushLockExclusive(&g_PasState.MappingLock);
@@ -1228,7 +1230,7 @@ PaspShutdown(
         ExReleasePushLockExclusive(&g_PasState.ProcessContextLock);
         KeLeaveCriticalRegion();
 
-        ExFreeToNPagedLookasideList(&g_PasState.ContextLookaside, Context);
+        ExFreeToLookasideListEx(&g_PasState.ContextLookaside, Context);
 
         KeEnterCriticalRegion();
         ExAcquirePushLockExclusive(&g_PasState.ProcessContextLock);
@@ -1241,8 +1243,8 @@ PaspShutdown(
     // Delete lookaside lists
     //
     if (g_PasState.LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&g_PasState.RecordLookaside);
-        ExDeleteNPagedLookasideList(&g_PasState.ContextLookaside);
+        ExDeleteLookasideListEx(&g_PasState.RecordLookaside);
+        ExDeleteLookasideListEx(&g_PasState.ContextLookaside);
         InterlockedExchange((PLONG)&g_PasState.LookasideInitialized, FALSE);
     }
 
@@ -1872,7 +1874,7 @@ PaspLookupProcessContext(
     //
     // Allocate new context outside of lock
     //
-    NewContext = (PPAS_PROCESS_CONTEXT)ExAllocateFromNPagedLookasideList(
+    NewContext = (PPAS_PROCESS_CONTEXT)ExAllocateFromLookasideListEx(
         &g_PasState.ContextLookaside
         );
 
@@ -1932,7 +1934,7 @@ PaspLookupProcessContext(
             //
             // Free our unused allocation
             //
-            ExFreeToNPagedLookasideList(&g_PasState.ContextLookaside, NewContext);
+            ExFreeToLookasideListEx(&g_PasState.ContextLookaside, NewContext);
             return Context;
         }
     }
@@ -2026,7 +2028,7 @@ PaspDereferenceProcessContext(
     KeLeaveCriticalRegion();
 
     if (ShouldFree) {
-        ExFreeToNPagedLookasideList(&g_PasState.ContextLookaside, Context);
+        ExFreeToLookasideListEx(&g_PasState.ContextLookaside, Context);
     }
 }
 
@@ -2081,7 +2083,7 @@ PaspAllocateRecord(
         }
     }
 
-    Record = (PPAS_MAPPING_RECORD)ExAllocateFromNPagedLookasideList(
+    Record = (PPAS_MAPPING_RECORD)ExAllocateFromLookasideListEx(
         &g_PasState.RecordLookaside
         );
 
@@ -2158,7 +2160,7 @@ PaspEvictOldestRecords(
         ExReleasePushLockExclusive(&Bucket->Lock);
         KeLeaveCriticalRegion();
 
-        ExFreeToNPagedLookasideList(&g_PasState.RecordLookaside, Record);
+        ExFreeToLookasideListEx(&g_PasState.RecordLookaside, Record);
     }
 }
 
@@ -2176,7 +2178,7 @@ PaspFreeRecord(
     )
 {
     if (Record != NULL) {
-        ExFreeToNPagedLookasideList(&g_PasState.RecordLookaside, Record);
+        ExFreeToLookasideListEx(&g_PasState.RecordLookaside, Record);
     }
 }
 

@@ -194,7 +194,7 @@ typedef struct _PC_GLOBAL_STATE {
     //
     // Lookaside list for operation contexts
     //
-    NPAGED_LOOKASIDE_LIST ContextLookaside;
+    LOOKASIDE_LIST_EX ContextLookaside;
     BOOLEAN LookasideInitialized;
 
     //
@@ -511,11 +511,12 @@ Return Value:
     //
     // Initialize lookaside list
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_PcState.ContextLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(PC_OPERATION_CONTEXT),
         PC_CONTEXT_TAG,
         0
@@ -599,7 +600,7 @@ Routine Description:
     // Delete lookaside list
     //
     if (g_PcState.LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&g_PcState.ContextLookaside);
+        ExDeleteLookasideListEx(&g_PcState.ContextLookaside);
         g_PcState.LookasideInitialized = FALSE;
     }
 
@@ -2516,7 +2517,7 @@ PcpAllocateOperationContext(
 {
     PPC_OPERATION_CONTEXT Context;
 
-    Context = (PPC_OPERATION_CONTEXT)ExAllocateFromNPagedLookasideList(
+    Context = (PPC_OPERATION_CONTEXT)ExAllocateFromLookasideListEx(
         &g_PcState.ContextLookaside
         );
 
@@ -2552,7 +2553,7 @@ PcpFreeOperationContext(
     }
 
     Context->Signature = 0;
-    ExFreeToNPagedLookasideList(&g_PcState.ContextLookaside, Context);
+    ExFreeToLookasideListEx(&g_PcState.ContextLookaside, Context);
 }
 
 

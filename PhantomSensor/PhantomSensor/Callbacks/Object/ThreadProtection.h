@@ -562,7 +562,7 @@ typedef struct _TP_PROTECTION_STATE {
     //
     // Lookaside list for trackers
     //
-    NPAGED_LOOKASIDE_LIST TrackerLookaside;
+    LOOKASIDE_LIST_EX TrackerLookaside;
     volatile LONG LookasideInitialized;
 
 } TP_PROTECTION_STATE, *PTP_PROTECTION_STATE;

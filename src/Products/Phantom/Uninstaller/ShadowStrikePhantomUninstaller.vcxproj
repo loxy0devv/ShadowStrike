@@ -232,7 +232,7 @@
 
       <!-- Required libraries -->
       <AdditionalDependencies>
-        user32.lib;advapi32.lib;shell32.lib;shlwapi.lib;version.lib;comctl32.lib;%(AdditionalDependencies)
+        user32.lib;advapi32.lib;shell32.lib;shlwapi.lib;version.lib;comctl32.lib;crypt32.lib;%(AdditionalDependencies)
       </AdditionalDependencies>
 
       <!-- Suppress auto-generated /MANIFESTUAC: — the .manifest file owns UAC level -->
@@ -305,7 +305,7 @@
 
       <!-- Required libraries -->
       <AdditionalDependencies>
-        user32.lib;advapi32.lib;shell32.lib;shlwapi.lib;version.lib;comctl32.lib;%(AdditionalDependencies)
+        user32.lib;advapi32.lib;shell32.lib;shlwapi.lib;version.lib;comctl32.lib;crypt32.lib;%(AdditionalDependencies)
       </AdditionalDependencies>
 
       <!-- Suppress the auto-generated /MANIFESTUAC: snippet; the .manifest file

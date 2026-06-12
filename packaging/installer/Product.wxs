@@ -158,11 +158,12 @@
     <!-- Public desktop folder for the optional desktop shortcut. -->
     <StandardDirectory Id="DesktopFolder"/>
 
-    <!-- ProgramData directories for logs and quarantine store. -->
+    <!-- ProgramData directories for runtime data, models, logs, and quarantine. -->
     <StandardDirectory Id="CommonAppDataFolder">
       <Directory Id="ProgramDataSS" Name="ShadowStrike">
         <Directory Id="ProgramDataLogs"       Name="Logs"/>
         <Directory Id="ProgramDataQuarantine" Name="Quarantine"/>
+        <Directory Id="ProgramDataModels"     Name="models"/>
       </Directory>
     </StandardDirectory>
 
@@ -180,8 +181,9 @@
              AllowAdvertise="no"
              InstallDefault="local">
 
-      <!-- Three hand-authored executables. -->
+      <!-- Service, CLI, and Tray executables. -->
       <ComponentRef Id="CmpServiceExe"/>
+      <ComponentRef Id="CmpCLIExe"/>
       <ComponentRef Id="CmpTrayExe"/>
       <ComponentRef Id="CmpUIExe"/>
 
@@ -202,6 +204,9 @@
       <!-- ProgramData directories with correct ACLs. -->
       <ComponentRef Id="CmpProgramDataLogs"/>
       <ComponentRef Id="CmpProgramDataQuarantine"/>
+      <!-- ML models directory + HKLM registry key + model files. -->
+      <ComponentRef Id="CmpProgramDataModels"/>
+      <ComponentRef Id="CmpModels"/>
 
       <!-- Qt 6 runtime DLLs and plugins (auto-harvested from windeployqt staging). -->
       <ComponentGroupRef Id="QtRuntimeComponents"/>

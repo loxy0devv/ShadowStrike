@@ -3,6 +3,9 @@
 ###############################################################################
 * text=auto
 
+# ML model files — treat as binary to prevent line-ending corruption
+*.onnx binary
+
 ###############################################################################
 # Set default behavior for command prompt diff.
 #

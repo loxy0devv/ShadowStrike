@@ -665,12 +665,35 @@ jobs:
           Copy-Item vendor\onnxruntime\lib\onnxruntime.dll                  dist\
           Copy-Item vendor\onnxruntime\lib\onnxruntime_providers_shared.dll dist\
 
-          # Verify all required binaries are present before packaging
+          # ML models — deployed to models\ inside the package; the install
+          # script copies them to %ProgramData%\ShadowStrike\models\ on the endpoint.
+          New-Item -ItemType Directory -Force dist\models | Out-Null
+          $modelSrc = "PhantomCortex\training\data\models"
+          # Primary (FP32) models — required for runtime inference
+          Copy-Item "$modelSrc\cortex_behavioral.onnx"               dist\models\
+          Copy-Item "$modelSrc\cortex_emulation.onnx"                dist\models\
+          Copy-Item "$modelSrc\cortex_memory.onnx"                   dist\models\
+          Copy-Item "$modelSrc\cortex_network.onnx"                  dist\models\
+          Copy-Item "$modelSrc\cortex_static\cortex_static.onnx"     dist\models\
+          # INT8 quantized variants — optional; used on low-resource endpoints
+          Copy-Item "$modelSrc\cortex_behavioral_int8.onnx"          dist\models\
+          Copy-Item "$modelSrc\cortex_emulation_int8.onnx"           dist\models\
+          Copy-Item "$modelSrc\cortex_memory_int8.onnx"              dist\models\
+          Copy-Item "$modelSrc\cortex_network_int8.onnx"             dist\models\
+          Copy-Item "$modelSrc\cortex_static\cortex_static_int8.onnx" dist\models\
+          Write-Host "Staged models: $((Get-ChildItem dist\models).Count) files"
+
+          # Verify all required files are present before packaging
           $required = @(
             'dist\ShadowStrikePhantomService.exe',
             'dist\ShadowStrikePhantomCLI.exe',
             'dist\driver\PhantomSensor.sys',
-            'dist\onnxruntime.dll'
+            'dist\onnxruntime.dll',
+            'dist\models\cortex_static.onnx',
+            'dist\models\cortex_behavioral.onnx',
+            'dist\models\cortex_memory.onnx',
+            'dist\models\cortex_network.onnx',
+            'dist\models\cortex_emulation.onnx'
           )
           $missing = $required | Where-Object { -not (Test-Path $_) }
           if ($missing) {
@@ -691,10 +714,12 @@ jobs:
             "Date : $(Get-Date -Format 'yyyy-MM-dd HH:mm UTC')",
             "",
             "Detection rules: compiled into ShadowStrikePhantomService.exe (embedded, not on disk).",
-            "ONNX model files (.onnx) are NOT included.",
-            "Deploy trained models to %ProgramData%\ShadowStrike\models\ separately.",
-            "The service runs without models; ML scoring is inactive until models are present."
+            "ML models: 5 FP32 + 5 INT8 ONNX models included in models\",
+            "Install script deploys models to %ProgramData%\ShadowStrike\models\ automatically."
           ) | Out-File dist\VERSION.txt -Encoding utf8
+
+          # Install script for ZIP-based deployments
+          Copy-Item tools\Install-ShadowStrike.ps1 dist\
 
           Write-Host "=== Package layout ==="
           Get-ChildItem dist -Recurse | Select-Object FullName
@@ -738,6 +763,12 @@ jobs:
             'ShadowStrikePhantomCLI.exe',
             'onnxruntime.dll',
             'driver\PhantomSensor.sys',
+            'models\cortex_static.onnx',
+            'models\cortex_behavioral.onnx',
+            'models\cortex_memory.onnx',
+            'models\cortex_network.onnx',
+            'models\cortex_emulation.onnx',
+            'Install-ShadowStrike.ps1',
             'RELEASE.md',
             'VERSION.txt'
           )
@@ -766,21 +797,16 @@ jobs:
           body: |
             ## ShadowStrike Phantom ${{ github.ref_name }}
 
-            ### Quick install (elevated CMD)
-            ```cmd
-            rem 1. Enable test-signing (once, then reboot) — skip if using EV cert
-            bcdedit /set testsigning on
+            ### Quick install (elevated PowerShell)
+            ```powershell
+            # 1. Enable test-signing (once, then reboot) — skip if using EV cert
+            bcdedit /set testsigning on; shutdown /r /t 0
 
-            rem 2. Install the kernel driver
-            pnputil /add-driver driver\PhantomSensor.inf /install
-
-            rem 3. Install and start the service
-            ShadowStrikePhantomService.exe --install
-            ShadowStrikePhantomService.exe --start
-
-            rem 4. Launch the CLI operator interface
-            ShadowStrikePhantomCLI.exe
+            # 2. After reboot — run the bundled installer from the extracted ZIP:
+            .\Install-ShadowStrike.ps1
             ```
+            The installer handles driver setup, model deployment, service registration,
+            ProgramData layout, and registry configuration automatically.
 
             ### Package contents
             | Path | Description |
@@ -788,18 +814,19 @@ jobs:
             | `ShadowStrikePhantomService.exe` | Windows service — detection engine, **~3,400+ rules compiled in** |
             | `ShadowStrikePhantomCLI.exe` | **Interactive terminal control interface** |
             | `ShadowStrikePhantomTray.exe` | System-tray status app |
-            | `ShadowStrikePhantomUI.exe` | Native UI (preview) |
             | `onnxruntime.dll` | ONNX Runtime — required for ML inference |
             | `onnxruntime_providers_shared.dll` | ONNX Runtime provider |
+            | `models/cortex_*.onnx` | **5 FP32 + 5 INT8 PhantomCortex ML models** |
             | `driver/PhantomSensor.sys` | Kernel minifilter (test-signed) |
             | `driver/PhantomSensor.inf` | Driver INF for pnputil |
+            | `Install-ShadowStrike.ps1` | One-shot PowerShell installer |
             | `RELEASE.md` | Full setup and troubleshooting guide |
 
-            > **Detection rules are compiled into `ShadowStrikePhantomService.exe`** as an
+            > **Detection rules** are compiled into `ShadowStrikePhantomService.exe` as an
             > obfuscated binary blob. No plaintext rule files are included.
+
+            > **ML models are bundled.** The installer deploys them to
+            > `%ProgramData%\ShadowStrike\models\` and sets the registry key automatically.
 
             > **Web UI removed.** Use `ShadowStrikePhantomCLI.exe` as the operator
             > interface. Run `help` for available commands.
-
-            > **ML models not included.** Deploy trained `.onnx` files to
-            > `%ProgramData%\ShadowStrike\models\` separately.

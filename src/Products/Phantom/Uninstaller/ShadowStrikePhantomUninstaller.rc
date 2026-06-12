@@ -1,0 +1,160 @@
+/*
+ * ShadowStrike - Enterprise NGAV/EDR Platform
+ * Copyright (C) 2026 ShadowStrike Security
+ *
+ * ShadowStrikePhantomUninstaller.rc — Win32 resource script for
+ * ShadowStrikePhantomUninstaller.exe.
+ *
+ * Three modal dialogs drive the uninstall flow:
+ *   IDD_WELCOME   — confirmation gate; user must click "Uninstall" to proceed
+ *   IDD_PROGRESS  — animated progress bar shown during removal steps
+ *   IDD_COMPLETE  — final success / failure notice
+ *
+ * All dialogs are DS_MODALFRAME | WS_CAPTION | WS_SYSMENU.
+ * The subsystem is WINDOWS; there is no console window and no silent-mode flag.
+ */
+
+#include "resource.h"
+
+// ---------------------------------------------------------------------------
+// Manifest is embedded as RT_MANIFEST (see .manifest file linked by .vcxproj)
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// String table
+// ---------------------------------------------------------------------------
+STRINGTABLE
+BEGIN
+    IDS_APP_TITLE    "ShadowStrike Phantom Uninstaller"
+    IDS_PRODUCT_NAME "ShadowStrike Phantom"
+END
+
+// ---------------------------------------------------------------------------
+// Step 1 — Welcome / Confirmation dialog
+// ---------------------------------------------------------------------------
+IDD_WELCOME DIALOGEX 0, 0, 340, 165
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER |
+      WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "ShadowStrike Phantom — Uninstall"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    // Header banner area (owner-drawn / static with bold text via WM_CTLCOLORSTATIC)
+    CONTROL         "", IDC_WELCOME_HEADER,
+                    "Static", SS_WHITERECT | WS_CHILD | WS_VISIBLE,
+                    0, 0, 340, 50
+
+    LTEXT           "ShadowStrike Phantom Uninstall", IDC_WELCOME_HEADER,
+                    10, 10, 320, 14,
+                    SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP
+
+    // Separator
+    CONTROL         "", -1, "Static",
+                    SS_ETCHEDHORZ | WS_CHILD | WS_VISIBLE,
+                    0, 50, 340, 1
+
+    LTEXT           "This will permanently remove ShadowStrike Phantom from your "
+                    "computer, including:\n\n"
+                    "  \x2022  ShadowStrikePhantomService (Windows service)\n"
+                    "  \x2022  PhantomSensor.sys (kernel driver)\n"
+                    "  \x2022  C:\\Program Files\\ShadowStrike\\\n"
+                    "  \x2022  C:\\ProgramData\\ShadowStrike\\ (models, logs, quarantine)\n"
+                    "  \x2022  HKLM\\SOFTWARE\\ShadowStrike (registry keys)\n\n"
+                    "Do you want to continue?",
+                    IDC_WELCOME_BODY,
+                    10, 60, 320, 88,
+                    SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP
+
+    // Separator above buttons
+    CONTROL         "", -1, "Static",
+                    SS_ETCHEDHORZ | WS_CHILD | WS_VISIBLE,
+                    0, 133, 340, 1
+
+    DEFPUSHBUTTON   "Uninstall", IDC_BTN_UNINSTALL,
+                    172, 140, 72, 16
+    PUSHBUTTON      "Cancel",    IDC_BTN_CANCEL,
+                    252, 140, 72, 16
+END
+
+// ---------------------------------------------------------------------------
+// Step 2 — Progress dialog
+// ---------------------------------------------------------------------------
+IDD_PROGRESS DIALOGEX 0, 0, 340, 130
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER |
+      WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "ShadowStrike Phantom — Uninstalling"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    // Header stripe
+    CONTROL         "", -1, "Static",
+                    SS_WHITERECT | WS_CHILD | WS_VISIBLE,
+                    0, 0, 340, 40
+
+    LTEXT           "Removing ShadowStrike Phantom\x2026",
+                    IDC_PROGRESS_LABEL,
+                    10, 12, 320, 14,
+                    SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP
+
+    CONTROL         "", -1, "Static",
+                    SS_ETCHEDHORZ | WS_CHILD | WS_VISIBLE,
+                    0, 40, 340, 1
+
+    // Current step description (updated by worker thread via PostMessage)
+    LTEXT           "Initializing\x2026",
+                    IDC_PROGRESS_DETAIL,
+                    10, 52, 320, 20,
+                    SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP
+
+    // Progress bar (PBS_SMOOTH, range 0–100)
+    CONTROL         "", IDC_PROGRESS_BAR,
+                    "msctls_progress32",
+                    WS_CHILD | WS_VISIBLE,
+                    10, 76, 320, 14
+
+    CONTROL         "", -1, "Static",
+                    SS_ETCHEDHORZ | WS_CHILD | WS_VISIBLE,
+                    0, 100, 340, 1
+
+    // No buttons during uninstall — the dialog is closed programmatically
+    LTEXT           "Please wait\x2026",
+                    -1,
+                    10, 108, 320, 14,
+                    SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP
+END
+
+// ---------------------------------------------------------------------------
+// Step 3 — Completion dialog
+// ---------------------------------------------------------------------------
+IDD_COMPLETE DIALOGEX 0, 0, 340, 130
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | DS_CENTER |
+      WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "ShadowStrike Phantom — Uninstall Complete"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    // Header stripe
+    CONTROL         "", -1, "Static",
+                    SS_WHITERECT | WS_CHILD | WS_VISIBLE,
+                    0, 0, 340, 40
+
+    LTEXT           "Uninstall Complete",
+                    IDC_COMPLETE_HEADER,
+                    10, 12, 320, 14,
+                    SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP
+
+    CONTROL         "", -1, "Static",
+                    SS_ETCHEDHORZ | WS_CHILD | WS_VISIBLE,
+                    0, 40, 340, 1
+
+    // Body text — set at runtime to success or partial-failure message
+    LTEXT           "ShadowStrike Phantom has been successfully removed from "
+                    "this computer.",
+                    IDC_COMPLETE_BODY,
+                    10, 52, 320, 40,
+                    SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP
+
+    CONTROL         "", -1, "Static",
+                    SS_ETCHEDHORZ | WS_CHILD | WS_VISIBLE,
+                    0, 100, 340, 1
+
+    DEFPUSHBUTTON   "Finish", IDC_BTN_FINISH,
+                    252, 108, 72, 16
+END

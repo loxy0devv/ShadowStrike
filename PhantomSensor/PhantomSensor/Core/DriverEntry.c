@@ -181,6 +181,7 @@ static VOID ShadowStrikeLogBootStep(
 
 #pragma alloc_text(PAGE, ShadowStrikeCleanupByFlags)
 #pragma alloc_text(PAGE, ShadowStrikeWaitForRundownComplete)
+#pragma alloc_text(PAGE, SsRegisterSelfProtectPaths)
 #endif
 
 // ============================================================================
@@ -299,6 +300,10 @@ static COMP_MANAGER g_CompressionManager = {0};
 
 /// @brief Encryption manager (secure kernel-to-user communication)
 static ENC_MANAGER g_EncryptionManager = {0};
+
+// Forward declaration for tamper-protection path registration
+_IRQL_requires_(PASSIVE_LEVEL)
+static VOID SsRegisterSelfProtectPaths(VOID);
 
 /**
  * @brief Power callback bridge â€” forwards sleep/resume events to BehaviorEngine.
@@ -2398,6 +2403,7 @@ DriverEntry(
     } else {
         g_InitFlags |= InitFlag_FileProtectionInitialized;
         ShadowStrikeLogInitStatus("File Protection Engine", STATUS_SUCCESS);
+        SsRegisterSelfProtectPaths();
     }
 
     //
@@ -3590,6 +3596,85 @@ PFP_ENGINE
 ShadowStrikeGetFileProtectionEngine(VOID)
 {
     return g_FileProtectionEngine;
+}
+
+_IRQL_requires_(PASSIVE_LEVEL)
+static VOID
+SsRegisterSelfProtectPaths(VOID)
+{
+    NTSTATUS          status;
+    OBJECT_ATTRIBUTES oa;
+    UNICODE_STRING    linkName;
+    HANDLE            linkHandle = NULL;
+    WCHAR             deviceBuf[128];
+    UNICODE_STRING    deviceStr;
+    WCHAR             ntPath[1024];
+    PFP_ENGINE        fpEngine;
+    USHORT            devChars;
+
+    PAGED_CODE();
+
+    RtlZeroMemory(deviceBuf, sizeof(deviceBuf));
+
+    RtlInitUnicodeString(&linkName, L"\\??\\C:");
+    InitializeObjectAttributes(&oa, &linkName,
+                               OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE,
+                               NULL, NULL);
+
+    status = ZwOpenSymbolicLinkObject(&linkHandle, GENERIC_READ, &oa);
+    if (NT_SUCCESS(status)) {
+        deviceStr.Buffer        = deviceBuf;
+        deviceStr.MaximumLength = (USHORT)(sizeof(deviceBuf) - sizeof(WCHAR));
+        deviceStr.Length        = 0;
+        status = ZwQuerySymbolicLinkObject(linkHandle, &deviceStr, NULL);
+        ZwClose(linkHandle);
+        linkHandle = NULL;
+        if (NT_SUCCESS(status)) {
+            devChars = deviceStr.Length / sizeof(WCHAR);
+            deviceBuf[devChars] = L'\0';
+        } else {
+            RtlStringCchCopyW(deviceBuf, ARRAYSIZE(deviceBuf), L"\\??\\C:");
+        }
+    } else {
+        RtlStringCchCopyW(deviceBuf, ARRAYSIZE(deviceBuf), L"\\??\\C:");
+    }
+
+    fpEngine = ShadowStrikeGetFileProtectionEngine();
+
+    if (NT_SUCCESS(RtlStringCchPrintfW(ntPath, ARRAYSIZE(ntPath),
+            L"%ws\\Program Files\\ShadowStrike\\Phantom\\", deviceBuf))) {
+        if (fpEngine != NULL) {
+            (VOID)FpAddProtectedPathW(fpEngine, ntPath, (ULONG)FpProtect_Full, FpRuleType_Path);
+        }
+        (VOID)ShadowStrikeAddProtectedPath(ntPath, 0);
+    }
+
+    if (NT_SUCCESS(RtlStringCchPrintfW(ntPath, ARRAYSIZE(ntPath),
+            L"%ws\\ProgramData\\ShadowStrike\\", deviceBuf))) {
+        if (fpEngine != NULL) {
+            (VOID)FpAddProtectedPathW(fpEngine, ntPath, (ULONG)FpProtect_Full, FpRuleType_Path);
+        }
+        (VOID)ShadowStrikeAddProtectedPath(ntPath, 0);
+    }
+
+    if (NT_SUCCESS(RtlStringCchPrintfW(ntPath, ARRAYSIZE(ntPath),
+            L"%ws\\Windows\\System32\\drivers\\PhantomSensor.sys", deviceBuf))) {
+        if (fpEngine != NULL) {
+            (VOID)FpAddProtectedPathW(fpEngine, ntPath, (ULONG)FpProtect_Full, FpRuleType_Path);
+        }
+        (VOID)ShadowStrikeAddProtectedPath(ntPath, 0);
+    }
+
+    (VOID)ShadowStrikeAddProtectedRegistryKey(
+        L"\\Registry\\Machine\\SOFTWARE\\ShadowStrike", 0);
+    (VOID)ShadowStrikeAddProtectedRegistryKey(
+        L"\\Registry\\Machine\\SYSTEM\\CurrentControlSet\\Services\\PhantomSensor", 0);
+    (VOID)ShadowStrikeAddProtectedRegistryKey(
+        L"\\Registry\\Machine\\SYSTEM\\CurrentControlSet\\Services\\ShadowStrikePhantomService", 0);
+
+    DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_INFO_LEVEL,
+               "[ShadowStrike] Tamper-protection paths registered (device=%ws)\n",
+               deviceBuf);
 }
 
 _IRQL_requires_max_(APC_LEVEL)

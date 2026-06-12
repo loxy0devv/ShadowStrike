@@ -47,6 +47,7 @@
 #include "../../Shared/MessageTypes.h"
 #include "../../Shared/ErrorCodes.h"
 #include "../Context/InstanceContext.h"
+#include "../SelfProtection/SelfProtect.h"
 
 //
 // PsGetProcessInheritedFromUniqueProcessId â€” exported by ntoskrnl.exe
@@ -1466,6 +1467,13 @@ ShadowStrikeConnectNotify(
     KeLeaveCriticalRegion();
 
     //
+    // Mark the connected client process as protected so the FP_ENGINE and
+    // SelfProtect path checks allow it to write logs, quarantine files, etc.
+    // Must be called AFTER releasing the lock (PASSIVE_LEVEL requirement).
+    //
+    (VOID)ShadowStrikeProtectProcess(clientProcessId, ProtectionFlagFull, NULL);
+
+    //
     // Queue deferred kex delivery NOW that the lock is released and the slot
     // is published. The work item runs at PASSIVE_LEVEL on an FltMgr worker
     // thread, calls FltSendMessage with a generous timeout, and on success
@@ -1511,6 +1519,7 @@ ShadowStrikeFinalizeClientDisconnect(
     )
 {
     PENC_KEY sessionKey = NULL;
+    HANDLE   savedPid   = NULL;
 
     if (SlotIndex < 0 || SlotIndex >= SHADOWSTRIKE_MAX_CONNECTIONS) {
         return;
@@ -1527,6 +1536,8 @@ ShadowStrikeFinalizeClientDisconnect(
         return;
     }
 
+    // Save PID before RtlZeroMemory wipes the slot
+    savedPid   = g_ClientPortRefs[SlotIndex].ClientProcessId;
     sessionKey = g_ClientSessionEncKeys[SlotIndex];
     g_ClientSessionEncKeys[SlotIndex] = NULL;
 
@@ -1554,6 +1565,11 @@ ShadowStrikeFinalizeClientDisconnect(
 
     ExReleasePushLockExclusive(&g_DriverData.ClientPortLock);
     KeLeaveCriticalRegion();
+
+    // Remove process protection now that the client has disconnected
+    if (savedPid != NULL) {
+        (VOID)ShadowStrikeUnprotectProcess(savedPid);
+    }
 
     if (sessionKey != NULL) {
         ShadowStrikeReleaseSessionCryptoKey(&sessionKey);

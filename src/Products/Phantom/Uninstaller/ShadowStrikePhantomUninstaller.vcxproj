@@ -1,0 +1,361 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ShadowStrike - Enterprise NGAV/EDR Platform
+  Copyright (C) 2026 ShadowStrike Security
+
+  ShadowStrikePhantomUninstaller.vcxproj
+  MSVC project for the ShadowStrike Phantom GUI uninstaller.
+
+  Target platform : x64 only
+  Subsystem       : Windows  (GUI; no console; headless execution is blocked)
+  CRT             : /MT (statically linked) — no MSVCRT*.dll dependency
+  C++ standard    : C++17 (/std:c++17)
+  Output          : $(SolutionDir)bin\$(Configuration)\ShadowStrikePhantomUninstaller.exe
+-->
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <!-- ======================================================================
+       Project configurations — x64 Debug and Release only.
+       Win32 configurations are declared but excluded from build to satisfy
+       the IDE's requirement that all four standard configs be present in
+       the solution file.
+  ====================================================================== -->
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <!-- ======================================================================
+       Global properties
+  ====================================================================== -->
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>18.0</VCProjectVersion>
+    <ProjectGuid>{A3F82C14-9D7E-4B61-C2A5-DE1047B5F93E}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>ShadowStrikePhantomUninstaller</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <!-- x64-only product; Win32 configs are present for IDE compat but excluded -->
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <!-- ======================================================================
+       Configuration properties
+  ====================================================================== -->
+
+  <!-- Win32 configurations: excluded from build -->
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'"
+                 Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'"
+                 Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+
+  <!-- x64 Debug -->
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'"
+                 Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <!-- No WholeProgramOptimization in Debug -->
+  </PropertyGroup>
+
+  <!-- x64 Release -->
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'"
+                 Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+
+  <!-- ======================================================================
+       Extension settings / shared / property sheets
+  ====================================================================== -->
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+
+  <ImportGroup Label="PropertySheets"
+               Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props"
+            Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')"
+            Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets"
+               Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props"
+            Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')"
+            Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets"
+               Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props"
+            Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')"
+            Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets"
+               Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props"
+            Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')"
+            Label="LocalAppDataPlatform" />
+  </ImportGroup>
+
+  <PropertyGroup Label="UserMacros" />
+
+  <!-- ======================================================================
+       Output / intermediate directories
+  ====================================================================== -->
+
+  <!-- Win32 — present to avoid MSBuild warnings; not used in practice -->
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <OutDir>$(SolutionDir)bin\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)build\$(Configuration)\</IntDir>
+    <TargetName>ShadowStrikePhantomUninstaller</TargetName>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <OutDir>$(SolutionDir)bin\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)build\$(Configuration)\</IntDir>
+    <TargetName>ShadowStrikePhantomUninstaller</TargetName>
+  </PropertyGroup>
+
+  <!-- x64 Debug -->
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>$(SolutionDir)bin\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)build\$(Configuration)\</IntDir>
+    <TargetName>ShadowStrikePhantomUninstaller</TargetName>
+    <LinkIncremental>true</LinkIncremental>
+  </PropertyGroup>
+
+  <!-- x64 Release -->
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutDir>$(SolutionDir)bin\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)build\$(Configuration)\</IntDir>
+    <TargetName>ShadowStrikePhantomUninstaller</TargetName>
+    <LinkIncremental>false</LinkIncremental>
+  </PropertyGroup>
+
+  <!-- ======================================================================
+       Win32 item-definition groups (excluded from actual build)
+       Minimal stubs to prevent IDE parse errors.
+  ====================================================================== -->
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;UNICODE;_UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <!-- ======================================================================
+       x64 Debug item-definition group
+  ====================================================================== -->
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <!-- Preprocessor -->
+      <PreprocessorDefinitions>
+        WIN32;_DEBUG;_WINDOWS;UNICODE;_UNICODE;%(PreprocessorDefinitions)
+      </PreprocessorDefinitions>
+
+      <!-- Language -->
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <ConformanceMode>true</ConformanceMode>
+
+      <!-- Warnings -->
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <TreatWarningAsError>false</TreatWarningAsError>
+
+      <!-- Optimisation -->
+      <Optimization>Disabled</Optimization>
+
+      <!-- CRT — static, debug variant -->
+      <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
+
+      <!-- No precompiled headers (single-file project) -->
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+
+      <!-- Multi-processor build -->
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+
+      <!-- Character set (redundant with UNICODE define, kept for clarity) -->
+      <CharacterSet>Unicode</CharacterSet>
+    </ClCompile>
+
+    <Link>
+      <!-- GUI subsystem — no console window is ever shown -->
+      <SubSystem>Windows</SubSystem>
+
+      <!-- Executable name -->
+      <OutputFile>$(OutDir)ShadowStrikePhantomUninstaller.exe</OutputFile>
+
+      <!-- Debug info -->
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+
+      <!-- Required libraries -->
+      <AdditionalDependencies>
+        user32.lib;advapi32.lib;shell32.lib;shlwapi.lib;version.lib;comctl32.lib;%(AdditionalDependencies)
+      </AdditionalDependencies>
+
+      <!-- Embed the manifest (admin requireAdministrator) -->
+      <EmbedManagedResourceFile />
+    </Link>
+
+    <!-- Embed the UAC manifest as RT_MANIFEST resource ID 1 -->
+    <Manifest>
+      <EmbedManifest>true</EmbedManifest>
+      <AdditionalManifestFiles>ShadowStrikePhantomUninstaller.manifest</AdditionalManifestFiles>
+    </Manifest>
+  </ItemDefinitionGroup>
+
+  <!-- ======================================================================
+       x64 Release item-definition group
+  ====================================================================== -->
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <!-- Preprocessor -->
+      <PreprocessorDefinitions>
+        WIN32;NDEBUG;_WINDOWS;UNICODE;_UNICODE;%(PreprocessorDefinitions)
+      </PreprocessorDefinitions>
+
+      <!-- Language -->
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <ConformanceMode>true</ConformanceMode>
+
+      <!-- Warnings -->
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <TreatWarningAsError>false</TreatWarningAsError>
+
+      <!-- Optimisation — speed + size -->
+      <Optimization>MaxSpeed</Optimization>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <StringPooling>true</StringPooling>
+
+      <!-- CRT — static release (no MSVCRT*.dll dependency) -->
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+
+      <!-- No precompiled headers -->
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+
+      <!-- Multi-processor build -->
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+
+      <!-- Character set -->
+      <CharacterSet>Unicode</CharacterSet>
+
+      <!-- Security checks -->
+      <BufferSecurityCheck>true</BufferSecurityCheck>
+    </ClCompile>
+
+    <Link>
+      <!-- GUI subsystem — no console window is ever shown -->
+      <SubSystem>Windows</SubSystem>
+
+      <!-- Executable name -->
+      <OutputFile>$(OutDir)ShadowStrikePhantomUninstaller.exe</OutputFile>
+
+      <!-- PDB for post-mortem debugging -->
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+
+      <!-- Dead-code elimination -->
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+
+      <!-- Link-time code generation (matches WholeProgramOptimization above) -->
+      <LinkTimeCodeGeneration>UseLinkTimeCodeGeneration</LinkTimeCodeGeneration>
+
+      <!-- Required libraries -->
+      <AdditionalDependencies>
+        user32.lib;advapi32.lib;shell32.lib;shlwapi.lib;version.lib;comctl32.lib;%(AdditionalDependencies)
+      </AdditionalDependencies>
+    </Link>
+
+    <!-- Embed the UAC manifest as RT_MANIFEST resource ID 1 -->
+    <Manifest>
+      <EmbedManifest>true</EmbedManifest>
+      <AdditionalManifestFiles>ShadowStrikePhantomUninstaller.manifest</AdditionalManifestFiles>
+    </Manifest>
+  </ItemDefinitionGroup>
+
+  <!-- ======================================================================
+       Source files
+  ====================================================================== -->
+  <ItemGroup>
+    <!-- Main implementation — x64 only; exclude Win32 configs -->
+    <ClCompile Include="ShadowStrikePhantomUninstaller.cpp">
+      <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
+    </ClCompile>
+  </ItemGroup>
+
+  <!-- ======================================================================
+       Resource files
+  ====================================================================== -->
+  <ItemGroup>
+    <ResourceCompile Include="ShadowStrikePhantomUninstaller.rc">
+      <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
+    </ResourceCompile>
+  </ItemGroup>
+
+  <!-- ======================================================================
+       Header files (IDE browsing only)
+  ====================================================================== -->
+  <ItemGroup>
+    <ClInclude Include="resource.h" />
+  </ItemGroup>
+
+  <!-- ======================================================================
+       Manifest file (referenced by ItemDefinitionGroup above)
+  ====================================================================== -->
+  <ItemGroup>
+    <Manifest Include="ShadowStrikePhantomUninstaller.manifest">
+      <ExcludedFromBuild Condition="'$(Platform)'=='Win32'">true</ExcludedFromBuild>
+    </Manifest>
+  </ItemGroup>
+
+  <!-- ======================================================================
+       MSBuild targets
+  ====================================================================== -->
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+
+</Project>

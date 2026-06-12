@@ -207,7 +207,8 @@ static const CHAR* g_ShadowStrikeProcesses[] = {
     "ShadowStrikeUI",
     "ShadowStrikeSc",
     "ShadowStrikeAg",
-    "ShadowStrikeUp"
+    "ShadowStrikeUp",
+    "ShadowStrikePha"  // ShadowStrikePhantom* executables (Service/CLI/Tray/Uninstaller)
 };
 
 // ============================================================================

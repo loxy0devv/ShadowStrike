@@ -175,6 +175,19 @@ jobs:
             $env:WPO_OVERRIDE $env:MP_OVERRIDE `
             /m:1 /nologo /flp:"LogFile=build_tray.log;Verbosity=minimal"
 
+      - name: Build ShadowStrikePhantomUninstaller
+        shell: pwsh
+        run: |
+          # The vcxproj uses $(SolutionDir) for its output path; pass it explicitly
+          # so bin\Release\ lands in the repo root alongside the other binaries.
+          $slnDir = "$env:GITHUB_WORKSPACE\"
+          msbuild "src\Products\Phantom\Uninstaller\ShadowStrikePhantomUninstaller.vcxproj" `
+            /t:Rebuild /p:Configuration=Release /p:Platform=$env:PLATFORM `
+            /p:PlatformToolset=$env:PLATFORM_TOOLSET /p:PreferredToolArchitecture=$env:PREFER_TOOL_ARCH `
+            /p:SolutionDir=$slnDir `
+            $env:WPO_OVERRIDE $env:MP_OVERRIDE `
+            /m:1 /nologo /flp:"LogFile=build_uninstaller.log;Verbosity=minimal"
+
       - name: Upload build logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -185,6 +198,7 @@ jobs:
             build_corelib.log
             build_service.log
             build_tray.log
+            build_uninstaller.log
           retention-days: 7
 
       # Stage all user-mode binaries into one flat directory for the
@@ -201,6 +215,38 @@ jobs:
           }
           $exes | Copy-Item -Destination usermode-staging\
           Write-Host "Staged: $($exes.Name -join ', ')"
+
+      - name: Sign user-mode binaries
+        shell: pwsh
+        run: |
+          # Create a temporary code-signing cert (same approach as driver signing).
+          # Production releases must use an EV cert / Azure Trusted Signing instead.
+          $cert = New-SelfSignedCertificate `
+            -Subject "CN=ShadowStrike TestSign, O=ShadowStrike Security" `
+            -CertStoreLocation "Cert:\CurrentUser\My" `
+            -Type CodeSigningCert `
+            -KeyUsage DigitalSignature `
+            -KeyAlgorithm RSA -KeyLength 2048 `
+            -NotAfter (Get-Date).AddYears(1)
+          Write-Host "Signing cert: $($cert.Thumbprint)"
+
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" `
+                        -Filter signtool.exe -Recurse |
+                      Where-Object { $_.FullName -match '\\x64\\' } |
+                      Sort-Object LastWriteTime -Descending |
+                      Select-Object -First 1 -ExpandProperty FullName
+          if (-not $signtool) { Write-Error "signtool.exe not found"; exit 1 }
+
+          $exes = Get-ChildItem "usermode-staging\*.exe"
+          foreach ($exe in $exes) {
+            & $signtool sign /fd sha256 /s My /sha1 $cert.Thumbprint `
+              /t http://timestamp.digicert.com $exe.FullName
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "signtool failed for $($exe.Name)"
+              exit 1
+            }
+            Write-Host "Signed: $($exe.Name)"
+          }
 
       - name: Upload user-mode binaries
         uses: actions/upload-artifact@v4
@@ -687,6 +733,7 @@ jobs:
           $required = @(
             'dist\ShadowStrikePhantomService.exe',
             'dist\ShadowStrikePhantomCLI.exe',
+            'dist\ShadowStrikePhantomUninstaller.exe',
             'dist\driver\PhantomSensor.sys',
             'dist\onnxruntime.dll',
             'dist\models\cortex_static.onnx',
@@ -761,6 +808,7 @@ jobs:
           $required = @(
             'ShadowStrikePhantomService.exe',
             'ShadowStrikePhantomCLI.exe',
+            'ShadowStrikePhantomUninstaller.exe',
             'onnxruntime.dll',
             'driver\PhantomSensor.sys',
             'models\cortex_static.onnx',
@@ -814,6 +862,8 @@ jobs:
             | `ShadowStrikePhantomService.exe` | Windows service — detection engine, **~3,400+ rules compiled in** |
             | `ShadowStrikePhantomCLI.exe` | **Interactive terminal control interface** |
             | `ShadowStrikePhantomTray.exe` | System-tray status app |
+            | `ShadowStrikePhantomUI.exe` | Native UI (preview) |
+            | `ShadowStrikePhantomUninstaller.exe` | **GUI uninstaller — double-click to remove ShadowStrike Phantom** |
             | `onnxruntime.dll` | ONNX Runtime — required for ML inference |
             | `onnxruntime_providers_shared.dll` | ONNX Runtime provider |
             | `models/cortex_*.onnx` | **5 FP32 + 5 INT8 PhantomCortex ML models** |

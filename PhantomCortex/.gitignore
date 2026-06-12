@@ -11,7 +11,7 @@ build/
 training/data/raw/
 training/data/processed/
 training/data/feeds/
-training/data/models/
+# training/data/models/ is tracked — contains release .onnx assets
 
 # Experiment tracking
 mlruns/

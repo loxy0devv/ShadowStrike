@@ -343,5 +343,100 @@
                      KeyPath="yes"/>
     </Component>
 
+    <!-- ═══════════════════════════════════════════════════════════════════
+         PROGRAMDATA – MODELS DIRECTORY
+         SYSTEM + Admins get full control; service runs as SYSTEM and writes
+         nothing here after initial deployment (read-only inference).
+         The registry value is read by CortexConfig to locate model files.
+    ═══════════════════════════════════════════════════════════════════ -->
+    <Component Id="CmpProgramDataModels"
+               Directory="ProgramDataModels"
+               Guid="{D1E2F3A4-B5C6-4D7E-8F90-A1B2C3D4E5F6}"
+               Bitness="always64">
+      <CreateFolder>
+        <util:PermissionEx User="System"
+                           Domain="NT AUTHORITY"
+                           GenericAll="yes"/>
+        <util:PermissionEx User="Administrators"
+                           GenericAll="yes"/>
+        <util:PermissionEx User="Users"
+                           GenericRead="yes"
+                           GenericExecute="yes"/>
+      </CreateFolder>
+      <!-- PhantomCortex reads this registry value to locate .onnx files. -->
+      <RegistryValue Root="HKLM"
+                     Key="SOFTWARE\ShadowStrike\PhantomCortex"
+                     Name="ModelDirectory"
+                     Type="string"
+                     Value="[ProgramDataModels]"
+                     KeyPath="yes"/>
+      <RegistryValue Root="HKLM"
+                     Key="SOFTWARE\ShadowStrike\PhantomHome\Dirs"
+                     Name="Models"
+                     Type="string"
+                     Value="[ProgramDataModels]"/>
+    </Component>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         ML MODELS  (PhantomCortex ONNX inference models)
+         Five FP32 primary models + five INT8 quantized variants.
+         Primary models are required for ML scoring; INT8 variants are used
+         on low-resource endpoints where reduced memory footprint matters.
+         Source: $(var.ModelsDir) — set to dist\models\ or equivalent staging dir.
+    ═══════════════════════════════════════════════════════════════════ -->
+    <Component Id="CmpModels"
+               Directory="ProgramDataModels"
+               Guid="{E2F3A4B5-C6D7-4E8F-90A1-B2C3D4E5F607}"
+               Bitness="always64">
+      <!-- FP32 primary models -->
+      <File Id="ModelStatic"
+            Name="cortex_static.onnx"
+            Source="$(var.ModelsDir)\cortex_static.onnx"
+            KeyPath="yes"/>
+      <File Id="ModelBehavioral"
+            Name="cortex_behavioral.onnx"
+            Source="$(var.ModelsDir)\cortex_behavioral.onnx"/>
+      <File Id="ModelMemory"
+            Name="cortex_memory.onnx"
+            Source="$(var.ModelsDir)\cortex_memory.onnx"/>
+      <File Id="ModelNetwork"
+            Name="cortex_network.onnx"
+            Source="$(var.ModelsDir)\cortex_network.onnx"/>
+      <File Id="ModelEmulation"
+            Name="cortex_emulation.onnx"
+            Source="$(var.ModelsDir)\cortex_emulation.onnx"/>
+      <!-- INT8 quantized variants -->
+      <File Id="ModelStaticInt8"
+            Name="cortex_static_int8.onnx"
+            Source="$(var.ModelsDir)\cortex_static_int8.onnx"/>
+      <File Id="ModelBehavioralInt8"
+            Name="cortex_behavioral_int8.onnx"
+            Source="$(var.ModelsDir)\cortex_behavioral_int8.onnx"/>
+      <File Id="ModelMemoryInt8"
+            Name="cortex_memory_int8.onnx"
+            Source="$(var.ModelsDir)\cortex_memory_int8.onnx"/>
+      <File Id="ModelNetworkInt8"
+            Name="cortex_network_int8.onnx"
+            Source="$(var.ModelsDir)\cortex_network_int8.onnx"/>
+      <File Id="ModelEmulationInt8"
+            Name="cortex_emulation_int8.onnx"
+            Source="$(var.ModelsDir)\cortex_emulation_int8.onnx"/>
+    </Component>
+
+    <!-- ═══════════════════════════════════════════════════════════════════
+         CLI EXECUTABLE  (operator terminal interface)
+         Installed alongside the service so operators can run it directly
+         from the install directory without PATH manipulation.
+    ═══════════════════════════════════════════════════════════════════ -->
+    <Component Id="CmpCLIExe"
+               Directory="INSTALLFOLDER"
+               Guid="{F3A4B5C6-D7E8-4F90-A1B2-C3D4E5F60718}"
+               Bitness="always64">
+      <File Id="CLIExe"
+            Name="ShadowStrikePhantomCLI.exe"
+            Source="$(var.BinDir)\ShadowStrikePhantomCLI.exe"
+            KeyPath="yes"/>
+    </Component>
+
   </Fragment>
 </Wix>

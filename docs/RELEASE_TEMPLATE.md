@@ -8,16 +8,22 @@
 
 ## Contents of this Package
 
-| File | Description |
-|------|-------------|
+| File / Directory | Description |
+|-----------------|-------------|
 | `ShadowStrikePhantomService.exe` | Windows service — detection engine, IPC server, ~3 400+ rules compiled in |
 | `ShadowStrikePhantomCLI.exe` | Interactive terminal control interface (run in an elevated terminal) |
 | `ShadowStrikePhantomTray.exe` | System-tray status notification app |
-| `ShadowStrikePhantomUI.exe` | Native Windows UI (preview) |
 | `onnxruntime.dll` | ONNX Runtime — required for ML inference |
 | `onnxruntime_providers_shared.dll` | ONNX Runtime execution provider |
+| `models\cortex_static.onnx` | Static-analysis ML model (PE features) |
+| `models\cortex_behavioral.onnx` | Behavioural-analysis ML model |
+| `models\cortex_memory.onnx` | Memory-scan ML model |
+| `models\cortex_network.onnx` | Network-traffic ML model |
+| `models\cortex_emulation.onnx` | Emulation-trace ML model |
+| `models\cortex_*_int8.onnx` | INT8 quantized variants of the above (5 files) |
 | `driver\PhantomSensor.sys` | Kernel minifilter driver (test-signed) |
 | `driver\PhantomSensor.inf` | Driver INF — used by pnputil for installation |
+| `Install-ShadowStrike.ps1` | One-shot install script (run as Administrator) |
 | `VERSION.txt` | Build version stamp |
 | `RELEASE.md` | This file |
 
@@ -38,9 +44,31 @@
 
 ---
 
-## Installation (Development / Evaluation)
+## Quick Install (Recommended)
 
-> All commands below require an **elevated Command Prompt** (Run as Administrator).
+Extract the ZIP, then run the included PowerShell installer from an **elevated PowerShell** prompt:
+
+```powershell
+# From the directory where the ZIP was extracted:
+.\Install-ShadowStrike.ps1
+```
+
+The script handles everything automatically:
+- Creates `C:\Program Files\ShadowStrike\Phantom\` and copies all binaries there
+- Creates `C:\ProgramData\ShadowStrike\` with subdirectories (`Logs\`, `Quarantine\`, `models\`)
+- Deploys all 10 ML models to `%ProgramData%\ShadowStrike\models\`
+- Sets `HKLM\SOFTWARE\ShadowStrike\PhantomCortex\ModelDirectory` to the models path
+- Installs the kernel driver via pnputil
+- Registers and starts `ShadowStrikePhantomService`
+- Adds the install directory to the system PATH
+
+If the driver requires test-signing, enable it first (see step 1 below), reboot, then re-run the installer.
+
+---
+
+## Manual Installation
+
+> All commands below require an **elevated Command Prompt or PowerShell** (Run as Administrator).
 
 ### Step 1 — Enable test-signing (once; requires reboot)
 
@@ -63,7 +91,30 @@ sc query PhantomSensor
 ```
 Expected: `STATE: 4  RUNNING`
 
-### Step 3 — Install and start the service
+### Step 3 — Copy files and deploy models
+
+```powershell
+$installDir = "C:\Program Files\ShadowStrike\Phantom"
+$dataDir    = "C:\ProgramData\ShadowStrike"
+
+# Create directories
+New-Item -ItemType Directory -Force $installDir, "$dataDir\Logs", "$dataDir\Quarantine", "$dataDir\models"
+
+# Copy binaries
+Copy-Item ShadowStrikePhantomService.exe, ShadowStrikePhantomCLI.exe, `
+          ShadowStrikePhantomTray.exe, onnxruntime.dll, `
+          onnxruntime_providers_shared.dll $installDir
+
+# Deploy ML models
+Copy-Item models\*.onnx "$dataDir\models\"
+
+# Set model directory registry key
+New-Item -Path "HKLM:\SOFTWARE\ShadowStrike\PhantomCortex" -Force | Out-Null
+Set-ItemProperty -Path "HKLM:\SOFTWARE\ShadowStrike\PhantomCortex" `
+    -Name ModelDirectory -Value "$dataDir\models" -Type String
+```
+
+### Step 4 — Install and start the service
 
 ```cmd
 ShadowStrikePhantomService.exe --install
@@ -75,7 +126,7 @@ Or via the Service Control Manager:
 sc start PhantomService
 ```
 
-### Step 4 — Launch the CLI
+### Step 5 — Launch the CLI
 
 ```cmd
 ShadowStrikePhantomCLI.exe
@@ -94,11 +145,42 @@ ShadowStrikePhantomCLI.exe help
 
 ---
 
+## Directory Structure After Installation
+
+```
+C:\Program Files\ShadowStrike\Phantom\
+├── ShadowStrikePhantomService.exe
+├── ShadowStrikePhantomCLI.exe
+├── ShadowStrikePhantomTray.exe
+├── onnxruntime.dll
+├── onnxruntime_providers_shared.dll
+└── driver\
+    ├── PhantomSensor.sys
+    └── PhantomSensor.inf
+
+C:\ProgramData\ShadowStrike\
+├── Logs\             ← service and boot logs
+├── Quarantine\       ← quarantined threat artefacts
+└── models\
+    ├── cortex_static.onnx
+    ├── cortex_behavioral.onnx
+    ├── cortex_memory.onnx
+    ├── cortex_network.onnx
+    ├── cortex_emulation.onnx
+    ├── cortex_static_int8.onnx
+    ├── cortex_behavioral_int8.onnx
+    ├── cortex_memory_int8.onnx
+    ├── cortex_network_int8.onnx
+    └── cortex_emulation_int8.onnx
+```
+
+---
+
 ## Starting Order
 
 1. Ensure the kernel driver (`PhantomSensor.sys`) is loaded first.
 2. Start the `PhantomService` Windows service.
-3. The CLI, Tray, and UI applications connect to the service; they can be started in any order after the service is running.
+3. The CLI and Tray applications connect to the service; they can be started in any order after the service is running.
 
 ---
 
@@ -120,17 +202,22 @@ Rule corpora included:
 
 ## ML Models
 
-ML model files (`*.onnx`) are **not included** in this package due to size.
+Five PhantomCortex models are included and deployed automatically by the installer:
 
-To enable ML scoring:
-1. Train models using `PhantomCortex/training/scripts/train_all.py`
-   (or obtain pre-trained models from the project's model repository).
-2. Deploy the `.onnx` files to `%ProgramData%\ShadowStrike\models\`.
-3. Set the model directory in registry:
-   `HKLM\SOFTWARE\ShadowStrike\PhantomCortex\ModelDirectory`
+| Model file | Detects |
+|------------|---------|
+| `cortex_static.onnx` | Static PE features — fast pre-execution verdict |
+| `cortex_behavioral.onnx` | Runtime API call sequences and behaviour patterns |
+| `cortex_memory.onnx` | In-memory artefacts — shellcode, injected regions |
+| `cortex_network.onnx` | Network traffic patterns — C2, exfil, beaconing |
+| `cortex_emulation.onnx` | Emulation traces — obfuscated / packed samples |
 
-The service operates fully without ML models — only the ML scoring stage
-is inactive. All rule-based and behavioural detections work regardless.
+INT8 quantized variants (`*_int8.onnx`) are included for use on endpoints where
+reduced memory footprint is required; swap them in by replacing the FP32 files.
+
+The service logs model load status at startup — check `%ProgramData%\ShadowStrike\Logs\`
+if ML scoring is not active. Ensure `HKLM\SOFTWARE\ShadowStrike\PhantomCortex\ModelDirectory`
+points to the correct path.
 
 ---
 
@@ -143,14 +230,14 @@ is inactive. All rule-based and behavioural detections work regardless.
 | CLI reports "service not reachable" | Service not running | `sc start PhantomService` |
 | Service exits immediately | Missing dependency DLL | Ensure `onnxruntime.dll` is alongside the .exe |
 | High CPU during first run | Initial rule JIT compilation | Normal; subsides after warm-up |
-| No ML detections | Models not deployed | Copy `.onnx` files to models directory (see above) |
+| No ML detections | `ModelDirectory` registry key missing | Re-run `Install-ShadowStrike.ps1` or set key manually |
+| No ML detections | Models directory empty or wrong path | Verify `%ProgramData%\ShadowStrike\models\` contains .onnx files |
 
 ---
 
 ## Limitations (this build)
 
 - Driver is **test-signed only** — not suitable for production.
-- ML models not bundled — deploy separately.
 - The web UI has been removed; the CLI is the operator interface.
   A native GUI is planned for a future release.
 

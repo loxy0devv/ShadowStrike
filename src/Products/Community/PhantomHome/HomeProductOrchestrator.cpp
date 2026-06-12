@@ -154,6 +154,20 @@ bool HomeProductOrchestrator::InitializeLocked() noexcept {
         }
     }
 
+    // Per-module budget: a single slow syscall (WFP warm-up, RPC, filesystem
+    // stall) must not freeze the entire sequential init loop.
+    constexpr auto kInitBudget = std::chrono::seconds(15);
+
+    // Total budget for ALL modules combined.  Without this cap, N modules
+    // each hitting the per-module timeout produces N×15 s of stall — with
+    // 55 registered modules that is up to ~825 s (13+ minutes) during which
+    // the service keeps pumping SERVICE_START_PENDING and "Waiting for
+    // service to start..." fills the console forever.  Cap the whole phase
+    // at 90 s so the service reaches RUNNING (or STOPPED) in bounded time.
+    constexpr auto kTotalInitBudget = std::chrono::seconds(90);
+    const auto initDeadline =
+        std::chrono::steady_clock::now() + kTotalInitBudget;
+
     bool allOk = true;
     for (std::size_t idx : indicesByPhase) {
         ModuleDescriptor desc;
@@ -182,6 +196,26 @@ bool HomeProductOrchestrator::InitializeLocked() noexcept {
             continue;
         }
 
+        // Check total-budget deadline before spending any more time.
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= initDeadline) {
+            SS_LOG_WARN(kLogCategory,
+                L"Total init budget (90s) exhausted — marking '%hs' and remaining modules Failed",
+                desc.name.c_str());
+            std::unique_lock regLock(m_registryMutex);
+            if (idx < m_modules.size()) {
+                SetModuleState(m_modules[idx], ModuleState::Failed, "init deadline exceeded");
+            }
+            allOk = false;
+            continue;
+        }
+
+        // How much of the per-module budget can we actually spend without
+        // blowing past the total deadline?
+        const auto remaining = std::min(
+            kInitBudget,
+            std::chrono::duration_cast<std::chrono::seconds>(initDeadline - now));
+
         SS_LOG_INFO(kLogCategory,
             L"Initializing '%hs' [%hs]",
             desc.name.c_str(), PhaseName(desc.phase));
@@ -205,7 +239,6 @@ bool HomeProductOrchestrator::InitializeLocked() noexcept {
         // no such waiting behaviour, and the detached thread carries no
         // handle that needs cleanup from our scope. This avoids any raw
         // new / heap leak.
-        constexpr auto kInitBudget = std::chrono::seconds(15);
         try {
             std::packaged_task<bool()> task([fn = desc.initialize]() -> bool {
                 try {
@@ -217,15 +250,16 @@ bool HomeProductOrchestrator::InitializeLocked() noexcept {
             std::future<bool> fut = task.get_future();
             std::thread(std::move(task)).detach();
 
-            if (fut.wait_for(kInitBudget) == std::future_status::ready) {
+            if (fut.wait_for(remaining) == std::future_status::ready) {
                 ok = fut.get();
             } else {
                 timedOut = true;
                 ok = false;
-                errMsg = "initialize() exceeded 15s budget";
+                errMsg = "initialize() exceeded budget";
                 SS_LOG_ERROR(kLogCategory,
-                    L"Module '%hs' Initialize() timed out after 15s; continuing without it",
-                    desc.name.c_str());
+                    L"Module '%hs' Initialize() timed out after %llds; continuing without it",
+                    desc.name.c_str(),
+                    static_cast<long long>(remaining.count()));
                 // fut goes out of scope here without blocking (packaged_task
                 // future does not own the worker thread the way async does).
                 // The detached worker may still finish later; its result is

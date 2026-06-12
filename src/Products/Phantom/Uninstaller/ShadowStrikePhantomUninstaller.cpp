@@ -23,17 +23,25 @@
  *
  * Uninstall sequence (performed on a worker thread; Step 2 progress dialog
  * remains responsive via PostMessage):
- *   1. Stop service:            sc stop ShadowStrikePhantomService
- *   2. Delete service entry:    sc delete ShadowStrikePhantomService
- *   3. Remove kernel driver:    pnputil /delete-driver PhantomSensor.inf /uninstall
- *   4. Delete install tree:     C:\Program Files\ShadowStrike\  (recursive)
- *   5. Delete data tree:        C:\ProgramData\ShadowStrike\    (recursive)
- *   6. Remove registry key:     HKLM\SOFTWARE\ShadowStrike      (recursive)
- *   7. Scrub PATH:              remove ShadowStrike entries from HKLM system PATH
+ *    1. Stop service:             sc stop ShadowStrikePhantomService
+ *    2. Delete service entry:     sc delete ShadowStrikePhantomService
+ *    3. Stop driver service:      sc stop PhantomSensor
+ *    4. Delete driver service:    sc delete PhantomSensor
+ *    5. Remove driver from store: pnputil /delete-driver <published-name> /uninstall /force
+ *    6. Remove trusted cert:      CertDeleteCertificateFromStore (Root + TrustedPublisher)
+ *    7. Delete install tree:      C:\Program Files\ShadowStrike\  (recursive)
+ *    8. Delete data tree:         C:\ProgramData\ShadowStrike\    (recursive)
+ *    9. Remove registry key:      HKLM\SOFTWARE\ShadowStrike      (recursive)
+ *   10. Scrub PATH:               remove ShadowStrike entries from HKLM system PATH
+ *
+ * NOTE: The pnputil published name (e.g. "oem78.inf") and cert thumbprint are
+ * read from HKLM\SOFTWARE\ShadowStrike\PhantomHome\Install before the registry
+ * tree is deleted in step 9.
  *
  * Build requirements:
  *   C++17 (/std:c++17), x64 only, /MT (static CRT), SubSystem Windows.
- *   Linked libraries: user32.lib advapi32.lib shell32.lib shlwapi.lib version.lib
+ *   Linked libraries: user32.lib advapi32.lib shell32.lib shlwapi.lib
+ *                     version.lib crypt32.lib
  */
 
 // ============================================================================
@@ -50,6 +58,7 @@
 #include <commctrl.h>
 #include <shlwapi.h>
 #include <shlobj.h>
+#include <wincrypt.h>
 
 #include <string>
 #include <string_view>
@@ -71,6 +80,7 @@
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "version.lib")
 #pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "crypt32.lib")
 
 #pragma comment(linker, "/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' "  \
     "version='6.0.0.0' processorArchitecture='amd64' publicKeyToken='6595b64144ccf1df' language='*'\"")
@@ -81,11 +91,13 @@
 
 namespace {
 
-constexpr const wchar_t* kServiceName    = L"ShadowStrikePhantomService";
-constexpr const wchar_t* kDriverInf      = L"PhantomSensor.inf";
-constexpr const wchar_t* kInstallDir     = L"C:\\Program Files\\ShadowStrike\\";
-constexpr const wchar_t* kDataDir        = L"C:\\ProgramData\\ShadowStrike\\";
-constexpr const wchar_t* kRegKey         = L"SOFTWARE\\ShadowStrike";
+constexpr const wchar_t* kServiceName       = L"ShadowStrikePhantomService";
+constexpr const wchar_t* kDriverServiceName = L"PhantomSensor";
+constexpr const wchar_t* kDriverInf         = L"PhantomSensor.inf"; // fallback only
+constexpr const wchar_t* kInstallDir        = L"C:\\Program Files\\ShadowStrike\\";
+constexpr const wchar_t* kDataDir           = L"C:\\ProgramData\\ShadowStrike\\";
+constexpr const wchar_t* kRegKey            = L"SOFTWARE\\ShadowStrike";
+constexpr const wchar_t* kInstallRegKey     = L"SOFTWARE\\ShadowStrike\\PhantomHome\\Install";
 
 // Custom window messages posted from the worker thread to the progress dialog
 constexpr UINT WM_WORKER_PROGRESS = WM_USER + 100; // wParam = 0-100, lParam = step text ptr
@@ -359,6 +371,85 @@ static bool DeleteDirectoryTree(const wchar_t* path)
 }
 
 // ============================================================================
+// Registry read helper
+// ============================================================================
+
+static std::wstring RegReadString(HKEY hRoot, const wchar_t* subKey, const wchar_t* valueName)
+{
+    HKEY hKey = nullptr;
+    if (::RegOpenKeyExW(hRoot, subKey, 0, KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS)
+        return {};
+
+    DWORD dwType = 0, cbData = 0;
+    ::RegQueryValueExW(hKey, valueName, nullptr, &dwType, nullptr, &cbData);
+
+    if (cbData == 0 || (dwType != REG_SZ && dwType != REG_EXPAND_SZ)) {
+        ::RegCloseKey(hKey);
+        return {};
+    }
+
+    std::vector<wchar_t> buf(cbData / sizeof(wchar_t) + 1, L'\0');
+    ::RegQueryValueExW(hKey, valueName, nullptr, &dwType,
+                       reinterpret_cast<BYTE*>(buf.data()), &cbData);
+    ::RegCloseKey(hKey);
+    return std::wstring(buf.data());
+}
+
+// ============================================================================
+// Certificate removal helper
+// ============================================================================
+
+/**
+ * Removes the certificate with the given hex thumbprint from both the
+ * LocalMachine\Root and LocalMachine\TrustedPublisher stores.
+ *
+ * thumbprint: hex string as produced by PowerShell's .Thumbprint property
+ *             (e.g. "A1B2C3D4..."), 40 uppercase hex chars for SHA-1.
+ */
+static bool RemoveTrustedCert(const std::wstring& thumbprint)
+{
+    if (thumbprint.empty() || thumbprint.size() % 2 != 0)
+        return false;
+
+    // Convert hex string to binary hash blob
+    std::vector<BYTE> hash;
+    hash.reserve(thumbprint.size() / 2);
+    for (size_t i = 0; i + 1 < thumbprint.size(); i += 2) {
+        wchar_t hex[3] = { thumbprint[i], thumbprint[i + 1], L'\0' };
+        hash.push_back(static_cast<BYTE>(::wcstoul(hex, nullptr, 16)));
+    }
+
+    CRYPT_HASH_BLOB hashBlob{};
+    hashBlob.cbData = static_cast<DWORD>(hash.size());
+    hashBlob.pbData = hash.data();
+
+    bool allOk = true;
+    for (const wchar_t* storeName : { L"Root", L"TrustedPublisher" }) {
+        HCERTSTORE hStore = ::CertOpenStore(
+            CERT_STORE_PROV_SYSTEM_W, 0, 0,
+            CERT_SYSTEM_STORE_LOCAL_MACHINE | CERT_STORE_OPEN_EXISTING_FLAG,
+            storeName);
+        if (!hStore) {
+            allOk = false;
+            continue;
+        }
+
+        PCCERT_CONTEXT pCert = ::CertFindCertificateInStore(
+            hStore, X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+            0, CERT_FIND_HASH, &hashBlob, nullptr);
+
+        if (pCert) {
+            // CertDeleteCertificateFromStore frees pCert even on failure
+            if (!::CertDeleteCertificateFromStore(pCert))
+                allOk = false;
+        }
+
+        ::CertCloseStore(hStore, 0);
+    }
+    return allOk;
+}
+
+// ============================================================================
 // Progress notification helpers
 // ============================================================================
 
@@ -401,8 +492,16 @@ static void UninstallWorker()
         errors += msg;
     };
 
+    // Read install-time metadata from the registry BEFORE we delete it in step 9.
+    // The published driver name (e.g. "oem78.inf") is required by pnputil; the
+    // original filename "PhantomSensor.inf" is a fallback only.
+    std::wstring publishedDriverName = RegReadString(
+        HKEY_LOCAL_MACHINE, kInstallRegKey, L"DriverPublishedName");
+    std::wstring certThumbprint = RegReadString(
+        HKEY_LOCAL_MACHINE, kInstallRegKey, L"DriverCertThumbprint");
+
     // -----------------------------------------------------------------------
-    // Step 1 — Stop service (10 %)
+    // Step 1 — Stop ShadowStrikePhantomService (10 %)
     // -----------------------------------------------------------------------
     PostProgress(hwnd, 0, L"Stopping ShadowStrikePhantomService\x2026");
 
@@ -411,14 +510,13 @@ static void UninstallWorker()
         DWORD rc = RunCommand(cmd, 30'000);
         // rc 0 = success, 1060 = service not exist, 1062 = not started — all acceptable
         if (rc != 0 && rc != 1060 && rc != 1062 && rc != MAXDWORD) {
-            // Wait a few seconds for the service to actually stop
-            ::Sleep(3000);
+            ::Sleep(3000); // give the service a moment to drain
         }
     }
     PostProgress(hwnd, 10, L"Service stopped.");
 
     // -----------------------------------------------------------------------
-    // Step 2 — Delete service registration (20 %)
+    // Step 2 — Delete ShadowStrikePhantomService registration (20 %)
     // -----------------------------------------------------------------------
     PostProgress(hwnd, 10, L"Removing service registration\x2026");
 
@@ -432,30 +530,78 @@ static void UninstallWorker()
     PostProgress(hwnd, 20, L"Service registration removed.");
 
     // -----------------------------------------------------------------------
-    // Step 3 — Remove kernel driver via pnputil (35 %)
+    // Step 3 — Stop PhantomSensor kernel driver service (30 %)
     // -----------------------------------------------------------------------
-    PostProgress(hwnd, 20, L"Removing PhantomSensor kernel driver\x2026");
+    PostProgress(hwnd, 20, L"Stopping PhantomSensor kernel driver\x2026");
 
     {
-        // pnputil /delete-driver <inf> /uninstall — requires admin (already guaranteed)
-        std::wstring cmd = std::wstring(L"pnputil /delete-driver ") + kDriverInf + L" /uninstall";
+        std::wstring cmd = std::wstring(L"sc stop ") + kDriverServiceName;
+        DWORD rc = RunCommand(cmd, 30'000);
+        if (rc != 0 && rc != 1060 && rc != 1062 && rc != MAXDWORD) {
+            ::Sleep(2000);
+        }
+    }
+    PostProgress(hwnd, 30, L"Driver service stopped.");
+
+    // -----------------------------------------------------------------------
+    // Step 4 — Delete PhantomSensor driver service entry (35 %)
+    // -----------------------------------------------------------------------
+    PostProgress(hwnd, 30, L"Removing driver service entry\x2026");
+
+    {
+        std::wstring cmd = std::wstring(L"sc delete ") + kDriverServiceName;
+        DWORD rc = RunCommand(cmd, 15'000);
+        if (rc != 0 && rc != 1060) {
+            Fail(L"sc delete PhantomSensor returned a non-zero exit code.");
+        }
+    }
+    PostProgress(hwnd, 35, L"Driver service entry removed.");
+
+    // -----------------------------------------------------------------------
+    // Step 5 — Remove driver from driver store via pnputil (50 %)
+    // -----------------------------------------------------------------------
+    PostProgress(hwnd, 35, L"Removing PhantomSensor from driver store\x2026");
+
+    {
+        // Use the published name saved during install (e.g. "oem78.inf").
+        // pnputil /delete-driver requires the published name, not the original filename.
+        // Fall back to the original name if the registry value is missing (fresh install
+        // that predates the new installer).
+        const std::wstring driverArg = publishedDriverName.empty()
+                                       ? kDriverInf
+                                       : publishedDriverName;
+        std::wstring cmd = L"pnputil /delete-driver " + driverArg + L" /uninstall /force";
         DWORD rc = RunCommand(cmd, 60'000);
-        // pnputil returns 0 on success, 259 (ERROR_NO_MORE_ITEMS) if driver not found
+        // 0 = success, 259 (ERROR_NO_MORE_ITEMS) = driver not found in store
         if (rc != 0 && rc != 259 && rc != MAXDWORD) {
-            Fail(L"pnputil /delete-driver PhantomSensor.inf reported an error. "
+            Fail(L"pnputil /delete-driver reported an error. "
                  L"A reboot may be required to complete driver removal.");
         }
     }
-    PostProgress(hwnd, 35, L"Driver removal requested.");
+    PostProgress(hwnd, 50, L"Driver removal requested.");
 
     // -----------------------------------------------------------------------
-    // Step 4 — Delete install directory (55 %)
+    // Step 6 — Remove signing certificate from trust stores (55 %)
     // -----------------------------------------------------------------------
-    PostProgress(hwnd, 35, L"Deleting program files\x2026");
+    PostProgress(hwnd, 50, L"Removing driver signing certificate from trust stores\x2026");
+
+    if (!certThumbprint.empty()) {
+        if (!RemoveTrustedCert(certThumbprint)) {
+            Fail(L"Could not fully remove the driver signing certificate from "
+                 L"Root/TrustedPublisher stores. "
+                 L"Manual removal via certmgr.msc (Local Computer) may be needed.");
+        }
+    }
+    PostProgress(hwnd, 55, L"Certificate trust removed.");
+
+    // -----------------------------------------------------------------------
+    // Step 7 — Delete install directory (70 %)
+    // -----------------------------------------------------------------------
+    PostProgress(hwnd, 55, L"Deleting program files\x2026");
 
     if (::PathFileExistsW(kInstallDir)) {
         if (!DeleteDirectoryTree(kInstallDir)) {
-            // Retry once — files might have been locked by the service we just stopped
+            // Retry once — files might still be locked by the driver we just stopped
             ::Sleep(1000);
             if (!DeleteDirectoryTree(kInstallDir)) {
                 Fail(L"Could not fully remove C:\\Program Files\\ShadowStrike\\. "
@@ -463,12 +609,12 @@ static void UninstallWorker()
             }
         }
     }
-    PostProgress(hwnd, 55, L"Program files removed.");
+    PostProgress(hwnd, 70, L"Program files removed.");
 
     // -----------------------------------------------------------------------
-    // Step 5 — Delete data directory (70 %)
+    // Step 8 — Delete data directory (80 %)
     // -----------------------------------------------------------------------
-    PostProgress(hwnd, 55, L"Deleting program data\x2026");
+    PostProgress(hwnd, 70, L"Deleting program data\x2026");
 
     if (::PathFileExistsW(kDataDir)) {
         if (!DeleteDirectoryTree(kDataDir)) {
@@ -476,23 +622,23 @@ static void UninstallWorker()
                  L"Some files may need manual deletion.");
         }
     }
-    PostProgress(hwnd, 70, L"Program data removed.");
+    PostProgress(hwnd, 80, L"Program data removed.");
 
     // -----------------------------------------------------------------------
-    // Step 6 — Remove HKLM\SOFTWARE\ShadowStrike (85 %)
+    // Step 9 — Remove HKLM\SOFTWARE\ShadowStrike (90 %)
     // -----------------------------------------------------------------------
-    PostProgress(hwnd, 70, L"Removing registry keys\x2026");
+    PostProgress(hwnd, 80, L"Removing registry keys\x2026");
 
     if (!RegDeleteKeyRecursive(HKEY_LOCAL_MACHINE, kRegKey)) {
         Fail(L"Could not fully remove HKLM\\SOFTWARE\\ShadowStrike. "
              L"Some registry keys may need manual deletion.");
     }
-    PostProgress(hwnd, 85, L"Registry keys removed.");
+    PostProgress(hwnd, 90, L"Registry keys removed.");
 
     // -----------------------------------------------------------------------
-    // Step 7 — Scrub PATH (100 %)
+    // Step 10 — Scrub PATH (100 %)
     // -----------------------------------------------------------------------
-    PostProgress(hwnd, 85, L"Updating system PATH\x2026");
+    PostProgress(hwnd, 90, L"Updating system PATH\x2026");
 
     ScrubSystemPath();
     PostProgress(hwnd, 100, L"Uninstall complete.");

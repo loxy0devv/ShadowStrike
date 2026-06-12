@@ -101,6 +101,15 @@
       <LanguageStandard>stdcpp23</LanguageStandard>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
       <AdditionalIncludeDirectories>.;PhantomSensor;PhantomSensor\Utilities;PhantomSensorELAM;PhantomSensor\Network;PhantomSensor\Core;PhantomSensor\Memory;PhantomSensor\Callbacks;PhantomSensor\Callbacks\Process;PhantomSensor\Callbacks\FileSystem;PhantomSensor\Callbacks\Registry;PhantomSensor\Callbacks\Object;PhantomSensor\Sync;PhantomSensor\Performance;PhantomSensor\Power;PhantomSensor\Behavioral;PhantomSensor\Telemetry;Shared;PhantomSensor\SelfProtection;PhantomSensor\Communication;PhantomSensor\Cache;PhantomSensor\Exclusions;PhantomSensor\Context;PhantomSensor\ETW;PhantomSensor\Transactions;PhantomSensor\Syscall;PhantomSensor\Objects;PhantomSensor\ALPC;PhantomSensor\Tracing;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <!-- NTDDI_WIN10_CO (0x0A00000B) = Windows 10 21H2, one step below WIN10_NI (22H2).
+           ExAllocateFromLookasideListEx / ExFreeToLookasideListEx / ExAllocateFromNPagedLookasideList /
+           ExFreeToNPagedLookasideList changed from inline macros to ntoskrnl.exe exported symbols in
+           Windows 11 22H2 (NTDDI_WIN10_NI = 0x0A00000C).  Compiling against the Win11 24H2 WDK without
+           an explicit NTDDI override causes the compiler to emit hard ntoskrnl import entries for these
+           functions, which do not exist in Windows 10 22H2 ntoskrnl.exe → load failure (error 127).
+           Setting NTDDI_VERSION < NTDDI_WIN10_NI keeps them as inline code; the resulting binary
+           carries no ntoskrnl import entry and loads correctly on Windows 10 2004+ and all Windows 11. -->
+      <PreprocessorDefinitions>NTDDI_VERSION=0x0A00000B;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <TreatWarningAsError>true</TreatWarningAsError>
       <WarningLevel>Level4</WarningLevel>
     </ClCompile>
@@ -117,6 +126,7 @@
       <LanguageStandard>stdcpp23</LanguageStandard>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
       <AdditionalIncludeDirectories>.;PhantomSensor;PhantomSensor\Utilities;PhantomSensorELAM;PhantomSensor\Network;PhantomSensor\Core;PhantomSensor\Memory;PhantomSensor\Callbacks;PhantomSensor\Callbacks\Process;PhantomSensor\Callbacks\FileSystem;PhantomSensor\Callbacks\Registry;PhantomSensor\Callbacks\Object;PhantomSensor\Sync;PhantomSensor\Performance;PhantomSensor\Power;PhantomSensor\Behavioral;PhantomSensor\Telemetry;Shared;PhantomSensor\SelfProtection;PhantomSensor\Communication;PhantomSensor\Cache;PhantomSensor\Exclusions;PhantomSensor\Context;PhantomSensor\ETW;PhantomSensor\Transactions;PhantomSensor\Syscall;PhantomSensor\Objects;PhantomSensor\ALPC;PhantomSensor\Tracing;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>NTDDI_VERSION=0x0A00000B;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <TreatWarningAsError>true</TreatWarningAsError>
       <WarningLevel>Level4</WarningLevel>
     </ClCompile>
@@ -133,6 +143,7 @@
       <LanguageStandard>stdcpp23</LanguageStandard>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
       <AdditionalIncludeDirectories>.;PhantomSensor;PhantomSensor\Utilities;PhantomSensorELAM;PhantomSensor\Network;PhantomSensor\Core;PhantomSensor\Memory;PhantomSensor\Callbacks;PhantomSensor\Callbacks\Process;PhantomSensor\Callbacks\FileSystem;PhantomSensor\Callbacks\Registry;PhantomSensor\Callbacks\Object;PhantomSensor\Sync;PhantomSensor\Performance;PhantomSensor\Power;PhantomSensor\Behavioral;PhantomSensor\Telemetry;Shared;PhantomSensor\SelfProtection;PhantomSensor\Communication;PhantomSensor\Cache;PhantomSensor\Exclusions;PhantomSensor\Context;PhantomSensor\ETW;PhantomSensor\Transactions;PhantomSensor\Syscall;PhantomSensor\Objects;PhantomSensor\ALPC;PhantomSensor\Tracing;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>NTDDI_VERSION=0x0A00000B;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <TreatWarningAsError>true</TreatWarningAsError>
       <WarningLevel>Level4</WarningLevel>
     </ClCompile>
@@ -149,6 +160,7 @@
       <LanguageStandard>stdcpp23</LanguageStandard>
       <LanguageStandard_C>stdc17</LanguageStandard_C>
       <AdditionalIncludeDirectories>.;PhantomSensor;PhantomSensor\Utilities;PhantomSensorELAM;PhantomSensor\Network;PhantomSensor\Core;PhantomSensor\Memory;PhantomSensor\Callbacks;PhantomSensor\Callbacks\Process;PhantomSensor\Callbacks\FileSystem;PhantomSensor\Callbacks\Registry;PhantomSensor\Callbacks\Object;PhantomSensor\Sync;PhantomSensor\Performance;PhantomSensor\Power;PhantomSensor\Behavioral;PhantomSensor\Telemetry;Shared;PhantomSensor\SelfProtection;PhantomSensor\Communication;PhantomSensor\Cache;PhantomSensor\Exclusions;PhantomSensor\Context;PhantomSensor\ETW;PhantomSensor\Transactions;PhantomSensor\Syscall;PhantomSensor\Objects;PhantomSensor\ALPC;PhantomSensor\Tracing;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>NTDDI_VERSION=0x0A00000B;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <TreatWarningAsError>true</TreatWarningAsError>
       <WarningLevel>Level4</WarningLevel>
     </ClCompile>

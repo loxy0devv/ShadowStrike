@@ -13,6 +13,8 @@
 | `ShadowStrikePhantomService.exe` | Windows service — detection engine, IPC server, ~3 400+ rules compiled in |
 | `ShadowStrikePhantomCLI.exe` | Interactive terminal control interface (run in an elevated terminal) |
 | `ShadowStrikePhantomTray.exe` | System-tray status notification app |
+| `ShadowStrikePhantomUI.exe` | Native Windows UI (preview) |
+| `ShadowStrikePhantomUninstaller.exe` | GUI uninstaller — double-click to fully remove ShadowStrike Phantom |
 | `onnxruntime.dll` | ONNX Runtime — required for ML inference |
 | `onnxruntime_providers_shared.dll` | ONNX Runtime execution provider |
 | `models\cortex_static.onnx` | Static-analysis ML model (PE features) |

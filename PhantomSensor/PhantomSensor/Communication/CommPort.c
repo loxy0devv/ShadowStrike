@@ -49,6 +49,26 @@
 #include "../Context/InstanceContext.h"
 
 //
+// Forward declarations for SelfProtect APIs used in connect/disconnect handlers.
+// We do NOT include SelfProtect.h here because CommPort.c defines its own
+// _SHADOWSTRIKE_PROTECTED_PROCESS_ENTRY for internal process-tracking that
+// has different fields — including the full header would cause a redefinition error.
+//
+_IRQL_requires_(PASSIVE_LEVEL)
+NTSTATUS
+ShadowStrikeProtectProcess(
+    _In_ HANDLE ProcessId,
+    _In_ ULONG  Flags,
+    _In_opt_ PCWSTR ImagePath
+    );
+
+_IRQL_requires_(PASSIVE_LEVEL)
+VOID
+ShadowStrikeUnprotectProcess(
+    _In_ HANDLE ProcessId
+    );
+
+//
 // PsGetProcessInheritedFromUniqueProcessId â€” exported by ntoskrnl.exe
 // since Windows XP. Not declared in public WDK headers but stable and
 // widely used in production security drivers (minifilters, EDR agents).
@@ -1466,6 +1486,14 @@ ShadowStrikeConnectNotify(
     KeLeaveCriticalRegion();
 
     //
+    // Mark the connected client process as protected so the FP_ENGINE and
+    // SelfProtect path checks allow it to write logs, quarantine files, etc.
+    // Must be called AFTER releasing the lock (PASSIVE_LEVEL requirement).
+    //
+    // 0x0000000F = ProtectionFlagFull (Block Terminate|VMWrite|Inject|Suspend)
+    (VOID)ShadowStrikeProtectProcess(clientProcessId, 0x0000000FUL, NULL);
+
+    //
     // Queue deferred kex delivery NOW that the lock is released and the slot
     // is published. The work item runs at PASSIVE_LEVEL on an FltMgr worker
     // thread, calls FltSendMessage with a generous timeout, and on success
@@ -1511,6 +1539,7 @@ ShadowStrikeFinalizeClientDisconnect(
     )
 {
     PENC_KEY sessionKey = NULL;
+    HANDLE   savedPid   = NULL;
 
     if (SlotIndex < 0 || SlotIndex >= SHADOWSTRIKE_MAX_CONNECTIONS) {
         return;
@@ -1527,6 +1556,8 @@ ShadowStrikeFinalizeClientDisconnect(
         return;
     }
 
+    // Save PID before RtlZeroMemory wipes the slot
+    savedPid   = g_ClientPortRefs[SlotIndex].ClientProcessId;
     sessionKey = g_ClientSessionEncKeys[SlotIndex];
     g_ClientSessionEncKeys[SlotIndex] = NULL;
 
@@ -1554,6 +1585,11 @@ ShadowStrikeFinalizeClientDisconnect(
 
     ExReleasePushLockExclusive(&g_DriverData.ClientPortLock);
     KeLeaveCriticalRegion();
+
+    // Remove process protection now that the client has disconnected
+    if (savedPid != NULL) {
+        (VOID)ShadowStrikeUnprotectProcess(savedPid);
+    }
 
     if (sessionKey != NULL) {
         ShadowStrikeReleaseSessionCryptoKey(&sessionKey);

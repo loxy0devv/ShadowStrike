@@ -77,6 +77,7 @@ Performance Characteristics:
 #include "../../Behavioral/BehaviorEngine.h"
 #include "../../ETW/ETWConsumer.h"
 #include "../../ETW/ETWProvider.h"
+#include "../../ETW/TelemetryEvents.h"
 #include "../../Core/DriverEntry.h"
 #include "../../Performance/PerformanceMonitor.h"
 #include "../../Performance/ResourceThrottling.h"
@@ -979,6 +980,17 @@ Return Value:
 
                     SHADOWSTRIKE_INC_STAT(FilesBlocked);
                     InterlockedIncrement64(&g_PcState.Stats.SelfProtectBlocks);
+
+                    (VOID)TeLogTamperAttempt(
+                        (FpOp == FpOperation_Delete)
+                            ? Tamper_FileDelete
+                            : Tamper_MemoryModify,
+                        HandleToULong(RequestorPid),
+                        Component_SelfProtection,
+                        0,
+                        TRUE,
+                        L"Blocked tamper attempt on ShadowStrike protected path"
+                        );
 
                     FltReleaseFileNameInformation(NameInfo);
                     ExReleaseRundownProtection(&g_PcState.RundownRef);

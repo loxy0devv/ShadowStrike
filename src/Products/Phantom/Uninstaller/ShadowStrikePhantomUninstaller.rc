@@ -40,7 +40,7 @@ CAPTION "ShadowStrike Phantom — Uninstall"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
     // Header banner area (owner-drawn / static with bold text via WM_CTLCOLORSTATIC)
-    CONTROL         "", IDC_WELCOME_HEADER,
+    CONTROL         "", -1,
                     "Static", SS_WHITERECT | WS_CHILD | WS_VISIBLE,
                     0, 0, 340, 50
 
@@ -53,14 +53,7 @@ BEGIN
                     SS_ETCHEDHORZ | WS_CHILD | WS_VISIBLE,
                     0, 50, 340, 1
 
-    LTEXT           "This will permanently remove ShadowStrike Phantom from your "
-                    "computer, including:\n\n"
-                    "  \x2022  ShadowStrikePhantomService (Windows service)\n"
-                    "  \x2022  PhantomSensor.sys (kernel driver)\n"
-                    "  \x2022  C:\\Program Files\\ShadowStrike\\\n"
-                    "  \x2022  C:\\ProgramData\\ShadowStrike\\ (models, logs, quarantine)\n"
-                    "  \x2022  HKLM\\SOFTWARE\\ShadowStrike (registry keys)\n\n"
-                    "Do you want to continue?",
+    LTEXT           "This will permanently remove ShadowStrike Phantom, including the service, driver, program files, ProgramData, and registry keys. Do you want to continue?",
                     IDC_WELCOME_BODY,
                     10, 60, 320, 88,
                     SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP
@@ -146,8 +139,7 @@ BEGIN
                     0, 40, 340, 1
 
     // Body text — set at runtime to success or partial-failure message
-    LTEXT           "ShadowStrike Phantom has been successfully removed from "
-                    "this computer.",
+    LTEXT           "ShadowStrike Phantom has been successfully removed from this computer.",
                     IDC_COMPLETE_BODY,
                     10, 52, 320, 40,
                     SS_LEFT | WS_CHILD | WS_VISIBLE | WS_GROUP

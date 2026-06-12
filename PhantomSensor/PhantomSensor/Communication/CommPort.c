@@ -47,7 +47,26 @@
 #include "../../Shared/MessageTypes.h"
 #include "../../Shared/ErrorCodes.h"
 #include "../Context/InstanceContext.h"
-#include "../SelfProtection/SelfProtect.h"
+
+//
+// Forward declarations for SelfProtect APIs used in connect/disconnect handlers.
+// We do NOT include SelfProtect.h here because CommPort.c defines its own
+// _SHADOWSTRIKE_PROTECTED_PROCESS_ENTRY for internal process-tracking that
+// has different fields — including the full header would cause a redefinition error.
+//
+_IRQL_requires_(PASSIVE_LEVEL)
+NTSTATUS
+ShadowStrikeProtectProcess(
+    _In_ HANDLE ProcessId,
+    _In_ ULONG  Flags,
+    _In_opt_ PCWSTR ImagePath
+    );
+
+_IRQL_requires_(PASSIVE_LEVEL)
+VOID
+ShadowStrikeUnprotectProcess(
+    _In_ HANDLE ProcessId
+    );
 
 //
 // PsGetProcessInheritedFromUniqueProcessId â€” exported by ntoskrnl.exe

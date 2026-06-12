@@ -168,6 +168,10 @@ static VOID ShadowStrikeLogBootStep(
     _In_ ULONG StepNumber
 );
 
+// Forward declaration — must precede the alloc_text pragma below
+_IRQL_requires_(PASSIVE_LEVEL)
+static VOID SsRegisterSelfProtectPaths(VOID);
+
 #ifdef ALLOC_PRAGMA
 #pragma alloc_text(INIT, DriverEntry)
 #pragma alloc_text(INIT, ShadowStrikeCheckVersionCompatibility)
@@ -300,10 +304,6 @@ static COMP_MANAGER g_CompressionManager = {0};
 
 /// @brief Encryption manager (secure kernel-to-user communication)
 static ENC_MANAGER g_EncryptionManager = {0};
-
-// Forward declaration for tamper-protection path registration
-_IRQL_requires_(PASSIVE_LEVEL)
-static VOID SsRegisterSelfProtectPaths(VOID);
 
 /**
  * @brief Power callback bridge â€” forwards sleep/resume events to BehaviorEngine.

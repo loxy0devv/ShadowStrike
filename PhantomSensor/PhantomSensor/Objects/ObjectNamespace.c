@@ -43,7 +43,8 @@
 #include <ntstrsafe.h>
 
 /* RtlAddMandatoryAce was removed from ntoskrnl.exe exports in Win10 22H2
-   build 10.0.19045.6466.  Inline replacement using public ACL/SID helpers. */
+   build 10.0.19045.6466.  Inline replacement using public ACL/SID helpers.
+   _ACL has no AclBytesInUse field; walk the ACE chain to find the free slot. */
 static FORCEINLINE NTSTATUS
 SS_AddMandatoryAce(
     _Inout_ PACL        Acl,
@@ -55,19 +56,28 @@ SS_AddMandatoryAce(
 )
 {
     UNREFERENCED_PARAMETER(AceRevision);
+
+    /* Walk existing ACEs to locate the first free byte. */
+    PUCHAR cursor = (PUCHAR)Acl + sizeof(ACL);
+    for (USHORT i = 0; i < Acl->AceCount; i++) {
+        if ((ULONG_PTR)cursor + sizeof(ACE_HEADER) > (ULONG_PTR)Acl + Acl->AclSize)
+            return STATUS_INVALID_ACL;
+        cursor += ((PACE_HEADER)cursor)->AceSize;
+    }
+
     ULONG sidLen  = RtlLengthSid(LabelSid);
     ULONG aceSize = FIELD_OFFSET(SYSTEM_MANDATORY_LABEL_ACE, SidStart) + sidLen;
-    if ((ULONG)(Acl->AclSize - Acl->AclBytesInUse) < aceSize)
+
+    if ((ULONG_PTR)cursor + aceSize > (ULONG_PTR)Acl + Acl->AclSize)
         return STATUS_BUFFER_TOO_SMALL;
-    PSYSTEM_MANDATORY_LABEL_ACE ace =
-        (PSYSTEM_MANDATORY_LABEL_ACE)((PUCHAR)Acl + Acl->AclBytesInUse);
+
+    PSYSTEM_MANDATORY_LABEL_ACE ace = (PSYSTEM_MANDATORY_LABEL_ACE)cursor;
     ace->Header.AceType  = AceType;
     ace->Header.AceFlags = (UCHAR)AceFlags;
     ace->Header.AceSize  = (USHORT)aceSize;
     ace->Mask            = MandatoryPolicy;
     RtlCopySid(sidLen, &ace->SidStart, LabelSid);
     Acl->AceCount++;
-    Acl->AclBytesInUse += aceSize;
     return STATUS_SUCCESS;
 }
 

@@ -2681,19 +2681,22 @@ static NTSTATUS
 NfpInitializeLookasideLists(VOID)
 {
     PAGED_CODE();
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_NfState.ConnectionLookaside, NULL, NULL,
-        POOL_NX_ALLOCATION, sizeof(NF_CONNECTION_ENTRY),
+        NonPagedPoolNx,
+        0, sizeof(NF_CONNECTION_ENTRY),
         NF_POOL_TAG_CONNECTION, NF_CONNECTION_LOOKASIDE_DEPTH);
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_NfState.DnsLookaside, NULL, NULL,
-        POOL_NX_ALLOCATION, sizeof(NF_DNS_ENTRY),
+        NonPagedPoolNx,
+        0, sizeof(NF_DNS_ENTRY),
         NF_POOL_TAG_DNS, NF_DNS_LOOKASIDE_DEPTH);
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_NfState.EventLookaside, NULL, NULL,
-        POOL_NX_ALLOCATION, sizeof(NETWORK_CONNECTION_EVENT),
+        NonPagedPoolNx,
+        0, sizeof(NETWORK_CONNECTION_EVENT),
         NF_POOL_TAG_EVENT, NF_EVENT_LOOKASIDE_DEPTH);
 
     return STATUS_SUCCESS;
@@ -2703,9 +2706,9 @@ static VOID
 NfpCleanupLookasideLists(VOID)
 {
     PAGED_CODE();
-    ExDeleteNPagedLookasideList(&g_NfState.ConnectionLookaside);
-    ExDeleteNPagedLookasideList(&g_NfState.DnsLookaside);
-    ExDeleteNPagedLookasideList(&g_NfState.EventLookaside);
+    ExDeleteLookasideListEx(&g_NfState.ConnectionLookaside);
+    ExDeleteLookasideListEx(&g_NfState.DnsLookaside);
+    ExDeleteLookasideListEx(&g_NfState.EventLookaside);
 }
 
 static PNF_CONNECTION_ENTRY
@@ -2713,7 +2716,7 @@ NfpAllocateConnection(VOID)
 {
     PNF_CONNECTION_ENTRY connection;
 
-    connection = (PNF_CONNECTION_ENTRY)ExAllocateFromNPagedLookasideList(
+    connection = (PNF_CONNECTION_ENTRY)ExAllocateFromLookasideListEx(
         &g_NfState.ConnectionLookaside);
 
     if (connection != NULL) {
@@ -2743,7 +2746,7 @@ NfpFreeConnection(_In_ PNF_CONNECTION_ENTRY Connection)
                 isV6);
         }
 
-        ExFreeToNPagedLookasideList(&g_NfState.ConnectionLookaside, Connection);
+        ExFreeToLookasideListEx(&g_NfState.ConnectionLookaside, Connection);
     }
 }
 
@@ -2752,7 +2755,7 @@ NfpAllocateDnsEntry(VOID)
 {
     PNF_DNS_ENTRY dnsEntry;
 
-    dnsEntry = (PNF_DNS_ENTRY)ExAllocateFromNPagedLookasideList(
+    dnsEntry = (PNF_DNS_ENTRY)ExAllocateFromLookasideListEx(
         &g_NfState.DnsLookaside);
 
     if (dnsEntry != NULL) {
@@ -2766,7 +2769,7 @@ static VOID
 NfpFreeDnsEntry(_In_ PNF_DNS_ENTRY DnsEntry)
 {
     if (DnsEntry != NULL) {
-        ExFreeToNPagedLookasideList(&g_NfState.DnsLookaside, DnsEntry);
+        ExFreeToLookasideListEx(&g_NfState.DnsLookaside, DnsEntry);
     }
 }
 

@@ -234,9 +234,9 @@ typedef struct _MS_SCANNER_INTERNAL {
     //
     // Lookaside lists
     //
-    NPAGED_LOOKASIDE_LIST PatternLookaside;
-    NPAGED_LOOKASIDE_LIST MatchLookaside;
-    NPAGED_LOOKASIDE_LIST ResultLookaside;
+    LOOKASIDE_LIST_EX PatternLookaside;
+    LOOKASIDE_LIST_EX MatchLookaside;
+    LOOKASIDE_LIST_EX ResultLookaside;
     BOOLEAN LookasideInitialized;
 
     //
@@ -627,31 +627,34 @@ MsInitialize(
     //
     // Initialize lookaside lists
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &scanner->PatternLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(MS_PATTERN_INTERNAL),
         MS_POOL_TAG_PATTERN,
         MS_PATTERN_LOOKASIDE_DEPTH
     );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &scanner->MatchLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(MS_MATCH),
         MS_POOL_TAG_RESULT,
         MS_MATCH_LOOKASIDE_DEPTH
     );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &scanner->ResultLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(MS_SCAN_RESULT),
         MS_POOL_TAG_RESULT,
         MS_RESULT_LOOKASIDE_DEPTH
@@ -829,7 +832,7 @@ MsShutdown(
         }
 
         if (scanner->LookasideInitialized) {
-            ExFreeToNPagedLookasideList(&scanner->PatternLookaside, pattern);
+            ExFreeToLookasideListEx(&scanner->PatternLookaside, pattern);
         } else {
             ShadowStrikeFreePoolWithTag(pattern, MS_POOL_TAG_PATTERN);
         }
@@ -842,9 +845,9 @@ MsShutdown(
     // Delete lookaside lists
     //
     if (scanner->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&scanner->PatternLookaside);
-        ExDeleteNPagedLookasideList(&scanner->MatchLookaside);
-        ExDeleteNPagedLookasideList(&scanner->ResultLookaside);
+        ExDeleteLookasideListEx(&scanner->PatternLookaside);
+        ExDeleteLookasideListEx(&scanner->MatchLookaside);
+        ExDeleteLookasideListEx(&scanner->ResultLookaside);
         scanner->LookasideInitialized = FALSE;
     }
 
@@ -944,7 +947,7 @@ MsAddPattern(
     // Allocate pattern from lookaside
     //
     if (scanner->LookasideInitialized) {
-        pattern = (PMS_PATTERN_INTERNAL)ExAllocateFromNPagedLookasideList(
+        pattern = (PMS_PATTERN_INTERNAL)ExAllocateFromLookasideListEx(
             &scanner->PatternLookaside
         );
     } else {
@@ -1059,7 +1062,7 @@ Cleanup:
                 ShadowStrikeFreePoolWithTag(pattern->Base.PatternData, MS_POOL_TAG_PATTERN);
             }
             if (scanner->LookasideInitialized) {
-                ExFreeToNPagedLookasideList(&scanner->PatternLookaside, pattern);
+                ExFreeToLookasideListEx(&scanner->PatternLookaside, pattern);
             } else {
                 ShadowStrikeFreePoolWithTag(pattern, MS_POOL_TAG_PATTERN);
             }
@@ -1230,7 +1233,7 @@ MsRemovePattern(
         scanner->AhoCorasick.Built = FALSE;
 
         if (scanner->LookasideInitialized) {
-            ExFreeToNPagedLookasideList(&scanner->PatternLookaside, pattern);
+            ExFreeToLookasideListEx(&scanner->PatternLookaside, pattern);
         } else {
             ShadowStrikeFreePoolWithTag(pattern, MS_POOL_TAG_PATTERN);
         }
@@ -1999,14 +2002,14 @@ MsFreeScanResult(
         match = CONTAINING_RECORD(entry, MS_MATCH, ListEntry);
 
         if (scanner != NULL && scanner->LookasideInitialized) {
-            ExFreeToNPagedLookasideList(&scanner->MatchLookaside, match);
+            ExFreeToLookasideListEx(&scanner->MatchLookaside, match);
         } else {
             ShadowStrikeFreePoolWithTag(match, MS_POOL_TAG_RESULT);
         }
     }
 
     if (scanner != NULL && scanner->LookasideInitialized) {
-        ExFreeToNPagedLookasideList(&scanner->ResultLookaside, Result);
+        ExFreeToLookasideListEx(&scanner->ResultLookaside, Result);
     } else {
         ShadowStrikeFreePoolWithTag(Result, MS_POOL_TAG_RESULT);
     }
@@ -2989,7 +2992,7 @@ MspAllocateMatch(
     *Match = NULL;
 
     if (Scanner->LookasideInitialized) {
-        match = (PMS_MATCH)ExAllocateFromNPagedLookasideList(&Scanner->MatchLookaside);
+        match = (PMS_MATCH)ExAllocateFromLookasideListEx(&Scanner->MatchLookaside);
     } else {
         match = (PMS_MATCH)ShadowStrikeAllocatePoolWithTag(
             NonPagedPoolNx,
@@ -3021,7 +3024,7 @@ MspFreeMatch(
     }
 
     if (Scanner->LookasideInitialized) {
-        ExFreeToNPagedLookasideList(&Scanner->MatchLookaside, Match);
+        ExFreeToLookasideListEx(&Scanner->MatchLookaside, Match);
     } else {
         ShadowStrikeFreePoolWithTag(Match, MS_POOL_TAG_RESULT);
     }
@@ -3038,7 +3041,7 @@ MspAllocateScanResult(
     *Result = NULL;
 
     if (Scanner->LookasideInitialized) {
-        result = (PMS_SCAN_RESULT)ExAllocateFromNPagedLookasideList(&Scanner->ResultLookaside);
+        result = (PMS_SCAN_RESULT)ExAllocateFromLookasideListEx(&Scanner->ResultLookaside);
     } else {
         result = (PMS_SCAN_RESULT)ShadowStrikeAllocatePoolWithTag(
             NonPagedPoolNx,

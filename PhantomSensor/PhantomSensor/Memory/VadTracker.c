@@ -159,9 +159,9 @@ typedef struct _VAD_TRACKER_INTERNAL {
     //
     // Lookaside lists for frequent allocations
     //
-    NPAGED_LOOKASIDE_LIST RegionLookaside;
-    NPAGED_LOOKASIDE_LIST ChangeLookaside;
-    NPAGED_LOOKASIDE_LIST ContextLookaside;
+    LOOKASIDE_LIST_EX RegionLookaside;
+    LOOKASIDE_LIST_EX ChangeLookaside;
+    LOOKASIDE_LIST_EX ContextLookaside;
     volatile LONG LookasideInitialized;
 
 } VAD_TRACKER_INTERNAL, *PVAD_TRACKER_INTERNAL;
@@ -442,31 +442,34 @@ Return Value:
     //
     // Initialize lookaside lists (distinct pool tags)
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &Internal->RegionLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(VAD_REGION),
         VAD_POOL_TAG_ENTRY,
         0
         );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &Internal->ChangeLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(VAD_CHANGE_EVENT),
         VAD_POOL_TAG_CHANGE,
         0
         );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &Internal->ContextLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(VAD_PROCESS_CONTEXT),
         VAD_POOL_TAG_CONTEXT,
         0
@@ -572,9 +575,9 @@ Return Value:
 
 Cleanup:
     if (InterlockedCompareExchange(&Internal->LookasideInitialized, 0, 0) != 0) {
-        ExDeleteNPagedLookasideList(&Internal->RegionLookaside);
-        ExDeleteNPagedLookasideList(&Internal->ChangeLookaside);
-        ExDeleteNPagedLookasideList(&Internal->ContextLookaside);
+        ExDeleteLookasideListEx(&Internal->RegionLookaside);
+        ExDeleteLookasideListEx(&Internal->ChangeLookaside);
+        ExDeleteLookasideListEx(&Internal->ContextLookaside);
     }
 
     if (Internal->Public.ProcessHash.Buckets != NULL) {
@@ -703,9 +706,9 @@ Arguments:
     // Delete lookaside lists
     //
     if (InterlockedCompareExchange(&Internal->LookasideInitialized, 0, 0) != 0) {
-        ExDeleteNPagedLookasideList(&Internal->RegionLookaside);
-        ExDeleteNPagedLookasideList(&Internal->ChangeLookaside);
-        ExDeleteNPagedLookasideList(&Internal->ContextLookaside);
+        ExDeleteLookasideListEx(&Internal->RegionLookaside);
+        ExDeleteLookasideListEx(&Internal->ChangeLookaside);
+        ExDeleteLookasideListEx(&Internal->ContextLookaside);
     }
 
     //
@@ -1553,7 +1556,7 @@ Routine Description:
         return NULL;
     }
 
-    Context = (PVAD_PROCESS_CONTEXT)ExAllocateFromNPagedLookasideList(
+    Context = (PVAD_PROCESS_CONTEXT)ExAllocateFromLookasideListEx(
         &Tracker->ContextLookaside
         );
 
@@ -1591,7 +1594,7 @@ VadpFreeProcessContext(
         Context->Snapshot.SnapshotBuffer = NULL;
     }
 
-    ExFreeToNPagedLookasideList(&Tracker->ContextLookaside, Context);
+    ExFreeToLookasideListEx(&Tracker->ContextLookaside, Context);
 }
 
 static PVAD_PROCESS_CONTEXT
@@ -1658,7 +1661,7 @@ VadpAllocateRegion(
 {
     PVAD_REGION Region;
 
-    Region = (PVAD_REGION)ExAllocateFromNPagedLookasideList(&Tracker->RegionLookaside);
+    Region = (PVAD_REGION)ExAllocateFromLookasideListEx(&Tracker->RegionLookaside);
     if (Region != NULL) {
         RtlZeroMemory(Region, sizeof(VAD_REGION));
         InitializeListHead(&Region->ListEntry);
@@ -1673,7 +1676,7 @@ VadpFreeRegion(
     _In_ PVAD_REGION Region
     )
 {
-    ExFreeToNPagedLookasideList(&Tracker->RegionLookaside, Region);
+    ExFreeToLookasideListEx(&Tracker->RegionLookaside, Region);
 }
 
 static NTSTATUS
@@ -2277,7 +2280,7 @@ VadpAllocateChangeEvent(
 {
     PVAD_CHANGE_EVENT Event;
 
-    Event = (PVAD_CHANGE_EVENT)ExAllocateFromNPagedLookasideList(&Tracker->ChangeLookaside);
+    Event = (PVAD_CHANGE_EVENT)ExAllocateFromLookasideListEx(&Tracker->ChangeLookaside);
     if (Event != NULL) {
         RtlZeroMemory(Event, sizeof(VAD_CHANGE_EVENT));
         InitializeListHead(&Event->ListEntry);
@@ -2293,7 +2296,7 @@ VadpFreeChangeEvent(
     _In_ PVAD_CHANGE_EVENT Event
     )
 {
-    ExFreeToNPagedLookasideList(&Tracker->ChangeLookaside, Event);
+    ExFreeToLookasideListEx(&Tracker->ChangeLookaside, Event);
 }
 
 static VOID

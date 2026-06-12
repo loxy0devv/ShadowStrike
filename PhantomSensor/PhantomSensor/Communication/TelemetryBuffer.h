@@ -472,13 +472,13 @@ typedef struct _TB_MANAGER {
     //
     // Batch lookaside list (per-manager, not global)
     //
-    NPAGED_LOOKASIDE_LIST BatchLookaside;
+    LOOKASIDE_LIST_EX BatchLookaside;
     volatile LONG BatchLookasideInitialized;
 
     //
     // Reservation context lookaside
     //
-    NPAGED_LOOKASIDE_LIST ReservationLookaside;
+    LOOKASIDE_LIST_EX ReservationLookaside;
     volatile LONG ReservationLookasideInitialized;
 
     //

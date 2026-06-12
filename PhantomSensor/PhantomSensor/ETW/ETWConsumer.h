@@ -540,8 +540,8 @@ typedef struct _EC_CONSUMER {
     BOOLEAN SessionActive;
 
     // Memory pools
-    NPAGED_LOOKASIDE_LIST EventRecordLookaside;
-    NPAGED_LOOKASIDE_LIST ExtendedDataLookaside;
+    LOOKASIDE_LIST_EX EventRecordLookaside;
+    LOOKASIDE_LIST_EX ExtendedDataLookaside;
     BOOLEAN LookasideInitialized;
 
     // Flow control

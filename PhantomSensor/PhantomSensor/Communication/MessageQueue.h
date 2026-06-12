@@ -296,7 +296,7 @@ typedef struct _MESSAGE_QUEUE_GLOBALS {
     KEVENT SpaceAvailableEvent;     // Signaled when BELOW low water mark
 
     // Lookaside list for messages
-    NPAGED_LOOKASIDE_LIST MessageLookaside;
+    LOOKASIDE_LIST_EX MessageLookaside;
     BOOLEAN MessageLookasideInitialized;
     UINT8 Reserved2[7];
 
@@ -327,7 +327,7 @@ typedef struct _MESSAGE_QUEUE_GLOBALS {
     // Rundown protection for the MESSAGE lookaside list. Public APIs that
     // touch g_MqGlobals.MessageLookaside (alloc / free) acquire this rundown
     // for the duration of the lookaside operation. MqShutdown waits for the
-    // rundown to drain BEFORE calling ExDeleteNPagedLookasideList; this
+    // rundown to drain BEFORE calling ExDeleteLookasideListEx; this
     // deterministically eliminates the UAF window where an in-flight caller
     // would otherwise free/alloc against a deleted lookaside (pool corruption).
     //

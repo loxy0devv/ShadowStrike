@@ -2637,7 +2637,7 @@ BeEngineGetStatisticsSafe(
  * MUST NOT be exposed to user-mode (use BeEngineGetStatisticsSafe).
  *
  * SECURITY: We deliberately do NOT memcpy the entire BEHAVIOR_ENGINE_GLOBALS
- * struct. The struct embeds ERESOURCE / NPAGED_LOOKASIDE_LIST / KEVENT /
+ * struct. The struct embeds ERESOURCE / LOOKASIDE_LIST_EX / KEVENT /
  * LIST_ENTRY / EX_RUNDOWN_REF objects whose internal pointers reference
  * the live engine. A caller using a memcpy'd copy as an actual lock or
  * list head would corrupt those objects and BugCheck the system.
@@ -2803,41 +2803,45 @@ BepInitializeLookasideLists(
     VOID
     )
 {
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_BeState.EventLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(BE_PENDING_EVENT) + 1024,  // Allow for event data
         BE_POOL_TAG_EVENT,
         BE_EVENT_LOOKASIDE_DEPTH
         );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_BeState.ChainLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(BE_ATTACK_CHAIN),
         BE_POOL_TAG_CHAIN,
         BE_CHAIN_LOOKASIDE_DEPTH
         );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_BeState.EntryLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(BE_CHAIN_ENTRY),
         BE_POOL_TAG_CHAIN,
         BE_ENTRY_LOOKASIDE_DEPTH
         );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_BeState.ContextLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(BE_PROCESS_CONTEXT),
         BE_POOL_TAG_GENERAL,
         BE_CONTEXT_LOOKASIDE_DEPTH
@@ -2854,10 +2858,10 @@ BepCleanupLookasideLists(
     VOID
     )
 {
-    ExDeleteNPagedLookasideList(&g_BeState.EventLookaside);
-    ExDeleteNPagedLookasideList(&g_BeState.ChainLookaside);
-    ExDeleteNPagedLookasideList(&g_BeState.EntryLookaside);
-    ExDeleteNPagedLookasideList(&g_BeState.ContextLookaside);
+    ExDeleteLookasideListEx(&g_BeState.EventLookaside);
+    ExDeleteLookasideListEx(&g_BeState.ChainLookaside);
+    ExDeleteLookasideListEx(&g_BeState.EntryLookaside);
+    ExDeleteLookasideListEx(&g_BeState.ContextLookaside);
 }
 
 // ============================================================================
@@ -3503,7 +3507,7 @@ BepAllocateEvent(
     SIZE_T totalSize = sizeof(BE_PENDING_EVENT) + EventDataSize;
 
     if (EventDataSize <= 1024) {
-        event = (PBE_PENDING_EVENT)ExAllocateFromNPagedLookasideList(
+        event = (PBE_PENDING_EVENT)ExAllocateFromLookasideListEx(
             &g_BeState.EventLookaside
             );
     } else {
@@ -3534,7 +3538,7 @@ BepFreeEvent(
     }
 
     if (Event->EventDataSize <= 1024) {
-        ExFreeToNPagedLookasideList(&g_BeState.EventLookaside, Event);
+        ExFreeToLookasideListEx(&g_BeState.EventLookaside, Event);
     } else {
         ExFreePoolWithTag(Event, BE_POOL_TAG_EVENT);
     }
@@ -3550,7 +3554,7 @@ BepAllocateChain(
 {
     PBE_ATTACK_CHAIN chain;
 
-    chain = (PBE_ATTACK_CHAIN)ExAllocateFromNPagedLookasideList(
+    chain = (PBE_ATTACK_CHAIN)ExAllocateFromLookasideListEx(
         &g_BeState.ChainLookaside
         );
 
@@ -3573,7 +3577,7 @@ BepFreeChain(
     )
 {
     if (Chain != NULL) {
-        ExFreeToNPagedLookasideList(&g_BeState.ChainLookaside, Chain);
+        ExFreeToLookasideListEx(&g_BeState.ChainLookaside, Chain);
     }
 }
 
@@ -3587,7 +3591,7 @@ BepAllocateChainEntry(
 {
     PBE_CHAIN_ENTRY entry;
 
-    entry = (PBE_CHAIN_ENTRY)ExAllocateFromNPagedLookasideList(
+    entry = (PBE_CHAIN_ENTRY)ExAllocateFromLookasideListEx(
         &g_BeState.EntryLookaside
         );
 
@@ -3607,7 +3611,7 @@ BepFreeChainEntry(
     )
 {
     if (Entry != NULL) {
-        ExFreeToNPagedLookasideList(&g_BeState.EntryLookaside, Entry);
+        ExFreeToLookasideListEx(&g_BeState.EntryLookaside, Entry);
     }
 }
 
@@ -3621,7 +3625,7 @@ BepAllocateProcessContext(
 {
     PBE_PROCESS_CONTEXT context;
 
-    context = (PBE_PROCESS_CONTEXT)ExAllocateFromNPagedLookasideList(
+    context = (PBE_PROCESS_CONTEXT)ExAllocateFromLookasideListEx(
         &g_BeState.ContextLookaside
         );
 
@@ -3642,7 +3646,7 @@ BepFreeProcessContext(
     )
 {
     if (Context != NULL) {
-        ExFreeToNPagedLookasideList(&g_BeState.ContextLookaside, Context);
+        ExFreeToLookasideListEx(&g_BeState.ContextLookaside, Context);
     }
 }
 

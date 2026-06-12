@@ -393,9 +393,9 @@ typedef struct _HT_TRACKER {
     //
     // Lookaside lists
     //
-    NPAGED_LOOKASIDE_LIST HandleEntryLookaside;
-    NPAGED_LOOKASIDE_LIST ProcessHandlesLookaside;
-    NPAGED_LOOKASIDE_LIST DuplicationLookaside;
+    LOOKASIDE_LIST_EX HandleEntryLookaside;
+    LOOKASIDE_LIST_EX ProcessHandlesLookaside;
+    LOOKASIDE_LIST_EX DuplicationLookaside;
     BOOLEAN LookasideInitialized;
 
     //
@@ -720,31 +720,34 @@ HtInitialize(
     //
     // Initialize lookaside lists
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &Tracker->HandleEntryLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(HT_HANDLE_ENTRY),
         HT_POOL_TAG_ENTRY,
         0
         );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &Tracker->ProcessHandlesLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(HT_PROCESS_HANDLES),
         HT_POOL_TAG_PROCESS,
         0
         );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &Tracker->DuplicationLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(HT_DUPLICATION_RECORD),
         HT_POOL_TAG_ENTRY,
         0
@@ -894,9 +897,9 @@ Cleanup:
     }
 
     if (Tracker->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&Tracker->HandleEntryLookaside);
-        ExDeleteNPagedLookasideList(&Tracker->ProcessHandlesLookaside);
-        ExDeleteNPagedLookasideList(&Tracker->DuplicationLookaside);
+        ExDeleteLookasideListEx(&Tracker->HandleEntryLookaside);
+        ExDeleteLookasideListEx(&Tracker->ProcessHandlesLookaside);
+        ExDeleteLookasideListEx(&Tracker->DuplicationLookaside);
     }
 
     if (Tracker->HashBuckets != NULL) {
@@ -1025,7 +1028,7 @@ HtShutdown(
             //
             // Return to lookaside list
             //
-            ExFreeToNPagedLookasideList(&Tracker->ProcessHandlesLookaside, Handles);
+            ExFreeToLookasideListEx(&Tracker->ProcessHandlesLookaside, Handles);
 
             KeEnterCriticalRegion();
             ExAcquirePushLockExclusive(&Tracker->HashBuckets[i].Lock);
@@ -1049,7 +1052,7 @@ HtShutdown(
         ExReleasePushLockExclusive(&Tracker->DuplicationLock);
         KeLeaveCriticalRegion();
 
-        ExFreeToNPagedLookasideList(&Tracker->DuplicationLookaside, DupRecord);
+        ExFreeToLookasideListEx(&Tracker->DuplicationLookaside, DupRecord);
 
         KeEnterCriticalRegion();
         ExAcquirePushLockExclusive(&Tracker->DuplicationLock);
@@ -1062,9 +1065,9 @@ HtShutdown(
     // Delete lookaside lists
     //
     if (Tracker->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&Tracker->HandleEntryLookaside);
-        ExDeleteNPagedLookasideList(&Tracker->ProcessHandlesLookaside);
-        ExDeleteNPagedLookasideList(&Tracker->DuplicationLookaside);
+        ExDeleteLookasideListEx(&Tracker->HandleEntryLookaside);
+        ExDeleteLookasideListEx(&Tracker->ProcessHandlesLookaside);
+        ExDeleteLookasideListEx(&Tracker->DuplicationLookaside);
     }
 
     //
@@ -1686,7 +1689,7 @@ HtpAllocateHandleEntry(
 {
     PHT_HANDLE_ENTRY Entry;
 
-    Entry = (PHT_HANDLE_ENTRY)ExAllocateFromNPagedLookasideList(
+    Entry = (PHT_HANDLE_ENTRY)ExAllocateFromLookasideListEx(
         &Tracker->HandleEntryLookaside
         );
 
@@ -1704,7 +1707,7 @@ HtpFreeHandleEntry(
     _In_ PHT_HANDLE_ENTRY Entry
     )
 {
-    ExFreeToNPagedLookasideList(&Tracker->HandleEntryLookaside, Entry);
+    ExFreeToLookasideListEx(&Tracker->HandleEntryLookaside, Entry);
 }
 
 static PHT_PROCESS_HANDLES
@@ -1717,7 +1720,7 @@ HtpAllocateProcessHandles(
     NTSTATUS Status;
     PEPROCESS Process = NULL;
 
-    Handles = (PHT_PROCESS_HANDLES)ExAllocateFromNPagedLookasideList(
+    Handles = (PHT_PROCESS_HANDLES)ExAllocateFromLookasideListEx(
         &Tracker->ProcessHandlesLookaside
         );
 
@@ -1787,7 +1790,7 @@ HtpDereferenceProcessHandles(
         //
         // Return to lookaside list
         //
-        ExFreeToNPagedLookasideList(&Tracker->ProcessHandlesLookaside, Handles);
+        ExFreeToLookasideListEx(&Tracker->ProcessHandlesLookaside, Handles);
     }
 }
 
@@ -1828,7 +1831,7 @@ HtpAllocateDuplicationRecord(
 {
     PHT_DUPLICATION_RECORD Record;
 
-    Record = (PHT_DUPLICATION_RECORD)ExAllocateFromNPagedLookasideList(
+    Record = (PHT_DUPLICATION_RECORD)ExAllocateFromLookasideListEx(
         &Tracker->DuplicationLookaside
         );
 
@@ -1846,7 +1849,7 @@ HtpFreeDuplicationRecord(
     _In_ PHT_DUPLICATION_RECORD Record
     )
 {
-    ExFreeToNPagedLookasideList(&Tracker->DuplicationLookaside, Record);
+    ExFreeToLookasideListEx(&Tracker->DuplicationLookaside, Record);
 }
 
 static NTSTATUS

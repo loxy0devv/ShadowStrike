@@ -334,8 +334,8 @@ typedef struct _FSC_GLOBAL_STATE {
     //
     // Lookaside lists
     //
-    NPAGED_LOOKASIDE_LIST OperationContextLookaside;
-    NPAGED_LOOKASIDE_LIST ProcessContextLookaside;
+    LOOKASIDE_LIST_EX OperationContextLookaside;
+    LOOKASIDE_LIST_EX ProcessContextLookaside;
     BOOLEAN LookasideInitialized;
 
     //
@@ -1337,21 +1337,23 @@ Return Value:
     //
     // Initialize lookaside lists
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_FscState.OperationContextLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(FSC_OPERATION_CONTEXT),
         FSC_POOL_TAG,
         0
         );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_FscState.ProcessContextLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(FSC_PROCESS_FILE_CONTEXT),
         FSC_CONTEXT_POOL_TAG,
         0
@@ -1480,7 +1482,7 @@ Routine Description:
         ExReleasePushLockExclusive(&g_FscState.ProcessContextLock);
         KeLeaveCriticalRegion();
 
-        ExFreeToNPagedLookasideList(&g_FscState.ProcessContextLookaside, ProcessContext);
+        ExFreeToLookasideListEx(&g_FscState.ProcessContextLookaside, ProcessContext);
 
         KeEnterCriticalRegion();
         ExAcquirePushLockExclusive(&g_FscState.ProcessContextLock);
@@ -1496,8 +1498,8 @@ Routine Description:
         g_FscState.LookasideInitialized = FALSE;
         MemoryBarrier();
 
-        ExDeleteNPagedLookasideList(&g_FscState.OperationContextLookaside);
-        ExDeleteNPagedLookasideList(&g_FscState.ProcessContextLookaside);
+        ExDeleteLookasideListEx(&g_FscState.OperationContextLookaside);
+        ExDeleteLookasideListEx(&g_FscState.ProcessContextLookaside);
     }
 
     DbgPrintEx(
@@ -1522,7 +1524,7 @@ FscpAllocateOperationContext(
 {
     PFSC_OPERATION_CONTEXT Context;
 
-    Context = (PFSC_OPERATION_CONTEXT)ExAllocateFromNPagedLookasideList(
+    Context = (PFSC_OPERATION_CONTEXT)ExAllocateFromLookasideListEx(
         &g_FscState.OperationContextLookaside
         );
 
@@ -1562,7 +1564,7 @@ FscpFreeOperationContext(
     }
 
     Context->Signature = 0;
-    ExFreeToNPagedLookasideList(&g_FscState.OperationContextLookaside, Context);
+    ExFreeToLookasideListEx(&g_FscState.OperationContextLookaside, Context);
 
     InterlockedIncrement64(&g_FscState.Stats.ContextFrees);
 }
@@ -1636,7 +1638,7 @@ Return Value:
     //
     // Allocate new context outside lock
     //
-    NewContext = (PFSC_PROCESS_FILE_CONTEXT)ExAllocateFromNPagedLookasideList(
+    NewContext = (PFSC_PROCESS_FILE_CONTEXT)ExAllocateFromLookasideListEx(
         &g_FscState.ProcessContextLookaside
         );
 
@@ -1664,7 +1666,7 @@ Return Value:
             >= FSC_MAX_TRACKED_PROCESSES) {
         ExReleasePushLockExclusive(&g_FscState.ProcessContextLock);
         KeLeaveCriticalRegion();
-        ExFreeToNPagedLookasideList(&g_FscState.ProcessContextLookaside, NewContext);
+        ExFreeToLookasideListEx(&g_FscState.ProcessContextLookaside, NewContext);
         return NULL;
     }
 
@@ -1684,7 +1686,7 @@ Return Value:
             InterlockedIncrement(&Context->RefCount);
             ExReleasePushLockExclusive(&g_FscState.ProcessContextLock);
             KeLeaveCriticalRegion();
-            ExFreeToNPagedLookasideList(&g_FscState.ProcessContextLookaside, NewContext);
+            ExFreeToLookasideListEx(&g_FscState.ProcessContextLookaside, NewContext);
             return Context;
         }
     }
@@ -1766,7 +1768,7 @@ Arguments:
         ExReleasePushLockExclusive(&g_FscState.ProcessContextLock);
         KeLeaveCriticalRegion();
 
-        ExFreeToNPagedLookasideList(&g_FscState.ProcessContextLookaside, Context);
+        ExFreeToLookasideListEx(&g_FscState.ProcessContextLookaside, Context);
         return;
     }
 
@@ -2317,7 +2319,7 @@ Routine Description:
     while (!IsListEmpty(&StaleList)) {
         Entry = RemoveHeadList(&StaleList);
         Context = CONTAINING_RECORD(Entry, FSC_PROCESS_FILE_CONTEXT, ListEntry);
-        ExFreeToNPagedLookasideList(&g_FscState.ProcessContextLookaside, Context);
+        ExFreeToLookasideListEx(&g_FscState.ProcessContextLookaside, Context);
     }
 }
 

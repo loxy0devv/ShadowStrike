@@ -195,7 +195,7 @@ typedef struct _MH_GLOBALS {
     LIST_ENTRY ProtectedProcessList;
     EX_PUSH_LOCK ProtectedProcessLock;
     volatile LONG ProtectedProcessCount;
-    NPAGED_LOOKASIDE_LIST ProtectedProcessLookaside;
+    LOOKASIDE_LIST_EX ProtectedProcessLookaside;
     BOOLEAN LookasideInitialized;
     UINT8 Reserved2[7];
 
@@ -535,11 +535,12 @@ MhInitialize(
     ExInitializePushLock(&g_MhGlobals.ProtectedProcessLock);
     g_MhGlobals.ProtectedProcessCount = 0;
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_MhGlobals.ProtectedProcessLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(MH_PROTECTED_PROCESS),
         MH_TAG,
         0
@@ -657,7 +658,7 @@ CleanupOnError:
     // Cleanup on initialization failure
     //
     if (g_MhGlobals.LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&g_MhGlobals.ProtectedProcessLookaside);
+        ExDeleteLookasideListEx(&g_MhGlobals.ProtectedProcessLookaside);
         g_MhGlobals.LookasideInitialized = FALSE;
     }
 
@@ -746,7 +747,7 @@ MhShutdown(
     while (!IsListEmpty(&g_MhGlobals.ProtectedProcessList)) {
         entry = RemoveHeadList(&g_MhGlobals.ProtectedProcessList);
         protectedProcess = CONTAINING_RECORD(entry, MH_PROTECTED_PROCESS, ListEntry);
-        ExFreeToNPagedLookasideList(&g_MhGlobals.ProtectedProcessLookaside, protectedProcess);
+        ExFreeToLookasideListEx(&g_MhGlobals.ProtectedProcessLookaside, protectedProcess);
     }
     g_MhGlobals.ProtectedProcessCount = 0;
 
@@ -757,7 +758,7 @@ MhShutdown(
     // Delete lookaside list
     //
     if (g_MhGlobals.LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&g_MhGlobals.ProtectedProcessLookaside);
+        ExDeleteLookasideListEx(&g_MhGlobals.ProtectedProcessLookaside);
         g_MhGlobals.LookasideInitialized = FALSE;
     }
 
@@ -2150,7 +2151,7 @@ MhpHandleProtectedProcessRegister(
         //
         // Allocate new entry from lookaside list
         //
-        newEntry = (PMH_PROTECTED_PROCESS)ExAllocateFromNPagedLookasideList(
+        newEntry = (PMH_PROTECTED_PROCESS)ExAllocateFromLookasideListEx(
             &g_MhGlobals.ProtectedProcessLookaside);
 
         if (newEntry == NULL) {
@@ -2562,7 +2563,7 @@ MhUnprotectProcess(
         protectedProcess = CONTAINING_RECORD(entry, MH_PROTECTED_PROCESS, ListEntry);
         if (protectedProcess->ProcessId == ProcessId) {
             RemoveEntryList(&protectedProcess->ListEntry);
-            ExFreeToNPagedLookasideList(&g_MhGlobals.ProtectedProcessLookaside, protectedProcess);
+            ExFreeToLookasideListEx(&g_MhGlobals.ProtectedProcessLookaside, protectedProcess);
             InterlockedDecrement(&g_MhGlobals.ProtectedProcessCount);
             status = STATUS_SUCCESS;
 

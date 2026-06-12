@@ -212,7 +212,7 @@ struct _CP_PROTECTOR {
     //
     // Lookaside for entry allocations
     //
-    NPAGED_LOOKASIDE_LIST EntryLookaside;
+    LOOKASIDE_LIST_EX EntryLookaside;
     BOOLEAN LookasideInitialized;
 
     //
@@ -676,7 +676,7 @@ CppDereferenceEntry(
 
     if (newRef == 0) {
         if (Protector->LookasideInitialized) {
-            ExFreeToNPagedLookasideList(&Protector->EntryLookaside, Entry);
+            ExFreeToLookasideListEx(&Protector->EntryLookaside, Entry);
         } else {
             ExFreePoolWithTag(Entry, CP_POOL_TAG_ENTRY);
         }
@@ -722,11 +722,12 @@ CpInitialize(
         InitializeListHead(&prot->HashBuckets[i]);
     }
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &prot->EntryLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(CP_CALLBACK_ENTRY_INTERNAL),
         CP_POOL_TAG_ENTRY,
         CP_LOOKASIDE_DEPTH
@@ -889,7 +890,7 @@ CpShutdown(
         //
         cbEntry->RefCount = 0; // Force-free since we own everything
         if (Protector->LookasideInitialized) {
-            ExFreeToNPagedLookasideList(&Protector->EntryLookaside, cbEntry);
+            ExFreeToLookasideListEx(&Protector->EntryLookaside, cbEntry);
         } else {
             ExFreePoolWithTag(cbEntry, CP_POOL_TAG_ENTRY);
         }
@@ -901,7 +902,7 @@ CpShutdown(
     // Delete lookaside.
     //
     if (Protector->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&Protector->EntryLookaside);
+        ExDeleteLookasideListEx(&Protector->EntryLookaside);
         Protector->LookasideInitialized = FALSE;
     }
 
@@ -946,7 +947,7 @@ CpProtectCallback(
     //
     // Pre-allocate entry BEFORE acquiring lock.
     //
-    newEntry = (PCP_CALLBACK_ENTRY_INTERNAL)ExAllocateFromNPagedLookasideList(
+    newEntry = (PCP_CALLBACK_ENTRY_INTERNAL)ExAllocateFromLookasideListEx(
         &Protector->EntryLookaside
     );
 
@@ -970,7 +971,7 @@ CpProtectCallback(
     //
     status = CppComputeCodeHash(Callback, CP_CALLBACK_HASH_BYTES, newEntry->CodeHash);
     if (!NT_SUCCESS(status)) {
-        ExFreeToNPagedLookasideList(&Protector->EntryLookaside, newEntry);
+        ExFreeToLookasideListEx(&Protector->EntryLookaside, newEntry);
         ExReleaseRundownProtection(&Protector->RundownRef);
         return status;
     }
@@ -996,14 +997,14 @@ CpProtectCallback(
 
     if (Protector->CallbackCount >= CP_MAX_CALLBACKS) {
         CppReleaseLockExclusive(&Protector->CallbackLock);
-        ExFreeToNPagedLookasideList(&Protector->EntryLookaside, newEntry);
+        ExFreeToLookasideListEx(&Protector->EntryLookaside, newEntry);
         ExReleaseRundownProtection(&Protector->RundownRef);
         return STATUS_QUOTA_EXCEEDED;
     }
 
     if (CppFindByRegistration(Protector, Registration) != NULL) {
         CppReleaseLockExclusive(&Protector->CallbackLock);
-        ExFreeToNPagedLookasideList(&Protector->EntryLookaside, newEntry);
+        ExFreeToLookasideListEx(&Protector->EntryLookaside, newEntry);
         ExReleaseRundownProtection(&Protector->RundownRef);
         return STATUS_OBJECT_NAME_EXISTS;
     }

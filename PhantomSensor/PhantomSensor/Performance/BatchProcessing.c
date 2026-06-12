@@ -118,7 +118,7 @@ struct _BP_PROCESSOR {
     //
     // Lookaside for batches
     //
-    NPAGED_LOOKASIDE_LIST BatchLookaside;
+    LOOKASIDE_LIST_EX BatchLookaside;
     BOOLEAN LookasideInitialized;
 
     //
@@ -253,11 +253,12 @@ BpInitialize(
     KeInitializeEvent(&proc->NewBatchEvent, SynchronizationEvent, FALSE);
     KeInitializeEvent(&proc->StopEvent, NotificationEvent, FALSE);
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &proc->BatchLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(BP_BATCH),
         BP_POOL_TAG_BATCH,
         BP_LOOKASIDE_DEPTH
@@ -272,7 +273,7 @@ BpInitialize(
     //
     proc->CurrentBatch = BppAllocateBatch(proc);
     if (proc->CurrentBatch == NULL) {
-        ExDeleteNPagedLookasideList(&proc->BatchLookaside);
+        ExDeleteLookasideListEx(&proc->BatchLookaside);
         ExFreePoolWithTag(proc, BP_POOL_TAG);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
@@ -280,7 +281,7 @@ BpInitialize(
     proc->SpareBatch = BppAllocateBatch(proc);
     if (proc->SpareBatch == NULL) {
         BppFreeBatch(proc, proc->CurrentBatch, TRUE);
-        ExDeleteNPagedLookasideList(&proc->BatchLookaside);
+        ExDeleteLookasideListEx(&proc->BatchLookaside);
         ExFreePoolWithTag(proc, BP_POOL_TAG);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
@@ -365,7 +366,7 @@ BpShutdown(
     BppDrainReadyQueue(Processor, FALSE, FALSE);
 
     if (Processor->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&Processor->BatchLookaside);
+        ExDeleteLookasideListEx(&Processor->BatchLookaside);
         Processor->LookasideInitialized = FALSE;
     }
 
@@ -868,7 +869,7 @@ BppAllocateBatch(
 {
     PBP_BATCH batch;
 
-    batch = (PBP_BATCH)ExAllocateFromNPagedLookasideList(
+    batch = (PBP_BATCH)ExAllocateFromLookasideListEx(
         &Processor->BatchLookaside
     );
 
@@ -902,7 +903,7 @@ BppFreeBatch(
         }
     }
 
-    ExFreeToNPagedLookasideList(&Processor->BatchLookaside, Batch);
+    ExFreeToLookasideListEx(&Processor->BatchLookaside, Batch);
 }
 
 // ============================================================================

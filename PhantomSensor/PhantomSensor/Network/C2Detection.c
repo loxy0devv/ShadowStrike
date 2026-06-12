@@ -164,9 +164,9 @@ typedef struct _C2_DETECTOR_INTERNAL {
     C2_CALLBACK_ENTRY Callbacks[C2_MAX_CALLBACKS];
     EX_PUSH_LOCK CallbackLock;
 
-    NPAGED_LOOKASIDE_LIST DestinationLookaside;
-    NPAGED_LOOKASIDE_LIST SampleLookaside;
-    NPAGED_LOOKASIDE_LIST IOCLookaside;
+    LOOKASIDE_LIST_EX DestinationLookaside;
+    LOOKASIDE_LIST_EX SampleLookaside;
+    LOOKASIDE_LIST_EX IOCLookaside;
     BOOLEAN LookasideInitialized;
 
 
@@ -352,19 +352,22 @@ C2Initialize(
     //
     // Initialize lookaside lists
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &detector->DestinationLookaside, NULL, NULL,
-        POOL_NX_ALLOCATION, sizeof(C2_DESTINATION),
+        NonPagedPoolNx,
+        0, sizeof(C2_DESTINATION),
         C2_POOL_TAG_CONTEXT, 0);
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &detector->SampleLookaside, NULL, NULL,
-        POOL_NX_ALLOCATION, sizeof(C2_BEACON_SAMPLE),
+        NonPagedPoolNx,
+        0, sizeof(C2_BEACON_SAMPLE),
         C2_POOL_TAG_BEACON, 0);
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &detector->IOCLookaside, NULL, NULL,
-        POOL_NX_ALLOCATION, sizeof(C2_IOC),
+        NonPagedPoolNx,
+        0, sizeof(C2_IOC),
         C2_POOL_TAG_IOC, 0);
 
     detector->LookasideInitialized = TRUE;
@@ -407,9 +410,9 @@ C2Initialize(
     }
 
     if (!NT_SUCCESS(status)) {
-        ExDeleteNPagedLookasideList(&detector->IOCLookaside);
-        ExDeleteNPagedLookasideList(&detector->SampleLookaside);
-        ExDeleteNPagedLookasideList(&detector->DestinationLookaside);
+        ExDeleteLookasideListEx(&detector->IOCLookaside);
+        ExDeleteLookasideListEx(&detector->SampleLookaside);
+        ExDeleteLookasideListEx(&detector->DestinationLookaside);
         ExFreePoolWithTag(detector->Public.DestinationHash.Buckets, C2_POOL_TAG_CONTEXT);
         ExFreePoolWithTag(detector, C2_POOL_TAG_CONTEXT);
         return status;
@@ -481,7 +484,7 @@ C2Shutdown(
         entry = RemoveHeadList(&Detector->DestinationList);
         destination = CONTAINING_RECORD(entry, C2_DESTINATION, ListEntry);
         C2pFreeBeaconSamples(detector, destination);
-        ExFreeToNPagedLookasideList(&detector->DestinationLookaside, destination);
+        ExFreeToLookasideListEx(&detector->DestinationLookaside, destination);
     }
 
     //
@@ -499,7 +502,7 @@ C2Shutdown(
     while (!IsListEmpty(&Detector->IOCList)) {
         entry = RemoveHeadList(&Detector->IOCList);
         ioc = CONTAINING_RECORD(entry, C2_IOC, ListEntry);
-        ExFreeToNPagedLookasideList(&detector->IOCLookaside, ioc);
+        ExFreeToLookasideListEx(&detector->IOCLookaside, ioc);
     }
 
     //
@@ -508,7 +511,7 @@ C2Shutdown(
     while (!IsListEmpty(&Detector->KnownJA3List)) {
         entry = RemoveHeadList(&Detector->KnownJA3List);
         ioc = CONTAINING_RECORD(entry, C2_IOC, ListEntry);
-        ExFreeToNPagedLookasideList(&detector->IOCLookaside, ioc);
+        ExFreeToLookasideListEx(&detector->IOCLookaside, ioc);
     }
 
     //
@@ -520,9 +523,9 @@ C2Shutdown(
     // Delete lookaside lists
     //
     if (detector->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&detector->DestinationLookaside);
-        ExDeleteNPagedLookasideList(&detector->SampleLookaside);
-        ExDeleteNPagedLookasideList(&detector->IOCLookaside);
+        ExDeleteLookasideListEx(&detector->DestinationLookaside);
+        ExDeleteLookasideListEx(&detector->SampleLookaside);
+        ExDeleteLookasideListEx(&detector->IOCLookaside);
     }
 
     ExFreePoolWithTag(detector, C2_POOL_TAG_CONTEXT);
@@ -1060,7 +1063,7 @@ C2AddIOC(
 
     detector = CONTAINING_RECORD(Detector, C2_DETECTOR_INTERNAL, Public);
 
-    newIOC = (PC2_IOC)ExAllocateFromNPagedLookasideList(&detector->IOCLookaside);
+    newIOC = (PC2_IOC)ExAllocateFromLookasideListEx(&detector->IOCLookaside);
     if (newIOC == NULL) {
         C2_RELEASE_RUNDOWN(Detector);
         return STATUS_INSUFFICIENT_RESOURCES;
@@ -1128,7 +1131,7 @@ C2RemoveIOC(
     KeLeaveCriticalRegion();
 
     if (found) {
-        ExFreeToNPagedLookasideList(&detector->IOCLookaside, IOC);
+        ExFreeToLookasideListEx(&detector->IOCLookaside, IOC);
     }
 
     C2_RELEASE_RUNDOWN(Detector);
@@ -1161,7 +1164,7 @@ C2AddKnownJA3(
 
     detector = CONTAINING_RECORD(Detector, C2_DETECTOR_INTERNAL, Public);
 
-    ioc = (PC2_IOC)ExAllocateFromNPagedLookasideList(&detector->IOCLookaside);
+    ioc = (PC2_IOC)ExAllocateFromLookasideListEx(&detector->IOCLookaside);
     if (ioc == NULL) {
         C2_RELEASE_RUNDOWN(Detector);
         return STATUS_INSUFFICIENT_RESOURCES;
@@ -1720,7 +1723,7 @@ C2pFindOrCreateDestination(
     //
     // Allocate and initialize
     //
-    destination = (PC2_DESTINATION)ExAllocateFromNPagedLookasideList(
+    destination = (PC2_DESTINATION)ExAllocateFromLookasideListEx(
         &Detector->DestinationLookaside);
 
     if (destination == NULL) {
@@ -1813,7 +1816,7 @@ C2pFreeDestinationUnsafe(
     )
 {
     C2pFreeBeaconSamples(Detector, Destination);
-    ExFreeToNPagedLookasideList(&Detector->DestinationLookaside, Destination);
+    ExFreeToLookasideListEx(&Detector->DestinationLookaside, Destination);
 }
 
 static VOID
@@ -1831,7 +1834,7 @@ C2pFreeBeaconSamples(
     while (!IsListEmpty(&Destination->BeaconSamples)) {
         entry = RemoveHeadList(&Destination->BeaconSamples);
         sample = CONTAINING_RECORD(entry, C2_BEACON_SAMPLE, ListEntry);
-        ExFreeToNPagedLookasideList(&Detector->SampleLookaside, sample);
+        ExFreeToLookasideListEx(&Detector->SampleLookaside, sample);
     }
 
     Destination->SampleCount = 0;
@@ -1861,7 +1864,7 @@ C2pAddBeaconSample(
         if (!IsListEmpty(&Destination->BeaconSamples)) {
             PLIST_ENTRY oldest = RemoveHeadList(&Destination->BeaconSamples);
             sample = CONTAINING_RECORD(oldest, C2_BEACON_SAMPLE, ListEntry);
-            ExFreeToNPagedLookasideList(&Detector->SampleLookaside, sample);
+            ExFreeToLookasideListEx(&Detector->SampleLookaside, sample);
             Destination->SampleCount--;
         }
     }
@@ -1869,7 +1872,7 @@ C2pAddBeaconSample(
     //
     // Allocate new sample
     //
-    sample = (PC2_BEACON_SAMPLE)ExAllocateFromNPagedLookasideList(
+    sample = (PC2_BEACON_SAMPLE)ExAllocateFromLookasideListEx(
         &Detector->SampleLookaside);
 
     if (sample != NULL) {

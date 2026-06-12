@@ -117,7 +117,7 @@ typedef struct _BTD_DETECTOR_INTERNAL {
     ULONG RootkitPatternCount;
 
     // Lookaside for threat allocations
-    NPAGED_LOOKASIDE_LIST ThreatLookaside;
+    LOOKASIDE_LIST_EX ThreatLookaside;
     BOOLEAN LookasideInitialized;
 
 } BTD_DETECTOR_INTERNAL, *PBTD_DETECTOR_INTERNAL;
@@ -435,7 +435,7 @@ BtdpAllocateThreat(
 {
     PBTD_THREAT threat;
 
-    threat = (PBTD_THREAT)ExAllocateFromNPagedLookasideList(&Internal->ThreatLookaside);
+    threat = (PBTD_THREAT)ExAllocateFromLookasideListEx(&Internal->ThreatLookaside);
     if (threat != NULL) {
         RtlZeroMemory(threat, sizeof(BTD_THREAT));
     }
@@ -454,7 +454,7 @@ BtdpFreeThreatInternal(
 {
     if (Threat != NULL) {
         BtdpFreeDriverPath(&Threat->DriverPath);
-        ExFreeToNPagedLookasideList(&Internal->ThreatLookaside, Threat);
+        ExFreeToLookasideListEx(&Internal->ThreatLookaside, Threat);
     }
 }
 
@@ -705,11 +705,12 @@ BtdInitialize(
     ExInitializePushLock(&internal->Public.CallbackLock);
     ExInitializePushLock(&internal->PatternLock);
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &internal->ThreatLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(BTD_THREAT),
         BTD_POOL_TAG,
         0
@@ -823,13 +824,13 @@ BtdShutdown(
         entry = RemoveHeadList(&Detector->DetectedList);
         threat = CONTAINING_RECORD(entry, BTD_THREAT, ListEntry);
         BtdpFreeDriverPath(&threat->DriverPath);
-        ExFreeToNPagedLookasideList(&internal->ThreatLookaside, threat);
+        ExFreeToLookasideListEx(&internal->ThreatLookaside, threat);
     }
     InterlockedExchange(&Detector->DetectedCount, 0);
     KeReleaseSpinLock(&Detector->DetectedLock, oldIrql);
 
     if (internal->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&internal->ThreatLookaside);
+        ExDeleteLookasideListEx(&internal->ThreatLookaside);
         internal->LookasideInitialized = FALSE;
     }
 
@@ -1511,5 +1512,5 @@ BtdFreeThreat(
     }
 
     BtdpFreeDriverPath(&Threat->DriverPath);
-    ExFreeToNPagedLookasideList(&internal->ThreatLookaside, Threat);
+    ExFreeToLookasideListEx(&internal->ThreatLookaside, Threat);
 }

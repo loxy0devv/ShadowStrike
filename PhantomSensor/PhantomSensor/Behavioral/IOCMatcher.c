@@ -236,7 +236,7 @@ typedef struct _IOM_MATCHER_INTERNAL {
     // Lookaside lists for allocation (centralized if available)
     //
     PLL_LOOKASIDE IOCLookaside;
-    NPAGED_LOOKASIDE_LIST IOCLookasideFallback;
+    LOOKASIDE_LIST_EX IOCLookasideFallback;
     BOOLEAN LookasideInitialized;
     BOOLEAN UseManagedLookaside;
 
@@ -686,9 +686,9 @@ IomInitialize(
         }
 
         if (!matcher->UseManagedLookaside) {
-            ExInitializeNPagedLookasideList(
+            ExInitializeLookasideListEx(
                 &matcher->IOCLookasideFallback,
-                NULL, NULL, POOL_NX_ALLOCATION,
+                NULL, NULL, NonPagedPoolNx, 0,
                 sizeof(IOM_IOC_INTERNAL),
                 IOM_POOL_TAG_IOC, IOM_LOOKASIDE_DEPTH
             );
@@ -823,7 +823,7 @@ Cleanup:
                 }
                 matcher->IOCLookaside = NULL;
             } else {
-                ExDeleteNPagedLookasideList(&matcher->IOCLookasideFallback);
+                ExDeleteLookasideListEx(&matcher->IOCLookasideFallback);
             }
         }
 
@@ -1008,7 +1008,7 @@ IomShutdown(
             if (matcher->UseManagedLookaside && matcher->IOCLookaside != NULL) {
                 LlFree(matcher->IOCLookaside, ioc);
             } else {
-                ExFreeToNPagedLookasideList(&matcher->IOCLookasideFallback, ioc);
+                ExFreeToLookasideListEx(&matcher->IOCLookasideFallback, ioc);
             }
         } else {
             ExFreePoolWithTag(ioc, IOM_POOL_TAG_IOC);
@@ -1054,7 +1054,7 @@ IomShutdown(
             }
             matcher->IOCLookaside = NULL;
         } else {
-            ExDeleteNPagedLookasideList(&matcher->IOCLookasideFallback);
+            ExDeleteLookasideListEx(&matcher->IOCLookasideFallback);
         }
         matcher->LookasideInitialized = FALSE;
     }
@@ -1155,7 +1155,7 @@ IomLoadIOC(
     if (matcher->UseManagedLookaside && matcher->IOCLookaside != NULL) {
         newIOC = (PIOM_IOC_INTERNAL)LlAllocate(matcher->IOCLookaside);
     } else {
-        newIOC = (PIOM_IOC_INTERNAL)ExAllocateFromNPagedLookasideList(
+        newIOC = (PIOM_IOC_INTERNAL)ExAllocateFromLookasideListEx(
             &matcher->IOCLookasideFallback
         );
     }
@@ -2944,7 +2944,7 @@ IompCleanupExpiredIOCsWorker(
             if (Matcher->UseManagedLookaside && Matcher->IOCLookaside != NULL) {
                 LlFree(Matcher->IOCLookaside, ioc);
             } else {
-                ExFreeToNPagedLookasideList(&Matcher->IOCLookasideFallback, ioc);
+                ExFreeToLookasideListEx(&Matcher->IOCLookasideFallback, ioc);
             }
         } else {
             ExFreePoolWithTag(ioc, IOM_POOL_TAG_IOC);

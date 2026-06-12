@@ -147,7 +147,7 @@ typedef struct _SHADOWSTRIKE_REGISTRY_MONITOR {
     // Lookaside list for process context allocations (centralized if available)
     //
     PLL_LOOKASIDE ProcessCtxLookaside;
-    NPAGED_LOOKASIDE_LIST ProcessCtxLookasideFallback;
+    LOOKASIDE_LIST_EX ProcessCtxLookasideFallback;
     BOOLEAN LookasideInitialized;
     BOOLEAN UseManagedLookaside;
 
@@ -218,7 +218,7 @@ RegpFreeProcessContext(
     if (g_RegistryMonitor.UseManagedLookaside && g_RegistryMonitor.ProcessCtxLookaside != NULL) {
         LlFree(g_RegistryMonitor.ProcessCtxLookaside, Ctx);
     } else if (g_RegistryMonitor.LookasideInitialized) {
-        ExFreeToNPagedLookasideList(&g_RegistryMonitor.ProcessCtxLookasideFallback, Ctx);
+        ExFreeToLookasideListEx(&g_RegistryMonitor.ProcessCtxLookasideFallback, Ctx);
     } else {
         ExFreePoolWithTag(Ctx, REG_PROCCTX_TAG);
     }
@@ -485,9 +485,9 @@ ShadowStrikeInitializeRegistryMonitoring(
         }
 
         if (!g_RegistryMonitor.UseManagedLookaside) {
-            ExInitializeNPagedLookasideList(
+            ExInitializeLookasideListEx(
                 &g_RegistryMonitor.ProcessCtxLookasideFallback,
-                NULL, NULL, POOL_NX_ALLOCATION,
+                NULL, NULL, NonPagedPoolNx, 0,
                 sizeof(SHADOWSTRIKE_REG_PROCESS_CONTEXT),
                 REG_PROCCTX_TAG, 0
             );
@@ -602,7 +602,7 @@ ShadowStrikeCleanupRegistryMonitoring(
             }
             g_RegistryMonitor.ProcessCtxLookaside = NULL;
         } else {
-            ExDeleteNPagedLookasideList(&g_RegistryMonitor.ProcessCtxLookasideFallback);
+            ExDeleteLookasideListEx(&g_RegistryMonitor.ProcessCtxLookasideFallback);
         }
         g_RegistryMonitor.LookasideInitialized = FALSE;
     }
@@ -2374,7 +2374,7 @@ ShadowStrikeGetRegistryProcessContext(
     if (g_RegistryMonitor.UseManagedLookaside && g_RegistryMonitor.ProcessCtxLookaside != NULL) {
         newContext = (PSHADOWSTRIKE_REG_PROCESS_CONTEXT)LlAllocate(g_RegistryMonitor.ProcessCtxLookaside);
     } else if (g_RegistryMonitor.LookasideInitialized) {
-        newContext = (PSHADOWSTRIKE_REG_PROCESS_CONTEXT)ExAllocateFromNPagedLookasideList(
+        newContext = (PSHADOWSTRIKE_REG_PROCESS_CONTEXT)ExAllocateFromLookasideListEx(
             &g_RegistryMonitor.ProcessCtxLookasideFallback
         );
     } else {

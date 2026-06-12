@@ -102,8 +102,8 @@ typedef struct _FBE_ENGINE_STATE {
     //
     // Allocation
     //
-    NPAGED_LOOKASIDE_LIST EntryLookaside;
-    NPAGED_LOOKASIDE_LIST TrackerLookaside;
+    LOOKASIDE_LIST_EX EntryLookaside;
+    LOOKASIDE_LIST_EX TrackerLookaside;
 
     //
     // Backup file naming
@@ -390,21 +390,23 @@ FbeInitialize(VOID)
     //
     // Initialize lookaside lists
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_FbeState.EntryLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(FBE_BACKUP_ENTRY),
         FBE_ENTRY_POOL_TAG,
         0
         );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_FbeState.TrackerLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(FBE_PROCESS_TRACKER),
         FBE_POOL_TAG,
         0
@@ -525,8 +527,8 @@ FbeShutdown(VOID)
     //
     // Destroy lookaside lists
     //
-    ExDeleteNPagedLookasideList(&g_FbeState.EntryLookaside);
-    ExDeleteNPagedLookasideList(&g_FbeState.TrackerLookaside);
+    ExDeleteLookasideListEx(&g_FbeState.EntryLookaside);
+    ExDeleteLookasideListEx(&g_FbeState.TrackerLookaside);
 
     //
     // Cleanup push locks
@@ -1549,7 +1551,7 @@ FbepAllocateEntry(VOID)
 {
     PFBE_BACKUP_ENTRY Entry;
 
-    Entry = (PFBE_BACKUP_ENTRY)ExAllocateFromNPagedLookasideList(
+    Entry = (PFBE_BACKUP_ENTRY)ExAllocateFromLookasideListEx(
         &g_FbeState.EntryLookaside);
 
     if (Entry != NULL) {
@@ -1569,7 +1571,7 @@ FbepFreeEntry(
     _In_ PFBE_BACKUP_ENTRY Entry
     )
 {
-    ExFreeToNPagedLookasideList(&g_FbeState.EntryLookaside, Entry);
+    ExFreeToLookasideListEx(&g_FbeState.EntryLookaside, Entry);
 }
 
 // ============================================================================
@@ -1607,7 +1609,7 @@ FbepFindOrCreateTracker(
     //
     // Not found â€” allocate new tracker
     //
-    Tracker = (PFBE_PROCESS_TRACKER)ExAllocateFromNPagedLookasideList(
+    Tracker = (PFBE_PROCESS_TRACKER)ExAllocateFromLookasideListEx(
         &g_FbeState.TrackerLookaside);
 
     if (Tracker == NULL) {
@@ -1635,7 +1637,7 @@ FbepFindOrCreateTracker(
         if (Existing->ProcessId == ProcessId) {
             FltReleasePushLock(&g_FbeState.ProcessBuckets[ProcBucket].Lock);
             FltDeletePushLock(&Tracker->Lock);
-            ExFreeToNPagedLookasideList(&g_FbeState.TrackerLookaside, Tracker);
+            ExFreeToLookasideListEx(&g_FbeState.TrackerLookaside, Tracker);
             return Existing;
         }
     }
@@ -1685,7 +1687,7 @@ FbepFreeTracker(
     )
 {
     FltDeletePushLock(&Tracker->Lock);
-    ExFreeToNPagedLookasideList(&g_FbeState.TrackerLookaside, Tracker);
+    ExFreeToLookasideListEx(&g_FbeState.TrackerLookaside, Tracker);
 }
 
 // ============================================================================

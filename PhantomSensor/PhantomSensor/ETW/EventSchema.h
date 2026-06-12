@@ -724,7 +724,7 @@ typedef struct _ES_SCHEMA {
     EX_PUSH_LOCK ValueMapLock;      ///< Lock Level 1
 
     /// Lookaside list for event definitions
-    NPAGED_LOOKASIDE_LIST EventLookaside;
+    LOOKASIDE_LIST_EX EventLookaside;
     BOOLEAN LookasideInitialized;
 
     /// Statistics

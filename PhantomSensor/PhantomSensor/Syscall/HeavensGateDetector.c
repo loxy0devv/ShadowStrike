@@ -290,8 +290,8 @@ struct _HGD_DETECTOR {
     //
     // Lookaside lists
     //
-    NPAGED_LOOKASIDE_LIST TransitionLookaside;
-    NPAGED_LOOKASIDE_LIST ContextLookaside;
+    LOOKASIDE_LIST_EX TransitionLookaside;
+    LOOKASIDE_LIST_EX ContextLookaside;
     BOOLEAN LookasideInitialized;
 
     //
@@ -547,21 +547,23 @@ Return Value:
     //
     // Initialize lookaside lists
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &Internal->TransitionLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(HGD_TRANSITION_INTERNAL),
         HGD_POOL_TAG_TRANSITION,
         0
         );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &Internal->ContextLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(HGD_PROCESS_CONTEXT),
         HGD_POOL_TAG_CONTEXT,
         0
@@ -694,7 +696,7 @@ Arguments:
     while (!IsListEmpty(&Detector->TransitionList)) {
         Entry = RemoveHeadList(&Detector->TransitionList);
         Transition = CONTAINING_RECORD(Entry, HGD_TRANSITION_INTERNAL, ListEntry);
-        ExFreeToNPagedLookasideList(&Detector->TransitionLookaside, Transition);
+        ExFreeToLookasideListEx(&Detector->TransitionLookaside, Transition);
     }
     Detector->TransitionCount = 0;
 
@@ -704,7 +706,7 @@ Arguments:
     while (!IsListEmpty(&Detector->ProcessContextList)) {
         Entry = RemoveHeadList(&Detector->ProcessContextList);
         Context = CONTAINING_RECORD(Entry, HGD_PROCESS_CONTEXT, ListEntry);
-        ExFreeToNPagedLookasideList(&Detector->ContextLookaside, Context);
+        ExFreeToLookasideListEx(&Detector->ContextLookaside, Context);
     }
     Detector->ProcessContextCount = 0;
 
@@ -717,8 +719,8 @@ Arguments:
     // Delete lookaside lists
     //
     if (Detector->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&Detector->TransitionLookaside);
-        ExDeleteNPagedLookasideList(&Detector->ContextLookaside);
+        ExDeleteLookasideListEx(&Detector->TransitionLookaside);
+        ExDeleteLookasideListEx(&Detector->ContextLookaside);
     }
 
     TraceEvents(TRACE_LEVEL_INFORMATION, TRACE_FLAG_INIT,
@@ -1689,7 +1691,7 @@ HgdpAllocateProcessContext(
     PEPROCESS Process = NULL;
     NTSTATUS Status;
 
-    Context = (PHGD_PROCESS_CONTEXT)ExAllocateFromNPagedLookasideList(
+    Context = (PHGD_PROCESS_CONTEXT)ExAllocateFromLookasideListEx(
         &Detector->ContextLookaside
         );
 
@@ -1768,7 +1770,7 @@ HgdpFreeProcessContext(
         return;
     }
 
-    ExFreeToNPagedLookasideList(&Detector->ContextLookaside, Context);
+    ExFreeToLookasideListEx(&Detector->ContextLookaside, Context);
 }
 
 
@@ -1909,7 +1911,7 @@ HgdpAllocateTransitionInternal(
 {
     PHGD_TRANSITION_INTERNAL Transition;
 
-    Transition = (PHGD_TRANSITION_INTERNAL)ExAllocateFromNPagedLookasideList(
+    Transition = (PHGD_TRANSITION_INTERNAL)ExAllocateFromLookasideListEx(
         &Detector->TransitionLookaside
         );
 
@@ -1929,7 +1931,7 @@ HgdpFreeTransitionInternal(
     _In_ PHGD_TRANSITION_INTERNAL Transition
     )
 {
-    ExFreeToNPagedLookasideList(&Detector->TransitionLookaside, Transition);
+    ExFreeToLookasideListEx(&Detector->TransitionLookaside, Transition);
 }
 
 

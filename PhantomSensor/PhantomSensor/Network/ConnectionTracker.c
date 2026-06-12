@@ -120,9 +120,9 @@ typedef struct _CT_TRACKER_INTERNAL {
     //
     // Lookaside lists
     //
-    NPAGED_LOOKASIDE_LIST ConnectionLookaside;
-    NPAGED_LOOKASIDE_LIST ProcessContextLookaside;
-    NPAGED_LOOKASIDE_LIST FlowHashLookaside;
+    LOOKASIDE_LIST_EX ConnectionLookaside;
+    LOOKASIDE_LIST_EX ProcessContextLookaside;
+    LOOKASIDE_LIST_EX FlowHashLookaside;
     BOOLEAN LookasideInitialized;
 
     //
@@ -346,31 +346,34 @@ CtInitialize(
     //
     // Initialize lookaside lists
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &tracker->ConnectionLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(CT_CONNECTION),
         CT_POOL_TAG_CONN,
         CT_LOOKASIDE_DEPTH
     );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &tracker->ProcessContextLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(CT_PROCESS_CONTEXT),
         CT_POOL_TAG_PROC,
         64
     );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &tracker->FlowHashLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(CT_FLOW_HASH_ENTRY),
         CT_POOL_TAG_FLOW,
         CT_LOOKASIDE_DEPTH
@@ -487,9 +490,9 @@ CtInitialize(
 Cleanup:
     if (tracker != NULL) {
         if (tracker->LookasideInitialized) {
-            ExDeleteNPagedLookasideList(&tracker->ConnectionLookaside);
-            ExDeleteNPagedLookasideList(&tracker->ProcessContextLookaside);
-            ExDeleteNPagedLookasideList(&tracker->FlowHashLookaside);
+            ExDeleteLookasideListEx(&tracker->ConnectionLookaside);
+            ExDeleteLookasideListEx(&tracker->ProcessContextLookaside);
+            ExDeleteLookasideListEx(&tracker->FlowHashLookaside);
         }
         if (tracker->Public.ConnectionHash.Buckets != NULL) {
             ExFreePoolWithTag(tracker->Public.ConnectionHash.Buckets, CT_POOL_TAG_CONN);
@@ -568,7 +571,7 @@ CtShutdown(
                 {
                     PCT_FLOW_HASH_ENTRY fe = CONTAINING_RECORD(
                         entry, CT_FLOW_HASH_ENTRY, ListEntry);
-                    ExFreeToNPagedLookasideList(&tracker->FlowHashLookaside, fe);
+                    ExFreeToLookasideListEx(&tracker->FlowHashLookaside, fe);
                 }
             }
         }
@@ -664,13 +667,13 @@ CtShutdown(
     //
     if (tracker->LookasideInitialized) {
         //
-        // Memory barrier ensures all pending ExFreeToNPagedLookasideList calls
+        // Memory barrier ensures all pending ExFreeToLookasideListEx calls
         // complete before we tear down the lookaside structures.
         //
         MemoryBarrier();
-        ExDeleteNPagedLookasideList(&tracker->ConnectionLookaside);
-        ExDeleteNPagedLookasideList(&tracker->ProcessContextLookaside);
-        ExDeleteNPagedLookasideList(&tracker->FlowHashLookaside);
+        ExDeleteLookasideListEx(&tracker->ConnectionLookaside);
+        ExDeleteLookasideListEx(&tracker->ProcessContextLookaside);
+        ExDeleteLookasideListEx(&tracker->FlowHashLookaside);
         tracker->LookasideInitialized = FALSE;
     }
 
@@ -750,7 +753,7 @@ CtCreateConnection(
     //
     // Allocate connection from lookaside
     //
-    connection = (PCT_CONNECTION)ExAllocateFromNPagedLookasideList(
+    connection = (PCT_CONNECTION)ExAllocateFromLookasideListEx(
         &tracker->ConnectionLookaside
     );
 
@@ -764,12 +767,12 @@ CtCreateConnection(
     //
     // Allocate flow hash entry
     //
-    flowEntry = (PCT_FLOW_HASH_ENTRY)ExAllocateFromNPagedLookasideList(
+    flowEntry = (PCT_FLOW_HASH_ENTRY)ExAllocateFromLookasideListEx(
         &tracker->FlowHashLookaside
     );
 
     if (flowEntry == NULL) {
-        ExFreeToNPagedLookasideList(&tracker->ConnectionLookaside, connection);
+        ExFreeToLookasideListEx(&tracker->ConnectionLookaside, connection);
         InterlockedDecrement(&Tracker->ConnectionCount);
         return STATUS_INSUFFICIENT_RESOURCES;
     }
@@ -852,8 +855,8 @@ CtCreateConnection(
             if (connection->ProcessName.Buffer != NULL) {
                 ExFreePoolWithTag(connection->ProcessName.Buffer, CT_POOL_TAG_CONN);
             }
-            ExFreeToNPagedLookasideList(&tracker->FlowHashLookaside, flowEntry);
-            ExFreeToNPagedLookasideList(&tracker->ConnectionLookaside, connection);
+            ExFreeToLookasideListEx(&tracker->FlowHashLookaside, flowEntry);
+            ExFreeToLookasideListEx(&tracker->ConnectionLookaside, connection);
             InterlockedDecrement(&Tracker->ConnectionCount);
             return STATUS_QUOTA_EXCEEDED;
         }
@@ -942,8 +945,8 @@ CtCreateConnection(
         if (connection->ProcessName.Buffer != NULL) {
             ExFreePoolWithTag(connection->ProcessName.Buffer, CT_POOL_TAG_CONN);
         }
-        ExFreeToNPagedLookasideList(&tracker->FlowHashLookaside, flowEntry);
-        ExFreeToNPagedLookasideList(&tracker->ConnectionLookaside, connection);
+        ExFreeToLookasideListEx(&tracker->FlowHashLookaside, flowEntry);
+        ExFreeToLookasideListEx(&tracker->ConnectionLookaside, connection);
         InterlockedDecrement(&Tracker->ConnectionCount);
         return STATUS_DUPLICATE_OBJECTID;
     }
@@ -1934,7 +1937,7 @@ CtpGetOrCreateProcessContext(
     //
     // Create new context
     //
-    context = (PCT_PROCESS_CONTEXT)ExAllocateFromNPagedLookasideList(
+    context = (PCT_PROCESS_CONTEXT)ExAllocateFromLookasideListEx(
         &Tracker->ProcessContextLookaside
     );
 
@@ -1994,7 +1997,7 @@ CtpGetOrCreateProcessContext(
             if (context->ProcessName.Buffer != NULL) {
                 ExFreePoolWithTag(context->ProcessName.Buffer, CT_POOL_TAG_PROC);
             }
-            ExFreeToNPagedLookasideList(&Tracker->ProcessContextLookaside, context);
+            ExFreeToLookasideListEx(&Tracker->ProcessContextLookaside, context);
 
             InterlockedIncrement(&ctx->RefCount);
             return ctx;
@@ -2056,7 +2059,7 @@ CtpFreeProcessContext(
     }
 
     if (Tracker->LookasideInitialized) {
-        ExFreeToNPagedLookasideList(&Tracker->ProcessContextLookaside, Context);
+        ExFreeToLookasideListEx(&Tracker->ProcessContextLookaside, Context);
     } else {
         ExFreePoolWithTag(Context, CT_POOL_TAG_PROC);
     }
@@ -2227,7 +2230,7 @@ CtpRemoveConnectionFromLists(
     ExReleasePushLockExclusive(&Tracker->Public.FlowHash.Lock);
 
     if (flowEntry != NULL) {
-        ExFreeToNPagedLookasideList(&Tracker->FlowHashLookaside, flowEntry);
+        ExFreeToLookasideListEx(&Tracker->FlowHashLookaside, flowEntry);
     }
 
     //
@@ -2298,7 +2301,7 @@ CtpFreeConnection(
     // If FALSE, we're in teardown â€" use ExFreePoolWithTag instead.
     //
     if (Tracker->LookasideInitialized) {
-        ExFreeToNPagedLookasideList(&Tracker->ConnectionLookaside, Connection);
+        ExFreeToLookasideListEx(&Tracker->ConnectionLookaside, Connection);
     } else {
         ExFreePoolWithTag(Connection, CT_POOL_TAG_CONN);
     }

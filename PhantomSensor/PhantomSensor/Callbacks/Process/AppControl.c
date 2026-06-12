@@ -82,8 +82,8 @@ typedef struct _AC_STATE {
     //
     // Allocation
     //
-    NPAGED_LOOKASIDE_LIST HashRuleLookaside;
-    NPAGED_LOOKASIDE_LIST PathRuleLookaside;
+    LOOKASIDE_LIST_EX HashRuleLookaside;
+    LOOKASIDE_LIST_EX PathRuleLookaside;
 
 } AC_STATE, *PAC_STATE;
 
@@ -201,21 +201,23 @@ AcInitialize(VOID)
     //
     g_AcState.PolicyMode = AcMode_Audit;
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_AcState.HashRuleLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(AC_HASH_RULE),
         AC_RULE_POOL_TAG,
         0
         );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_AcState.PathRuleLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(AC_PATH_RULE),
         AC_RULE_POOL_TAG,
         0
@@ -257,7 +259,7 @@ AcShutdown(VOID)
             ListEntry = RemoveHeadList(&g_AcState.HashBuckets[i].Head);
             PAC_HASH_RULE Rule = CONTAINING_RECORD(
                 ListEntry, AC_HASH_RULE, Link);
-            ExFreeToNPagedLookasideList(&g_AcState.HashRuleLookaside, Rule);
+            ExFreeToLookasideListEx(&g_AcState.HashRuleLookaside, Rule);
             Freed++;
         }
         FltReleasePushLock(&g_AcState.HashBuckets[i].Lock);
@@ -275,7 +277,7 @@ AcShutdown(VOID)
             ListEntry = RemoveHeadList(&g_AcState.PathAllowList);
             PAC_PATH_RULE Rule = CONTAINING_RECORD(
                 ListEntry, AC_PATH_RULE, Link);
-            ExFreeToNPagedLookasideList(&g_AcState.PathRuleLookaside, Rule);
+            ExFreeToLookasideListEx(&g_AcState.PathRuleLookaside, Rule);
             Freed++;
         }
         Freed = 0;
@@ -284,15 +286,15 @@ AcShutdown(VOID)
             ListEntry = RemoveHeadList(&g_AcState.PathBlockList);
             PAC_PATH_RULE Rule = CONTAINING_RECORD(
                 ListEntry, AC_PATH_RULE, Link);
-            ExFreeToNPagedLookasideList(&g_AcState.PathRuleLookaside, Rule);
+            ExFreeToLookasideListEx(&g_AcState.PathRuleLookaside, Rule);
             Freed++;
         }
     }
     FltReleasePushLock(&g_AcState.PathLock);
     FltDeletePushLock(&g_AcState.PathLock);
 
-    ExDeleteNPagedLookasideList(&g_AcState.HashRuleLookaside);
-    ExDeleteNPagedLookasideList(&g_AcState.PathRuleLookaside);
+    ExDeleteLookasideListEx(&g_AcState.HashRuleLookaside);
+    ExDeleteLookasideListEx(&g_AcState.PathRuleLookaside);
 
     //
     // Reset state to UNINITIALIZED so a subsequent AcInitialize() can succeed
@@ -815,7 +817,7 @@ AcpLearnHashRule(
     //
     // Allocate first to keep critical section short.
     //
-    NewRule = (PAC_HASH_RULE)ExAllocateFromNPagedLookasideList(
+    NewRule = (PAC_HASH_RULE)ExAllocateFromLookasideListEx(
         &g_AcState.HashRuleLookaside);
     if (NewRule == NULL) {
         return;
@@ -865,7 +867,7 @@ AcpLearnHashRule(
     FltReleasePushLock(&g_AcState.HashBuckets[Bucket].Lock);
 
     if (Duplicate) {
-        ExFreeToNPagedLookasideList(&g_AcState.HashRuleLookaside, NewRule);
+        ExFreeToLookasideListEx(&g_AcState.HashRuleLookaside, NewRule);
         return;
     }
 

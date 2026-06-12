@@ -201,7 +201,7 @@ ShadowReleaseKtmTransaction(
         // otherwise fall back to direct pool free (shutdown path).
         //
         if (g_KtmMonitorState.TransactionLookasideInitialized) {
-            ExFreeToNPagedLookasideList(
+            ExFreeToLookasideListEx(
                 &g_KtmMonitorState.TransactionLookaside, Transaction);
         } else {
             ExFreePoolWithTag(Transaction, SHADOW_KTM_TRANSACTION_TAG);
@@ -666,18 +666,18 @@ ShadowInitializeKtmMonitor(
     //
     // Initialize lookaside lists for high-performance allocation
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &state->TransactionLookaside,
-        NULL, NULL, 0,
+        NULL, NULL, NonPagedPoolNx, 0,
         sizeof(SHADOW_KTM_TRANSACTION),
         SHADOW_KTM_TRANSACTION_TAG,
         0
     );
     state->TransactionLookasideInitialized = TRUE;
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &state->AlertLookaside,
-        NULL, NULL, 0,
+        NULL, NULL, NonPagedPoolNx, 0,
         sizeof(SHADOW_KTM_ALERT),
         SHADOW_KTM_ALERT_TAG,
         0
@@ -813,12 +813,12 @@ ShadowCleanupKtmMonitor(
     //
     if (state->TransactionLookasideInitialized) {
         state->TransactionLookasideInitialized = FALSE;
-        ExDeleteNPagedLookasideList(&state->TransactionLookaside);
+        ExDeleteLookasideListEx(&state->TransactionLookaside);
     }
 
     if (state->AlertLookasideInitialized) {
         state->AlertLookasideInitialized = FALSE;
-        ExDeleteNPagedLookasideList(&state->AlertLookaside);
+        ExDeleteLookasideListEx(&state->AlertLookaside);
     }
 
     //
@@ -981,7 +981,7 @@ ShadowTrackTransaction(
     // Allocate from lookaside list (NonPagedPool, pre-sized)
     //
     if (state->TransactionLookasideInitialized) {
-        transaction = (PSHADOW_KTM_TRANSACTION)ExAllocateFromNPagedLookasideList(
+        transaction = (PSHADOW_KTM_TRANSACTION)ExAllocateFromLookasideListEx(
             &state->TransactionLookaside
         );
     } else {
@@ -1514,7 +1514,7 @@ ShadowQueueKtmAlert(
     // Allocate from lookaside (NonPagedPool â€” safe at DISPATCH)
     //
     if (state->AlertLookasideInitialized) {
-        alert = (PSHADOW_KTM_ALERT)ExAllocateFromNPagedLookasideList(
+        alert = (PSHADOW_KTM_ALERT)ExAllocateFromLookasideListEx(
             &state->AlertLookaside
         );
     } else {
@@ -1565,7 +1565,7 @@ ShadowQueueKtmAlert(
         state->AlertCount--;
 
         if (state->AlertLookasideInitialized) {
-            ExFreeToNPagedLookasideList(&state->AlertLookaside, oldAlert);
+            ExFreeToLookasideListEx(&state->AlertLookaside, oldAlert);
         } else {
             ExFreePoolWithTag(oldAlert, SHADOW_KTM_ALERT_TAG);
         }
@@ -2186,7 +2186,7 @@ ShadowCleanupKtmAlertQueue(
         state->AlertCount--;
 
         if (state->AlertLookasideInitialized) {
-            ExFreeToNPagedLookasideList(&state->AlertLookaside, alert);
+            ExFreeToLookasideListEx(&state->AlertLookaside, alert);
         } else {
             ExFreePoolWithTag(alert, SHADOW_KTM_ALERT_TAG);
         }

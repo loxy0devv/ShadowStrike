@@ -179,7 +179,7 @@ typedef struct _SH_FRAMEWORK_INTERNAL {
     volatile LONG ShuttingDown;
 
     /** Lookaside list for hook entry allocations */
-    NPAGED_LOOKASIDE_LIST HookLookaside;
+    LOOKASIDE_LIST_EX HookLookaside;
 
     /** TRUE after lookaside is initialized (for cleanup ordering) */
     BOOLEAN LookasideInitialized;
@@ -505,7 +505,7 @@ ShpFreeHookEntry(
     RtlSecureZeroMemory(Hook, sizeof(SH_HOOK_INTERNAL));
 
     if (Fw->LookasideInitialized) {
-        ExFreeToNPagedLookasideList(&Fw->HookLookaside, Hook);
+        ExFreeToLookasideListEx(&Fw->HookLookaside, Hook);
     } else {
         ShadowStrikeFreePoolWithTag(Hook, SH_HOOK_TAG);
     }
@@ -624,11 +624,10 @@ ShInitialize(
     ExInitializeRundownProtection(&fw->DispatchRundownRef);
 
     /* Initialize lookaside list for hook allocations */
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &fw->HookLookaside,
         NULL,                               /* AllocateFunction â€” use default */
-        NULL,                               /* FreeFunction â€” use default */
-        POOL_NX_ALLOCATION,                 /* NX enforcement */
+        NULL,                               NonPagedPoolNx,                               0,                 /* NX enforcement */
         sizeof(SH_HOOK_INTERNAL),
         SH_HOOK_TAG,
         (USHORT)SH_HOOK_LOOKASIDE_DEPTH);
@@ -740,7 +739,7 @@ ShShutdown(
      * Must happen after all hooks are freed back to it.
      */
     if (fw->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&fw->HookLookaside);
+        ExDeleteLookasideListEx(&fw->HookLookaside);
         fw->LookasideInitialized = FALSE;
     }
 
@@ -807,7 +806,7 @@ ShRegisterHook(
     }
 
     /* Allocate hook entry from lookaside */
-    newHook = (PSH_HOOK_INTERNAL)ExAllocateFromNPagedLookasideList(
+    newHook = (PSH_HOOK_INTERNAL)ExAllocateFromLookasideListEx(
         &fw->HookLookaside);
 
     if (newHook == NULL) {
@@ -839,7 +838,7 @@ ShRegisterHook(
         ExReleasePushLockExclusive(&fw->HookLock);
         KeLeaveCriticalRegion();
 
-        ExFreeToNPagedLookasideList(&fw->HookLookaside, newHook);
+        ExFreeToLookasideListEx(&fw->HookLookaside, newHook);
         return STATUS_OBJECTID_EXISTS;
     }
 
@@ -848,7 +847,7 @@ ShRegisterHook(
         ExReleasePushLockExclusive(&fw->HookLock);
         KeLeaveCriticalRegion();
 
-        ExFreeToNPagedLookasideList(&fw->HookLookaside, newHook);
+        ExFreeToLookasideListEx(&fw->HookLookaside, newHook);
         return STATUS_QUOTA_EXCEEDED;
     }
 

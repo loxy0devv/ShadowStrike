@@ -3519,7 +3519,7 @@ ShadowStrikeAllocateMessageBuffer(
         // Allocate from lookaside list
         //
         header = (PSHADOWSTRIKE_MESSAGE_BUFFER_HEADER)
-            ExAllocateFromNPagedLookasideList(&g_DriverData.MessageLookaside);
+            ExAllocateFromLookasideListEx(&g_DriverData.MessageLookaside);
 
         if (header != NULL) {
             header->Magic = SHADOWSTRIKE_BUFFER_MAGIC;
@@ -3589,7 +3589,7 @@ ShadowStrikeFreeMessageBuffer(
     //
     if (header->AllocationSource == SHADOWSTRIKE_ALLOC_LOOKASIDE) {
         if (g_DriverData.LookasideInitialized) {
-            ExFreeToNPagedLookasideList(&g_DriverData.MessageLookaside, header);
+            ExFreeToLookasideListEx(&g_DriverData.MessageLookaside, header);
         } else {
             //
             // Lookaside was deleted - fall back to pool free

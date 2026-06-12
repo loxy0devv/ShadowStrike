@@ -292,7 +292,7 @@ typedef struct _CO_CACHE {
     volatile LONG EntryCount;
     volatile LONG64 MemoryUsage;
 
-    NPAGED_LOOKASIDE_LIST EntryLookaside;
+    LOOKASIDE_LIST_EX EntryLookaside;
     BOOLEAN LookasideInitialized;
 
     CO_CACHE_STATS Stats;

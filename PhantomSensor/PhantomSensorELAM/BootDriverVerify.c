@@ -93,7 +93,7 @@ typedef struct _BDV_VERIFIER_INTERNAL {
     volatile LONG KnownBadCount;
 
     // Lookaside list for driver info allocations
-    NPAGED_LOOKASIDE_LIST DriverInfoLookaside;
+    LOOKASIDE_LIST_EX DriverInfoLookaside;
     BOOLEAN LookasideInitialized;
 
 } BDV_VERIFIER_INTERNAL, *PBDV_VERIFIER_INTERNAL;
@@ -1053,11 +1053,12 @@ BdvInitialize(
     }
 
     // Initialize lookaside list for driver info structures
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &internal->DriverInfoLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(BDV_DRIVER_INFO),
         BDV_POOL_TAG,
         0
@@ -1078,7 +1079,7 @@ Cleanup:
         BdvpDestroyBloomFilter(&internal->BadBloomFilter);
 
         if (internal->LookasideInitialized) {
-            ExDeleteNPagedLookasideList(&internal->DriverInfoLookaside);
+            ExDeleteLookasideListEx(&internal->DriverInfoLookaside);
         }
 
         ExFreePoolWithTag(internal, BDV_POOL_TAG);
@@ -1138,7 +1139,7 @@ BdvShutdown(
         entry = RemoveHeadList(&Verifier->VerifiedList);
         driverInfo = CONTAINING_RECORD(entry, BDV_DRIVER_INFO, ListEntry);
         BdvpFreeDriverInfoPaths(driverInfo);
-        ExFreeToNPagedLookasideList(&internal->DriverInfoLookaside, driverInfo);
+        ExFreeToLookasideListEx(&internal->DriverInfoLookaside, driverInfo);
     }
     KeReleaseSpinLock(&Verifier->VerifiedLock, oldIrql);
 
@@ -1148,7 +1149,7 @@ BdvShutdown(
 
     // Delete lookaside list
     if (internal->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&internal->DriverInfoLookaside);
+        ExDeleteLookasideListEx(&internal->DriverInfoLookaside);
         internal->LookasideInitialized = FALSE;
     }
 
@@ -1277,7 +1278,7 @@ BdvVerifyDriver(
     }
 
     // Allocate driver info from lookaside
-    driverInfo = (PBDV_DRIVER_INFO)ExAllocateFromNPagedLookasideList(
+    driverInfo = (PBDV_DRIVER_INFO)ExAllocateFromLookasideListEx(
         &internal->DriverInfoLookaside
         );
 
@@ -1348,7 +1349,7 @@ BdvVerifyDriver(
 Cleanup:
     if (driverInfo != NULL) {
         BdvpFreeDriverInfoPaths(driverInfo);
-        ExFreeToNPagedLookasideList(&internal->DriverInfoLookaside, driverInfo);
+        ExFreeToLookasideListEx(&internal->DriverInfoLookaside, driverInfo);
     }
     // Roll back the slot reservation we took at function entry — the entry
     // was never inserted into the VerifiedList.
@@ -1557,5 +1558,5 @@ BdvFreeDriverInfo(
     BdvpFreeDriverInfoPaths(Info);
 
     // Return to lookaside
-    ExFreeToNPagedLookasideList(&internal->DriverInfoLookaside, Info);
+    ExFreeToLookasideListEx(&internal->DriverInfoLookaside, Info);
 }

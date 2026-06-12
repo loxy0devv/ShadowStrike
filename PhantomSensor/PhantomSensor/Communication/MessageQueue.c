@@ -152,7 +152,7 @@ static volatile LONG g_PendingCompletionCount = 0;
 /**
  * @brief Lookaside list for pending completions.
  */
-static NPAGED_LOOKASIDE_LIST g_PendingCompletionLookaside;
+static LOOKASIDE_LIST_EX g_PendingCompletionLookaside;
 static BOOLEAN g_PendingCompletionLookasideInitialized = FALSE;
 
 // ============================================================================
@@ -344,11 +344,12 @@ MqInitialize(
     //
     // Initialize message lookaside list
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_MqGlobals.MessageLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         MQ_MESSAGE_ALLOC_SIZE(MQ_LOOKASIDE_THRESHOLD),
         MQ_POOL_TAG_MESSAGE,
         0
@@ -362,11 +363,12 @@ MqInitialize(
     KeInitializeSpinLock(&g_PendingCompletionLock);
     g_PendingCompletionCount = 0;
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_PendingCompletionLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(MQ_PENDING_COMPLETION),
         MQ_POOL_TAG_COMPLETION,
         0
@@ -439,12 +441,12 @@ Cleanup:
     // Cleanup on failure
     //
     if (g_MqGlobals.MessageLookasideInitialized) {
-        ExDeleteNPagedLookasideList(&g_MqGlobals.MessageLookaside);
+        ExDeleteLookasideListEx(&g_MqGlobals.MessageLookaside);
         g_MqGlobals.MessageLookasideInitialized = FALSE;
     }
 
     if (g_PendingCompletionLookasideInitialized) {
-        ExDeleteNPagedLookasideList(&g_PendingCompletionLookaside);
+        ExDeleteLookasideListEx(&g_PendingCompletionLookaside);
         g_PendingCompletionLookasideInitialized = FALSE;
     }
 
@@ -583,7 +585,7 @@ MqShutdown(
         // a parallel waiter on AllCompletionsReleasedEvent could observe the
         // condition, return from MqShutdown's wait below, and proceed to
         // delete the completion lookaside while we are still about to call
-        // ExFreeToNPagedLookasideList -> pool corruption / BSOD.
+        // ExFreeToLookasideListEx -> pool corruption / BSOD.
         //
         while (!IsListEmpty(&orphanedCompletions)) {
             orphanEntry = RemoveHeadList(&orphanedCompletions);
@@ -601,7 +603,7 @@ MqShutdown(
             // MqpReleasePendingCompletion for defense-in-depth.
             //
             if (g_PendingCompletionLookasideInitialized) {
-                ExFreeToNPagedLookasideList(&g_PendingCompletionLookaside, orphanCompletion);
+                ExFreeToLookasideListEx(&g_PendingCompletionLookaside, orphanCompletion);
             }
 
             //
@@ -715,13 +717,13 @@ MqShutdown(
     if (g_MqGlobals.MessageLookasideInitialized) {
         g_MqGlobals.MessageLookasideInitialized = FALSE;
         KeMemoryBarrier();
-        ExDeleteNPagedLookasideList(&g_MqGlobals.MessageLookaside);
+        ExDeleteLookasideListEx(&g_MqGlobals.MessageLookaside);
     }
 
     if (g_PendingCompletionLookasideInitialized) {
         g_PendingCompletionLookasideInitialized = FALSE;
         KeMemoryBarrier();
-        ExDeleteNPagedLookasideList(&g_PendingCompletionLookaside);
+        ExDeleteLookasideListEx(&g_PendingCompletionLookaside);
     }
 
     MQ_LOG_INFO("Final stats: Enqueued=%llu, Dequeued=%llu, Dropped=%llu",
@@ -1987,7 +1989,7 @@ MqpAllocateMessage(
     // Use lookaside for small messages
     //
     if (DataSize <= MQ_LOOKASIDE_THRESHOLD) {
-        message = (PQUEUED_MESSAGE)ExAllocateFromNPagedLookasideList(&g_MqGlobals.MessageLookaside);
+        message = (PQUEUED_MESSAGE)ExAllocateFromLookasideListEx(&g_MqGlobals.MessageLookaside);
         if (message != NULL) {
             RtlZeroMemory(message, MQ_MESSAGE_ALLOC_SIZE(MQ_LOOKASIDE_THRESHOLD));
             message->AllocSource = MqAllocSource_Lookaside;
@@ -2036,7 +2038,7 @@ MqpFreeMessageInternal(
     switch (Message->AllocSource) {
     case MqAllocSource_Lookaside:
         if (g_MqGlobals.MessageLookasideInitialized) {
-            ExFreeToNPagedLookasideList(&g_MqGlobals.MessageLookaside, Message);
+            ExFreeToLookasideListEx(&g_MqGlobals.MessageLookaside, Message);
         }
         break;
 
@@ -2156,7 +2158,7 @@ MqpAllocatePendingCompletion(
         return NULL;
     }
 
-    completion = (PMQ_PENDING_COMPLETION)ExAllocateFromNPagedLookasideList(&g_PendingCompletionLookaside);
+    completion = (PMQ_PENDING_COMPLETION)ExAllocateFromLookasideListEx(&g_PendingCompletionLookaside);
     if (completion != NULL) {
         RtlZeroMemory(completion, sizeof(MQ_PENDING_COMPLETION));
         completion->Magic = MQ_COMPLETION_MAGIC;
@@ -2195,7 +2197,7 @@ MqpReleasePendingCompletion(
         // decrement OutstandingCompletions. If we decremented first and hit
         // zero, MqShutdown's wait on AllCompletionsReleasedEvent would
         // unblock and proceed to delete the completion lookaside -- racing
-        // with our pending ExFreeToNPagedLookasideList call below, which
+        // with our pending ExFreeToLookasideListEx call below, which
         // would corrupt the pool.
         //
         Completion->Magic = 0;  // Invalidate
@@ -2206,7 +2208,7 @@ MqpReleasePendingCompletion(
         }
 
         if (g_PendingCompletionLookasideInitialized) {
-            ExFreeToNPagedLookasideList(&g_PendingCompletionLookaside, Completion);
+            ExFreeToLookasideListEx(&g_PendingCompletionLookaside, Completion);
         }
 
         //
@@ -2341,7 +2343,7 @@ MqpFreeUnregisteredCompletion(
     //
 
     if (g_PendingCompletionLookasideInitialized) {
-        ExFreeToNPagedLookasideList(&g_PendingCompletionLookaside, Completion);
+        ExFreeToLookasideListEx(&g_PendingCompletionLookaside, Completion);
     }
 }
 

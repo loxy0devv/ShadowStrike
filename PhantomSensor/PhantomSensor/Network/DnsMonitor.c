@@ -46,7 +46,7 @@ Performance Characteristics:
 - O(1) transaction ID lookup via hash table
 - O(1) domain cache lookup via hash table
 - Lock-free statistics using InterlockedXxx
-- NPAGED_LOOKASIDE_LIST for frequent allocations
+- LOOKASIDE_LIST_EX for frequent allocations
 - EX_PUSH_LOCK for reader-writer synchronization
 - Configurable cache sizes and TTLs
 
@@ -259,10 +259,10 @@ struct _DNS_MONITOR {
     //
     // Lookaside lists
     //
-    NPAGED_LOOKASIDE_LIST QueryLookaside;
-    NPAGED_LOOKASIDE_LIST DomainCacheLookaside;
-    NPAGED_LOOKASIDE_LIST ProcessContextLookaside;
-    NPAGED_LOOKASIDE_LIST TunnelContextLookaside;
+    LOOKASIDE_LIST_EX QueryLookaside;
+    LOOKASIDE_LIST_EX DomainCacheLookaside;
+    LOOKASIDE_LIST_EX ProcessContextLookaside;
+    LOOKASIDE_LIST_EX TunnelContextLookaside;
     BOOLEAN LookasideInitialized;
 
     //
@@ -760,23 +760,23 @@ DnsInitialize(
     //
     // Initialize lookaside lists
     //
-    ExInitializeNPagedLookasideList(
-        &monitor->QueryLookaside, NULL, NULL, 0,
+    ExInitializeLookasideListEx(
+        &monitor->QueryLookaside, NULL, NULL, NonPagedPoolNx, 0,
         sizeof(DNS_QUERY), DNS_POOL_TAG_QUERY, 0
     );
 
-    ExInitializeNPagedLookasideList(
-        &monitor->DomainCacheLookaside, NULL, NULL, 0,
+    ExInitializeLookasideListEx(
+        &monitor->DomainCacheLookaside, NULL, NULL, NonPagedPoolNx, 0,
         sizeof(DNS_DOMAIN_CACHE), DNS_POOL_TAG_CACHE, 0
     );
 
-    ExInitializeNPagedLookasideList(
-        &monitor->ProcessContextLookaside, NULL, NULL, 0,
+    ExInitializeLookasideListEx(
+        &monitor->ProcessContextLookaside, NULL, NULL, NonPagedPoolNx, 0,
         sizeof(DNS_PROCESS_CONTEXT), DNS_POOL_TAG, 0
     );
 
-    ExInitializeNPagedLookasideList(
-        &monitor->TunnelContextLookaside, NULL, NULL, 0,
+    ExInitializeLookasideListEx(
+        &monitor->TunnelContextLookaside, NULL, NULL, NonPagedPoolNx, 0,
         sizeof(DNS_TUNNEL_CONTEXT), DNS_POOL_TAG, 0
     );
 
@@ -888,10 +888,10 @@ Cleanup:
             monitor->CleanupThread = NULL;
         }
         if (monitor->LookasideInitialized) {
-            ExDeleteNPagedLookasideList(&monitor->QueryLookaside);
-            ExDeleteNPagedLookasideList(&monitor->DomainCacheLookaside);
-            ExDeleteNPagedLookasideList(&monitor->ProcessContextLookaside);
-            ExDeleteNPagedLookasideList(&monitor->TunnelContextLookaside);
+            ExDeleteLookasideListEx(&monitor->QueryLookaside);
+            ExDeleteLookasideListEx(&monitor->DomainCacheLookaside);
+            ExDeleteLookasideListEx(&monitor->ProcessContextLookaside);
+            ExDeleteLookasideListEx(&monitor->TunnelContextLookaside);
         }
         if (monitor->TransactionHash.Buckets != NULL) {
             ExFreePoolWithTag(monitor->TransactionHash.Buckets, DNS_POOL_TAG);
@@ -987,7 +987,7 @@ DnsShutdown(
         }
 
         if (Monitor->LookasideInitialized) {
-            ExFreeToNPagedLookasideList(&Monitor->QueryLookaside, query);
+            ExFreeToLookasideListEx(&Monitor->QueryLookaside, query);
         }
     }
 
@@ -1005,7 +1005,7 @@ DnsShutdown(
         RemoveEntryList(&domainEntry->HashEntry);
 
         if (Monitor->LookasideInitialized) {
-            ExFreeToNPagedLookasideList(&Monitor->DomainCacheLookaside, domainEntry);
+            ExFreeToLookasideListEx(&Monitor->DomainCacheLookaside, domainEntry);
         }
     }
 
@@ -1021,7 +1021,7 @@ DnsShutdown(
         processCtx = CONTAINING_RECORD(entry, DNS_PROCESS_CONTEXT, ListEntry);
 
         if (Monitor->LookasideInitialized) {
-            ExFreeToNPagedLookasideList(&Monitor->ProcessContextLookaside, processCtx);
+            ExFreeToLookasideListEx(&Monitor->ProcessContextLookaside, processCtx);
         }
     }
 
@@ -1038,7 +1038,7 @@ DnsShutdown(
         RemoveEntryList(&tunnelCtx->HashEntry);
 
         if (Monitor->LookasideInitialized) {
-            ExFreeToNPagedLookasideList(&Monitor->TunnelContextLookaside, tunnelCtx);
+            ExFreeToLookasideListEx(&Monitor->TunnelContextLookaside, tunnelCtx);
         }
     }
 
@@ -1048,10 +1048,10 @@ DnsShutdown(
     // Free lookaside lists
     //
     if (Monitor->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&Monitor->QueryLookaside);
-        ExDeleteNPagedLookasideList(&Monitor->DomainCacheLookaside);
-        ExDeleteNPagedLookasideList(&Monitor->ProcessContextLookaside);
-        ExDeleteNPagedLookasideList(&Monitor->TunnelContextLookaside);
+        ExDeleteLookasideListEx(&Monitor->QueryLookaside);
+        ExDeleteLookasideListEx(&Monitor->DomainCacheLookaside);
+        ExDeleteLookasideListEx(&Monitor->ProcessContextLookaside);
+        ExDeleteLookasideListEx(&Monitor->TunnelContextLookaside);
     }
 
     //
@@ -1148,7 +1148,7 @@ Routine Description:
     // this makes RefCount 0 and we can free immediately.
     //
     if (InterlockedDecrement(&processCtx->RefCount) == 0) {
-        ExFreeToNPagedLookasideList(&Monitor->ProcessContextLookaside, processCtx);
+        ExFreeToLookasideListEx(&Monitor->ProcessContextLookaside, processCtx);
     }
     // If RefCount > 0, an in-flight operation still has a reference.
     // DnspDereferenceProcessContext will see the context is unlinked
@@ -2258,7 +2258,7 @@ DnspParseQuery(
         return STATUS_INVALID_NETWORK_RESPONSE;
     }
 
-    query = (PDNS_QUERY)ExAllocateFromNPagedLookasideList(&Monitor->QueryLookaside);
+    query = (PDNS_QUERY)ExAllocateFromLookasideListEx(&Monitor->QueryLookaside);
     if (query == NULL) {
         return STATUS_INSUFFICIENT_RESOURCES;
     }
@@ -2287,14 +2287,14 @@ DnspParseQuery(
     );
 
     if (!NT_SUCCESS(status)) {
-        ExFreeToNPagedLookasideList(&Monitor->QueryLookaside, query);
+        ExFreeToLookasideListEx(&Monitor->QueryLookaside, query);
         return status;
     }
 
     offset += bytesConsumed;
 
     if (offset + sizeof(DNS_QUESTION_FOOTER) > PacketSize) {
-        ExFreeToNPagedLookasideList(&Monitor->QueryLookaside, query);
+        ExFreeToLookasideListEx(&Monitor->QueryLookaside, query);
         return STATUS_INVALID_NETWORK_RESPONSE;
     }
 
@@ -2889,7 +2889,7 @@ DnspGetOrCreateTunnelContext(
         return context;
     }
 
-    context = (PDNS_TUNNEL_CONTEXT)ExAllocateFromNPagedLookasideList(
+    context = (PDNS_TUNNEL_CONTEXT)ExAllocateFromLookasideListEx(
         &Monitor->TunnelContextLookaside);
 
     if (context == NULL) {
@@ -2920,7 +2920,7 @@ DnspGetOrCreateTunnelContext(
         if (candidate->DomainHash == hash &&
             _stricmp(candidate->BaseDomain, BaseDomain) == 0) {
             ExReleasePushLockExclusive(&Monitor->TunnelContextLock);
-            ExFreeToNPagedLookasideList(&Monitor->TunnelContextLookaside, context);
+            ExFreeToLookasideListEx(&Monitor->TunnelContextLookaside, context);
             InterlockedIncrement(&candidate->RefCount);
             return candidate;
         }
@@ -2929,7 +2929,7 @@ DnspGetOrCreateTunnelContext(
     // Enforce limit under exclusive lock to prevent TOCTOU race
     if (Monitor->TunnelContextCount >= DNS_MAX_TUNNEL_CONTEXTS) {
         ExReleasePushLockExclusive(&Monitor->TunnelContextLock);
-        ExFreeToNPagedLookasideList(&Monitor->TunnelContextLookaside, context);
+        ExFreeToLookasideListEx(&Monitor->TunnelContextLookaside, context);
         return NULL;
     }
 
@@ -3137,7 +3137,7 @@ DnspGetOrCreateProcessContext(
         return context;
     }
 
-    context = (PDNS_PROCESS_CONTEXT)ExAllocateFromNPagedLookasideList(
+    context = (PDNS_PROCESS_CONTEXT)ExAllocateFromLookasideListEx(
         &Monitor->ProcessContextLookaside);
 
     if (context == NULL) {
@@ -3171,7 +3171,7 @@ DnspGetOrCreateProcessContext(
 
         if (candidate->ProcessId == ProcessId) {
             ExReleasePushLockExclusive(&Monitor->ProcessListLock);
-            ExFreeToNPagedLookasideList(&Monitor->ProcessContextLookaside, context);
+            ExFreeToLookasideListEx(&Monitor->ProcessContextLookaside, context);
             InterlockedIncrement(&candidate->RefCount);
             return candidate;
         }
@@ -3180,7 +3180,7 @@ DnspGetOrCreateProcessContext(
     // Enforce limit under exclusive lock to prevent TOCTOU race
     if (Monitor->ProcessCount >= DNS_MAX_PROCESS_CONTEXTS) {
         ExReleasePushLockExclusive(&Monitor->ProcessListLock);
-        ExFreeToNPagedLookasideList(&Monitor->ProcessContextLookaside, context);
+        ExFreeToLookasideListEx(&Monitor->ProcessContextLookaside, context);
         return NULL;
     }
 
@@ -3212,7 +3212,7 @@ DnspDereferenceProcessContext(
     // and all in-flight operations are done), free it here.
     //
     if (InterlockedDecrement(&Context->RefCount) == 0) {
-        ExFreeToNPagedLookasideList(&Monitor->ProcessContextLookaside, Context);
+        ExFreeToLookasideListEx(&Monitor->ProcessContextLookaside, Context);
     }
 }
 
@@ -3287,7 +3287,7 @@ DnspAddToDomainCache(
         return STATUS_QUOTA_EXCEEDED;
     }
 
-    cacheEntry = (PDNS_DOMAIN_CACHE)ExAllocateFromNPagedLookasideList(
+    cacheEntry = (PDNS_DOMAIN_CACHE)ExAllocateFromLookasideListEx(
         &Monitor->DomainCacheLookaside);
 
     if (cacheEntry == NULL) {
@@ -3382,7 +3382,7 @@ Routine Description:
         }
     }
 
-    ExFreeToNPagedLookasideList(&Monitor->QueryLookaside, Query);
+    ExFreeToLookasideListEx(&Monitor->QueryLookaside, Query);
 }
 
 // ============================================================================
@@ -3615,20 +3615,20 @@ Routine Description:
         entry = RemoveHeadList(&expiredDomains);
         PDNS_DOMAIN_CACHE domainEntry = CONTAINING_RECORD(
             entry, DNS_DOMAIN_CACHE, ListEntry);
-        ExFreeToNPagedLookasideList(&Monitor->DomainCacheLookaside, domainEntry);
+        ExFreeToLookasideListEx(&Monitor->DomainCacheLookaside, domainEntry);
     }
 
     while (!IsListEmpty(&expiredProcesses)) {
         entry = RemoveHeadList(&expiredProcesses);
         PDNS_PROCESS_CONTEXT processCtx = CONTAINING_RECORD(
             entry, DNS_PROCESS_CONTEXT, ListEntry);
-        ExFreeToNPagedLookasideList(&Monitor->ProcessContextLookaside, processCtx);
+        ExFreeToLookasideListEx(&Monitor->ProcessContextLookaside, processCtx);
     }
 
     while (!IsListEmpty(&expiredTunnels)) {
         entry = RemoveHeadList(&expiredTunnels);
         PDNS_TUNNEL_CONTEXT tunnelCtx = CONTAINING_RECORD(
             entry, DNS_TUNNEL_CONTEXT, ListEntry);
-        ExFreeToNPagedLookasideList(&Monitor->TunnelContextLookaside, tunnelCtx);
+        ExFreeToLookasideListEx(&Monitor->TunnelContextLookaside, tunnelCtx);
     }
 }

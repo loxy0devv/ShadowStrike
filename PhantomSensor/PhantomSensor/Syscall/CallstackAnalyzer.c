@@ -163,8 +163,8 @@ typedef struct _CSA_ANALYZER_INTERNAL {
     ULONG Signature;
     CSA_ANALYZER Public;
 
-    NPAGED_LOOKASIDE_LIST CallstackLookaside;
-    NPAGED_LOOKASIDE_LIST ModuleCacheLookaside;
+    LOOKASIDE_LIST_EX CallstackLookaside;
+    LOOKASIDE_LIST_EX ModuleCacheLookaside;
 
     volatile LONG CachedModuleCount;
     volatile BOOLEAN ShuttingDown;
@@ -401,21 +401,23 @@ CsaInitialize(
     KeQuerySystemTimePrecise(&now);
     analyzerInternal->CaptureWindowStart = now.QuadPart;
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &analyzerInternal->CallstackLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(CSA_CALLSTACK_INTERNAL),
         CSA_POOL_TAG,
         0
         );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &analyzerInternal->ModuleCacheLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(CSA_MODULE_CACHE_ENTRY),
         CSA_POOL_TAG,
         0
@@ -478,8 +480,8 @@ CsaShutdown(
 
     CsapCleanupModuleCache(analyzerInternal);
 
-    ExDeleteNPagedLookasideList(&analyzerInternal->CallstackLookaside);
-    ExDeleteNPagedLookasideList(&analyzerInternal->ModuleCacheLookaside);
+    ExDeleteLookasideListEx(&analyzerInternal->CallstackLookaside);
+    ExDeleteLookasideListEx(&analyzerInternal->ModuleCacheLookaside);
 
     analyzerInternal->Signature = 0;
     ShadowStrikeFreePoolWithTag(analyzerInternal, CSA_POOL_TAG);
@@ -550,7 +552,7 @@ CsaCaptureCallstack(
     }
     processCreateTime = PsGetProcessCreateTimeQuadPart(process);
 
-    callstackInternal = (PCSA_CALLSTACK_INTERNAL)ExAllocateFromNPagedLookasideList(
+    callstackInternal = (PCSA_CALLSTACK_INTERNAL)ExAllocateFromLookasideListEx(
         &analyzerInternal->CallstackLookaside
         );
 
@@ -588,7 +590,7 @@ CsaCaptureCallstack(
     //
     status = CsapCaptureUserStack(analyzerInternal, ProcessId, ThreadId, callstack);
     if (!NT_SUCCESS(status)) {
-        ExFreeToNPagedLookasideList(&analyzerInternal->CallstackLookaside, callstackInternal);
+        ExFreeToLookasideListEx(&analyzerInternal->CallstackLookaside, callstackInternal);
         CsapDereferenceAnalyzer(analyzerInternal);
         return status;
     }
@@ -945,7 +947,7 @@ CsaFreeCallstack(
         // Return to lookaside. Safe because we hold an analyzer ref that
         // prevents the lookaside from being deleted.
         //
-        ExFreeToNPagedLookasideList(
+        ExFreeToLookasideListEx(
             &analyzerRef->CallstackLookaside,
             callstackInternal
             );
@@ -1488,7 +1490,7 @@ CsapPopulateModuleCache(
             }
 
             PCSA_MODULE_CACHE_ENTRY cacheEntry =
-                (PCSA_MODULE_CACHE_ENTRY)ExAllocateFromNPagedLookasideList(
+                (PCSA_MODULE_CACHE_ENTRY)ExAllocateFromLookasideListEx(
                     &AnalyzerInternal->ModuleCacheLookaside
                     );
 
@@ -1596,7 +1598,7 @@ CsapPopulateModuleCache(
                     InsertTailList(&AnalyzerInternal->Public.ModuleCache, &cacheEntry->ListEntry);
                     InterlockedIncrement(&AnalyzerInternal->CachedModuleCount);
                 } else {
-                    ExFreeToNPagedLookasideList(
+                    ExFreeToLookasideListEx(
                         &AnalyzerInternal->ModuleCacheLookaside, cacheEntry);
                 }
             }
@@ -1787,7 +1789,7 @@ CsapDereferenceModuleEntry(
             KeLeaveCriticalRegion();
 
             Entry->Signature = 0;
-            ExFreeToNPagedLookasideList(
+            ExFreeToLookasideListEx(
                 &Analyzer->ModuleCacheLookaside,
                 Entry
                 );
@@ -1844,7 +1846,7 @@ CsapCleanupModuleCache(
         cacheEntry = CONTAINING_RECORD(entry, CSA_MODULE_CACHE_ENTRY, ListEntry);
 
         cacheEntry->Signature = 0;
-        ExFreeToNPagedLookasideList(
+        ExFreeToLookasideListEx(
             &AnalyzerInternal->ModuleCacheLookaside,
             cacheEntry
             );
@@ -1908,7 +1910,7 @@ CsapEvictProcessEntries(
         cacheEntry = CONTAINING_RECORD(entry, CSA_MODULE_CACHE_ENTRY, ListEntry);
 
         cacheEntry->Signature = 0;
-        ExFreeToNPagedLookasideList(
+        ExFreeToLookasideListEx(
             &AnalyzerInternal->ModuleCacheLookaside,
             cacheEntry
             );

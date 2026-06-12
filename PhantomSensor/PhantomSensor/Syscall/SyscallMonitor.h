@@ -394,9 +394,9 @@ typedef struct _SYSCALL_MONITOR_GLOBALS {
     volatile LONG KnownGoodCallerCount;
 
     // Lookaside lists
-    NPAGED_LOOKASIDE_LIST ContextLookaside;
+    LOOKASIDE_LIST_EX ContextLookaside;
     BOOLEAN ContextLookasideInitialized;
-    NPAGED_LOOKASIDE_LIST EventLookaside;
+    LOOKASIDE_LIST_EX EventLookaside;
     BOOLEAN EventLookasideInitialized;
 
     // Statistics (interlocked updates only)

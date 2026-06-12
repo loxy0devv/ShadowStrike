@@ -1066,21 +1066,19 @@ ShadowStrikeLookasideInit(
 #endif
 
     if (IsPaged) {
-        ExInitializePagedLookasideList(
+        ExInitializeLookasideListEx(
             &Lookaside->PagedList,
             NULL,   // Allocate function (use default)
-            NULL,   // Free function (use default)
-            0,      // Flags (paged pool is never executable)
+            NULL,   PagedPool,   0,      // Flags (paged pool is never executable)
             EntrySize,
             Tag,
             Depth
         );
     } else {
-        ExInitializeNPagedLookasideList(
+        ExInitializeLookasideListEx(
             &Lookaside->NonPagedList,
             NULL,   // Allocate function (use default)
-            NULL,   // Free function (use default)
-            SHADOWSTRIKE_NX_FLAG,
+            NULL,   NonPagedPoolNx,   0,
             EntrySize,
             Tag,
             Depth
@@ -1122,9 +1120,9 @@ ShadowStrikeLookasideAllocate(
     // Allocate from appropriate list
     //
     if (Lookaside->IsPaged) {
-        Entry = ExAllocateFromPagedLookasideList(&Lookaside->PagedList);
+        Entry = ExAllocateFromLookasideListEx(&Lookaside->PagedList);
     } else {
-        Entry = ExAllocateFromNPagedLookasideList(&Lookaside->NonPagedList);
+        Entry = ExAllocateFromLookasideListEx(&Lookaside->NonPagedList);
     }
 
     if (Entry != NULL) {
@@ -1195,9 +1193,9 @@ ShadowStrikeLookasideFree(
     // Return to appropriate list
     //
     if (Lookaside->IsPaged) {
-        ExFreeToPagedLookasideList(&Lookaside->PagedList, Entry);
+        ExFreeToLookasideListEx(&Lookaside->PagedList, Entry);
     } else {
-        ExFreeToNPagedLookasideList(&Lookaside->NonPagedList, Entry);
+        ExFreeToLookasideListEx(&Lookaside->NonPagedList, Entry);
     }
 }
 
@@ -1232,9 +1230,9 @@ ShadowStrikeLookasideCleanup(
     // Delete the lookaside list
     //
     if (Lookaside->IsPaged) {
-        ExDeletePagedLookasideList(&Lookaside->PagedList);
+        ExDeleteLookasideListEx(&Lookaside->PagedList);
     } else {
-        ExDeleteNPagedLookasideList(&Lookaside->NonPagedList);
+        ExDeleteLookasideListEx(&Lookaside->NonPagedList);
     }
 
     Lookaside->Initialized = FALSE;

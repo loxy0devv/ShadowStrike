@@ -172,7 +172,7 @@ typedef struct _RE_ENGINE {
     // Lookaside list for fast rule allocation (via centralized manager)
     //
     PLL_LOOKASIDE RuleLookaside;
-    NPAGED_LOOKASIDE_LIST RuleLookasideFallback;
+    LOOKASIDE_LIST_EX RuleLookasideFallback;
     volatile LONG LookasideInitialized;
     BOOLEAN UseManagedLookaside;
 
@@ -421,9 +421,9 @@ Return Value:
         }
 
         if (!engine->UseManagedLookaside) {
-            ExInitializeNPagedLookasideList(
+            ExInitializeLookasideListEx(
                 &engine->RuleLookasideFallback,
-                NULL, NULL, 0,
+                NULL, NULL, NonPagedPoolNx, 0,
                 sizeof(RE_INTERNAL_RULE),
                 RE_POOL_TAG_RULE, 0
             );
@@ -576,7 +576,7 @@ Arguments:
             }
             Engine->RuleLookaside = NULL;
         } else {
-            ExDeleteNPagedLookasideList(&Engine->RuleLookasideFallback);
+            ExDeleteLookasideListEx(&Engine->RuleLookasideFallback);
         }
     }
 
@@ -650,7 +650,7 @@ Return Value:
     if (Engine->UseManagedLookaside && Engine->RuleLookaside != NULL) {
         internalRule = (PRE_INTERNAL_RULE)LlAllocate(Engine->RuleLookaside);
     } else {
-        internalRule = (PRE_INTERNAL_RULE)ExAllocateFromNPagedLookasideList(
+        internalRule = (PRE_INTERNAL_RULE)ExAllocateFromLookasideListEx(
             &Engine->RuleLookasideFallback
         );
     }
@@ -2519,7 +2519,7 @@ RepFreeRuleInternal(
         if (Engine->UseManagedLookaside && Engine->RuleLookaside != NULL) {
             LlFree(Engine->RuleLookaside, Rule);
         } else {
-            ExFreeToNPagedLookasideList(&Engine->RuleLookasideFallback, Rule);
+            ExFreeToLookasideListEx(&Engine->RuleLookasideFallback, Rule);
         }
     } else {
         ExFreePoolWithTag(Rule, RE_POOL_TAG_RULE);

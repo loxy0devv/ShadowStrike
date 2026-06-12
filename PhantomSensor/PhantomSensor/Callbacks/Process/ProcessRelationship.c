@@ -146,8 +146,8 @@ typedef struct _PR_GRAPH_INTERNAL {
     //
     // Lookaside lists for efficient allocation
     //
-    NPAGED_LOOKASIDE_LIST NodeLookaside;
-    NPAGED_LOOKASIDE_LIST RelationshipLookaside;
+    LOOKASIDE_LIST_EX NodeLookaside;
+    LOOKASIDE_LIST_EX RelationshipLookaside;
     BOOLEAN LookasideInitialized;
 
     //
@@ -574,20 +574,22 @@ PrInitialize(
     //
     // Initialize lookaside lists for efficient allocation
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &internal->NodeLookaside,
         NULL,
         NULL,
+        NonPagedPoolNx,
         0,
         sizeof(PR_PROCESS_NODE),
         PR_POOL_TAG,
         0
     );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &internal->RelationshipLookaside,
         NULL,
         NULL,
+        NonPagedPoolNx,
         0,
         sizeof(PR_RELATIONSHIP),
         PR_POOL_TAG,
@@ -774,8 +776,8 @@ PrShutdown(
     // Delete lookaside lists
     //
     if (internal->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&internal->NodeLookaside);
-        ExDeleteNPagedLookasideList(&internal->RelationshipLookaside);
+        ExDeleteLookasideListEx(&internal->NodeLookaside);
+        ExDeleteLookasideListEx(&internal->RelationshipLookaside);
         internal->LookasideInitialized = FALSE;
     }
 
@@ -1925,7 +1927,7 @@ PrpAllocateNode(
             PR_POOL_TAG
         );
     } else {
-        node = (PPR_PROCESS_NODE)ExAllocateFromNPagedLookasideList(
+        node = (PPR_PROCESS_NODE)ExAllocateFromLookasideListEx(
             &Graph->NodeLookaside
         );
     }
@@ -1944,7 +1946,7 @@ PrpFreeNode(
     }
 
     if (Graph->LookasideInitialized) {
-        ExFreeToNPagedLookasideList(&Graph->NodeLookaside, Node);
+        ExFreeToLookasideListEx(&Graph->NodeLookaside, Node);
     } else {
         ShadowStrikeFreePoolWithTag(Node, PR_POOL_TAG);
     }
@@ -1964,7 +1966,7 @@ PrpAllocateRelationship(
             PR_POOL_TAG
         );
     } else {
-        relationship = (PPR_RELATIONSHIP)ExAllocateFromNPagedLookasideList(
+        relationship = (PPR_RELATIONSHIP)ExAllocateFromLookasideListEx(
             &Graph->RelationshipLookaside
         );
     }
@@ -1983,7 +1985,7 @@ PrpFreeRelationship(
     }
 
     if (Graph->LookasideInitialized) {
-        ExFreeToNPagedLookasideList(&Graph->RelationshipLookaside, Relationship);
+        ExFreeToLookasideListEx(&Graph->RelationshipLookaside, Relationship);
     } else {
         ShadowStrikeFreePoolWithTag(Relationship, PR_POOL_TAG);
     }

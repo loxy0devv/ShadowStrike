@@ -395,7 +395,7 @@ typedef struct _PSI_GLOBAL_STATE {
     // Lookaside list for process contexts (centralized if available)
     //
     PLL_LOOKASIDE ProcessContextLookaside;
-    NPAGED_LOOKASIDE_LIST ProcessContextLookasideFallback;
+    LOOKASIDE_LIST_EX ProcessContextLookasideFallback;
     BOOLEAN LookasideInitialized;
     BOOLEAN UseManagedLookaside;
 
@@ -674,9 +674,9 @@ ShadowStrikeInitializePreSetInfo(
         }
 
         if (!g_PsiState.UseManagedLookaside) {
-            ExInitializeNPagedLookasideList(
+            ExInitializeLookasideListEx(
                 &g_PsiState.ProcessContextLookasideFallback,
-                NULL, NULL, POOL_NX_ALLOCATION,
+                NULL, NULL, NonPagedPoolNx, 0,
                 sizeof(PSI_PROCESS_CONTEXT),
                 PSI_POOL_TAG, 0
             );
@@ -794,7 +794,7 @@ ShadowStrikeCleanupPreSetInfo(
         if (g_PsiState.UseManagedLookaside && g_PsiState.ProcessContextLookaside != NULL) {
             LlFree(g_PsiState.ProcessContextLookaside, context);
         } else {
-            ExFreeToNPagedLookasideList(&g_PsiState.ProcessContextLookasideFallback, context);
+            ExFreeToLookasideListEx(&g_PsiState.ProcessContextLookasideFallback, context);
         }
     }
     g_PsiState.ProcessContextCount = 0;
@@ -813,7 +813,7 @@ ShadowStrikeCleanupPreSetInfo(
             }
             g_PsiState.ProcessContextLookaside = NULL;
         } else {
-            ExDeleteNPagedLookasideList(&g_PsiState.ProcessContextLookasideFallback);
+            ExDeleteLookasideListEx(&g_PsiState.ProcessContextLookasideFallback);
         }
         g_PsiState.LookasideInitialized = FALSE;
     }
@@ -1590,7 +1590,7 @@ PsipLookupProcessContext(
     if (g_PsiState.UseManagedLookaside && g_PsiState.ProcessContextLookaside != NULL) {
         newContext = (PPSI_PROCESS_CONTEXT)LlAllocate(g_PsiState.ProcessContextLookaside);
     } else {
-        newContext = (PPSI_PROCESS_CONTEXT)ExAllocateFromNPagedLookasideList(
+        newContext = (PPSI_PROCESS_CONTEXT)ExAllocateFromLookasideListEx(
             &g_PsiState.ProcessContextLookasideFallback
         );
     }
@@ -1634,7 +1634,7 @@ PsipLookupProcessContext(
             if (g_PsiState.UseManagedLookaside && g_PsiState.ProcessContextLookaside != NULL) {
                 LlFree(g_PsiState.ProcessContextLookaside, newContext);
             } else {
-                ExFreeToNPagedLookasideList(&g_PsiState.ProcessContextLookasideFallback, newContext);
+                ExFreeToLookasideListEx(&g_PsiState.ProcessContextLookasideFallback, newContext);
             }
             return context;
         }
@@ -1725,7 +1725,7 @@ PsipDereferenceProcessContext(
         if (g_PsiState.UseManagedLookaside && g_PsiState.ProcessContextLookaside != NULL) {
             LlFree(g_PsiState.ProcessContextLookaside, Context);
         } else {
-            ExFreeToNPagedLookasideList(&g_PsiState.ProcessContextLookasideFallback, Context);
+            ExFreeToLookasideListEx(&g_PsiState.ProcessContextLookasideFallback, Context);
         }
     }
 }
@@ -1817,7 +1817,7 @@ PsipCleanupStaleContexts(
         if (g_PsiState.UseManagedLookaside && g_PsiState.ProcessContextLookaside != NULL) {
             LlFree(g_PsiState.ProcessContextLookaside, context);
         } else {
-            ExFreeToNPagedLookasideList(&g_PsiState.ProcessContextLookasideFallback, context);
+            ExFreeToLookasideListEx(&g_PsiState.ProcessContextLookasideFallback, context);
         }
     }
 }

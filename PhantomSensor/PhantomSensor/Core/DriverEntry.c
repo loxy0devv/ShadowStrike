@@ -3877,11 +3877,10 @@ ShadowStrikeInitializeLookasideLists(
     //
     // Message lookaside - for kernel<->user messages
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_DriverData.MessageLookaside,
         NULL,                           // Allocate function (use default)
-        NULL,                           // Free function (use default)
-        POOL_NX_ALLOCATION,             // Non-executable pool
+        NULL,                           NonPagedPoolNx,                           0,             // Non-executable pool
         SHADOWSTRIKE_MAX_MESSAGE_SIZE,  // Entry size
         SHADOWSTRIKE_POOL_TAG,          // Pool tag
         0                               // Depth (0 = system default)
@@ -3890,11 +3889,12 @@ ShadowStrikeInitializeLookasideLists(
     //
     // Stream context lookaside - for per-file tracking
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_DriverData.StreamContextLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(SHADOWSTRIKE_STREAM_CONTEXT),
         SHADOWSTRIKE_POOL_TAG,
         0
@@ -3910,8 +3910,8 @@ ShadowStrikeCleanupLookasideLists(
 {
     PAGED_CODE();
 
-    ExDeleteNPagedLookasideList(&g_DriverData.MessageLookaside);
-    ExDeleteNPagedLookasideList(&g_DriverData.StreamContextLookaside);
+    ExDeleteLookasideListEx(&g_DriverData.MessageLookaside);
+    ExDeleteLookasideListEx(&g_DriverData.StreamContextLookaside);
 }
 
 // ============================================================================

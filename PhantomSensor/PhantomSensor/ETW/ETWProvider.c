@@ -507,11 +507,12 @@ Return Value:
     // ETW_EVENT_BUFFER_SIZE is computed at compile time as the maximum
     // of all event structure sizes, rounded up to 256-byte boundary.
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_EtwGlobals.EventBufferLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         (ULONG)ETW_EVENT_BUFFER_SIZE,
         ETW_POOL_TAG_BUFFER,
         ETW_LOOKASIDE_DEPTH
@@ -657,7 +658,7 @@ Routine Description:
     // by the lookaside depth and tagged for postmortem identification.
     //
     if (drainComplete) {
-        ExDeleteNPagedLookasideList(&g_EtwGlobals.EventBufferLookaside);
+        ExDeleteLookasideListEx(&g_EtwGlobals.EventBufferLookaside);
     }
 
     //
@@ -938,7 +939,7 @@ EtwWriteProcessEvent(
     //
     // Allocate event buffer from lookaside (correctly sized)
     //
-    event = (PETW_PROCESS_EVENT)ExAllocateFromNPagedLookasideList(
+    event = (PETW_PROCESS_EVENT)ExAllocateFromLookasideListEx(
         &g_EtwGlobals.EventBufferLookaside
         );
 
@@ -988,7 +989,7 @@ EtwWriteProcessEvent(
 
     EtwpUpdateStatistics(sizeof(ETW_PROCESS_EVENT), NT_SUCCESS(status));
 
-    ExFreeToNPagedLookasideList(&g_EtwGlobals.EventBufferLookaside, event);
+    ExFreeToLookasideListEx(&g_EtwGlobals.EventBufferLookaside, event);
 
     EtwpReleaseWriterRef();
 
@@ -1062,7 +1063,7 @@ EtwWriteFileEvent(
         return STATUS_QUOTA_EXCEEDED;
     }
 
-    event = (PETW_FILE_EVENT)ExAllocateFromNPagedLookasideList(
+    event = (PETW_FILE_EVENT)ExAllocateFromLookasideListEx(
         &g_EtwGlobals.EventBufferLookaside
         );
 
@@ -1111,7 +1112,7 @@ EtwWriteFileEvent(
 
     EtwpUpdateStatistics(sizeof(ETW_FILE_EVENT), NT_SUCCESS(status));
 
-    ExFreeToNPagedLookasideList(&g_EtwGlobals.EventBufferLookaside, event);
+    ExFreeToLookasideListEx(&g_EtwGlobals.EventBufferLookaside, event);
 
     EtwpReleaseWriterRef();
 
@@ -1207,7 +1208,7 @@ Routine Description:
     // This prevents mutation of the caller's buffer and ensures
     // the event data is in NonPaged pool.
     //
-    localEvent = (PETW_NETWORK_EVENT)ExAllocateFromNPagedLookasideList(
+    localEvent = (PETW_NETWORK_EVENT)ExAllocateFromLookasideListEx(
         &g_EtwGlobals.EventBufferLookaside
         );
 
@@ -1230,7 +1231,7 @@ Routine Description:
 
     EtwpUpdateStatistics(sizeof(ETW_NETWORK_EVENT), NT_SUCCESS(status));
 
-    ExFreeToNPagedLookasideList(&g_EtwGlobals.EventBufferLookaside, localEvent);
+    ExFreeToLookasideListEx(&g_EtwGlobals.EventBufferLookaside, localEvent);
 
     EtwpReleaseWriterRef();
 
@@ -1307,7 +1308,7 @@ EtwWriteBehaviorEvent(
         return STATUS_QUOTA_EXCEEDED;
     }
 
-    event = (PETW_BEHAVIOR_EVENT)ExAllocateFromNPagedLookasideList(
+    event = (PETW_BEHAVIOR_EVENT)ExAllocateFromLookasideListEx(
         &g_EtwGlobals.EventBufferLookaside
         );
 
@@ -1347,7 +1348,7 @@ EtwWriteBehaviorEvent(
 
     EtwpUpdateStatistics(sizeof(ETW_BEHAVIOR_EVENT), NT_SUCCESS(status));
 
-    ExFreeToNPagedLookasideList(&g_EtwGlobals.EventBufferLookaside, event);
+    ExFreeToLookasideListEx(&g_EtwGlobals.EventBufferLookaside, event);
 
     EtwpReleaseWriterRef();
 
@@ -1448,7 +1449,7 @@ EtwWriteSecurityAlert(
         return STATUS_QUOTA_EXCEEDED;
     }
 
-    event = (PETW_SECURITY_ALERT)ExAllocateFromNPagedLookasideList(
+    event = (PETW_SECURITY_ALERT)ExAllocateFromLookasideListEx(
         &g_EtwGlobals.EventBufferLookaside
         );
 
@@ -1509,7 +1510,7 @@ EtwWriteSecurityAlert(
 
     EtwpUpdateStatistics(sizeof(ETW_SECURITY_ALERT), NT_SUCCESS(status));
 
-    ExFreeToNPagedLookasideList(&g_EtwGlobals.EventBufferLookaside, event);
+    ExFreeToLookasideListEx(&g_EtwGlobals.EventBufferLookaside, event);
 
     EtwpReleaseWriterRef();
 
@@ -1736,7 +1737,7 @@ EtwWriteThreadEvent(
         return STATUS_QUOTA_EXCEEDED;
     }
 
-    event = (PETW_THREAD_EVENT)ExAllocateFromNPagedLookasideList(
+    event = (PETW_THREAD_EVENT)ExAllocateFromLookasideListEx(
         &g_EtwGlobals.EventBufferLookaside
         );
 
@@ -1770,7 +1771,7 @@ EtwWriteThreadEvent(
 
     EtwpUpdateStatistics(sizeof(ETW_THREAD_EVENT), NT_SUCCESS(status));
 
-    ExFreeToNPagedLookasideList(&g_EtwGlobals.EventBufferLookaside, event);
+    ExFreeToLookasideListEx(&g_EtwGlobals.EventBufferLookaside, event);
 
     EtwpReleaseWriterRef();
 
@@ -1834,7 +1835,7 @@ EtwWriteImageEvent(
         return STATUS_QUOTA_EXCEEDED;
     }
 
-    event = (PETW_IMAGE_EVENT)ExAllocateFromNPagedLookasideList(
+    event = (PETW_IMAGE_EVENT)ExAllocateFromLookasideListEx(
         &g_EtwGlobals.EventBufferLookaside
         );
 
@@ -1867,7 +1868,7 @@ EtwWriteImageEvent(
 
     EtwpUpdateStatistics(sizeof(ETW_IMAGE_EVENT), NT_SUCCESS(status));
 
-    ExFreeToNPagedLookasideList(&g_EtwGlobals.EventBufferLookaside, event);
+    ExFreeToLookasideListEx(&g_EtwGlobals.EventBufferLookaside, event);
 
     EtwpReleaseWriterRef();
 
@@ -1933,7 +1934,7 @@ EtwWriteRegistryEvent(
         return STATUS_QUOTA_EXCEEDED;
     }
 
-    event = (PETW_REGISTRY_EVENT)ExAllocateFromNPagedLookasideList(
+    event = (PETW_REGISTRY_EVENT)ExAllocateFromLookasideListEx(
         &g_EtwGlobals.EventBufferLookaside
         );
 
@@ -1972,7 +1973,7 @@ EtwWriteRegistryEvent(
 
     EtwpUpdateStatistics(sizeof(ETW_REGISTRY_EVENT), NT_SUCCESS(status));
 
-    ExFreeToNPagedLookasideList(&g_EtwGlobals.EventBufferLookaside, event);
+    ExFreeToLookasideListEx(&g_EtwGlobals.EventBufferLookaside, event);
 
     EtwpReleaseWriterRef();
 
@@ -2043,7 +2044,7 @@ EtwWriteMemoryEvent(
         return STATUS_QUOTA_EXCEEDED;
     }
 
-    event = (PETW_MEMORY_EVENT)ExAllocateFromNPagedLookasideList(
+    event = (PETW_MEMORY_EVENT)ExAllocateFromLookasideListEx(
         &g_EtwGlobals.EventBufferLookaside
         );
 
@@ -2078,7 +2079,7 @@ EtwWriteMemoryEvent(
 
     EtwpUpdateStatistics(sizeof(ETW_MEMORY_EVENT), NT_SUCCESS(status));
 
-    ExFreeToNPagedLookasideList(&g_EtwGlobals.EventBufferLookaside, event);
+    ExFreeToLookasideListEx(&g_EtwGlobals.EventBufferLookaside, event);
 
     EtwpReleaseWriterRef();
 

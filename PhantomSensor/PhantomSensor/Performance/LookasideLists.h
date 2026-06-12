@@ -187,8 +187,8 @@ typedef struct _LL_LOOKASIDE {
     ULONG Flags;
 
     union {
-        NPAGED_LOOKASIDE_LIST NonPaged;
-        PAGED_LOOKASIDE_LIST Paged;
+        LOOKASIDE_LIST_EX NonPaged;
+        LOOKASIDE_LIST_EX Paged;
     } NativeList;
 
     LL_STATISTICS Stats;

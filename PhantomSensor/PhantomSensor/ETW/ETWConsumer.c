@@ -1174,7 +1174,7 @@ EcAllocateEventRecord(
         return NULL;
     }
 
-    Record = (PEC_EVENT_RECORD)ExAllocateFromNPagedLookasideList(
+    Record = (PEC_EVENT_RECORD)ExAllocateFromLookasideListEx(
         &Consumer->EventRecordLookaside
     );
 
@@ -1224,7 +1224,7 @@ EcFreeEventRecord(
     // Return to lookaside or free
     //
     if (Record->IsPooled && Consumer->LookasideInitialized) {
-        ExFreeToNPagedLookasideList(&Consumer->EventRecordLookaside, Record);
+        ExFreeToLookasideListEx(&Consumer->EventRecordLookaside, Record);
     } else {
         ExFreePoolWithTag(Record, EC_EVENT_TAG);
     }
@@ -1305,7 +1305,7 @@ EcCloneEventRecord(
     while (Entry != &Source->ExtendedDataList) {
         SrcExt = CONTAINING_RECORD(Entry, EC_EXTENDED_DATA, ListEntry);
 
-        NewExt = (PEC_EXTENDED_DATA)ExAllocateFromNPagedLookasideList(
+        NewExt = (PEC_EXTENDED_DATA)ExAllocateFromLookasideListEx(
             &Consumer->ExtendedDataLookaside
         );
 
@@ -1326,7 +1326,7 @@ EcCloneEventRecord(
                 EC_BUFFER_TAG
             );
             if (NewExt->DataPtr == NULL) {
-                ExFreeToNPagedLookasideList(&Consumer->ExtendedDataLookaside, NewExt);
+                ExFreeToLookasideListEx(&Consumer->ExtendedDataLookaside, NewExt);
                 EcFreeEventRecord(Consumer, NewRecord);
                 return STATUS_INSUFFICIENT_RESOURCES;
             }
@@ -1805,19 +1805,21 @@ EcpInitializeLookasideLists(
     _Inout_ PEC_CONSUMER Consumer
     )
 {
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &Consumer->EventRecordLookaside,
         NULL, NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(EC_EVENT_RECORD),
         EC_EVENT_TAG,
         EC_EVENT_LOOKASIDE_DEPTH
     );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &Consumer->ExtendedDataLookaside,
         NULL, NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(EC_EXTENDED_DATA),
         EC_BUFFER_TAG,
         64
@@ -1836,8 +1838,8 @@ EcpCleanupLookasideLists(
         return;
     }
 
-    ExDeleteNPagedLookasideList(&Consumer->EventRecordLookaside);
-    ExDeleteNPagedLookasideList(&Consumer->ExtendedDataLookaside);
+    ExDeleteLookasideListEx(&Consumer->EventRecordLookaside);
+    ExDeleteLookasideListEx(&Consumer->ExtendedDataLookaside);
 
     Consumer->LookasideInitialized = FALSE;
 }
@@ -2637,7 +2639,7 @@ EcpFreeExtendedData(
         // Return to lookaside if it came from there, otherwise direct free
         //
         if (ExtData->IsFromLookaside && Consumer->LookasideInitialized) {
-            ExFreeToNPagedLookasideList(&Consumer->ExtendedDataLookaside, ExtData);
+            ExFreeToLookasideListEx(&Consumer->ExtendedDataLookaside, ExtData);
         } else {
             ExFreePoolWithTag(ExtData, EC_BUFFER_TAG);
         }

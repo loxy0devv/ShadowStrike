@@ -464,9 +464,9 @@ LlShutdown(
         }
 
         if (Lookaside->IsPaged) {
-            ExDeletePagedLookasideList(&Lookaside->NativeList.Paged);
+            ExDeleteLookasideListEx(&Lookaside->NativeList.Paged);
         } else {
-            ExDeleteNPagedLookasideList(&Lookaside->NativeList.NonPaged);
+            ExDeleteLookasideListEx(&Lookaside->NativeList.NonPaged);
         }
 
         Lookaside->Magic = 0;
@@ -600,14 +600,14 @@ LlCreateLookasideEx(
     }
 
     if (IsPaged) {
-        ExInitializePagedLookasideList(
+        ExInitializeLookasideListEx(
             &NewLookaside->NativeList.Paged,
-            NULL, NULL, 0, EntrySize, Tag, Depth
+            NULL, NULL, PagedPool, 0, EntrySize, Tag, Depth
         );
     } else {
-        ExInitializeNPagedLookasideList(
+        ExInitializeLookasideListEx(
             &NewLookaside->NativeList.NonPaged,
-            NULL, NULL, 0, EntrySize, Tag, Depth
+            NULL, NULL, NonPagedPoolNx, 0, EntrySize, Tag, Depth
         );
     }
 
@@ -624,9 +624,9 @@ LlCreateLookasideEx(
         KeLeaveCriticalRegion();
 
         if (IsPaged) {
-            ExDeletePagedLookasideList(&NewLookaside->NativeList.Paged);
+            ExDeleteLookasideListEx(&NewLookaside->NativeList.Paged);
         } else {
-            ExDeleteNPagedLookasideList(&NewLookaside->NativeList.NonPaged);
+            ExDeleteLookasideListEx(&NewLookaside->NativeList.NonPaged);
         }
         NewLookaside->Magic = 0;
         ExFreePoolWithTag(NewLookaside, LL_ENTRY_TAG);
@@ -756,9 +756,9 @@ LlDestroyLookaside(
     }
 
     if (Lookaside->IsPaged) {
-        ExDeletePagedLookasideList(&Lookaside->NativeList.Paged);
+        ExDeleteLookasideListEx(&Lookaside->NativeList.Paged);
     } else {
-        ExDeleteNPagedLookasideList(&Lookaside->NativeList.NonPaged);
+        ExDeleteLookasideListEx(&Lookaside->NativeList.NonPaged);
     }
 
     InterlockedDecrement(&Manager->LookasideCount);
@@ -922,9 +922,9 @@ LlAllocateEx(
     // Allocate from native lookaside
     //
     if (Lookaside->IsPaged) {
-        Block = ExAllocateFromPagedLookasideList(&Lookaside->NativeList.Paged);
+        Block = ExAllocateFromLookasideListEx(&Lookaside->NativeList.Paged);
     } else {
-        Block = ExAllocateFromNPagedLookasideList(&Lookaside->NativeList.NonPaged);
+        Block = ExAllocateFromLookasideListEx(&Lookaside->NativeList.NonPaged);
     }
 
     if (Block == NULL) {
@@ -947,9 +947,9 @@ LlAllocateEx(
                 }
 
                 if (Lookaside->IsPaged) {
-                    Block = ExAllocateFromPagedLookasideList(&Lookaside->NativeList.Paged);
+                    Block = ExAllocateFromLookasideListEx(&Lookaside->NativeList.Paged);
                 } else {
-                    Block = ExAllocateFromNPagedLookasideList(&Lookaside->NativeList.NonPaged);
+                    Block = ExAllocateFromLookasideListEx(&Lookaside->NativeList.NonPaged);
                 }
             }
         }
@@ -1077,9 +1077,9 @@ LlFree(
 #endif
 
     if (Lookaside->IsPaged) {
-        ExFreeToPagedLookasideList(&Lookaside->NativeList.Paged, Block);
+        ExFreeToLookasideListEx(&Lookaside->NativeList.Paged, Block);
     } else {
-        ExFreeToNPagedLookasideList(&Lookaside->NativeList.NonPaged, Block);
+        ExFreeToLookasideListEx(&Lookaside->NativeList.NonPaged, Block);
     }
 
     LL_STATS_FREE(Lookaside);
@@ -1137,9 +1137,9 @@ LlSecureFree(
     }
 
     if (Lookaside->IsPaged) {
-        ExFreeToPagedLookasideList(&Lookaside->NativeList.Paged, Block);
+        ExFreeToLookasideListEx(&Lookaside->NativeList.Paged, Block);
     } else {
-        ExFreeToNPagedLookasideList(&Lookaside->NativeList.NonPaged, Block);
+        ExFreeToLookasideListEx(&Lookaside->NativeList.NonPaged, Block);
     }
 
     LL_STATS_FREE(Lookaside);
@@ -1504,20 +1504,20 @@ LlTrimCaches(
         //
         if (Lookaside->IsPaged) {
             USHORT SavedDepth = Lookaside->NativeList.Paged.L.Depth;
-            ExDeletePagedLookasideList(&Lookaside->NativeList.Paged);
-            ExInitializePagedLookasideList(
+            ExDeleteLookasideListEx(&Lookaside->NativeList.Paged);
+            ExInitializeLookasideListEx(
                 &Lookaside->NativeList.Paged,
-                NULL, NULL, 0,
+                NULL, NULL, PagedPool, 0,
                 Lookaside->EntrySize,
                 Lookaside->Tag,
                 SavedDepth
             );
         } else {
             USHORT SavedDepth = Lookaside->NativeList.NonPaged.L.Depth;
-            ExDeleteNPagedLookasideList(&Lookaside->NativeList.NonPaged);
-            ExInitializeNPagedLookasideList(
+            ExDeleteLookasideListEx(&Lookaside->NativeList.NonPaged);
+            ExInitializeLookasideListEx(
                 &Lookaside->NativeList.NonPaged,
-                NULL, NULL, 0,
+                NULL, NULL, NonPagedPoolNx, 0,
                 Lookaside->EntrySize,
                 Lookaside->Tag,
                 SavedDepth

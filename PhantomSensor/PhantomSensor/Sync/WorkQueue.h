@@ -389,7 +389,7 @@ typedef struct _SHADOWSTRIKE_WQ_MANAGER {
     KEVENT DrainCompleteEvent;
 
     /// Lookaside for work items
-    NPAGED_LOOKASIDE_LIST WorkItemLookaside;
+    LOOKASIDE_LIST_EX WorkItemLookaside;
     BOOLEAN LookasideInitialized;
 
     /// Current pending count (separate from stats for precise tracking)

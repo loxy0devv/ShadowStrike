@@ -414,8 +414,8 @@ typedef struct _PN_MONITOR_STATE {
     //
     // Lookaside lists
     //
-    NPAGED_LOOKASIDE_LIST ContextLookaside;
-    NPAGED_LOOKASIDE_LIST NotificationLookaside;
+    LOOKASIDE_LIST_EX ContextLookaside;
+    LOOKASIDE_LIST_EX NotificationLookaside;
     volatile BOOLEAN LookasideInitialized;
 
     //
@@ -685,21 +685,23 @@ Return Value:
     //
     // Initialize lookaside lists
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_ProcessMonitor.ContextLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(PN_PROCESS_CONTEXT),
         PN_CONTEXT_POOL_TAG,
         0
         );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_ProcessMonitor.NotificationLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(PN_NOTIFICATION_ENTRY),
         PN_POOL_TAG,
         0
@@ -774,8 +776,8 @@ Return Value:
             DPFLTR_ERROR_LEVEL,
             "[ShadowStrike/ProcessNotify] ThreatScoring engine not available from DriverEntry\n"
             );
-        ExDeleteNPagedLookasideList(&g_ProcessMonitor.ContextLookaside);
-        ExDeleteNPagedLookasideList(&g_ProcessMonitor.NotificationLookaside);
+        ExDeleteLookasideListEx(&g_ProcessMonitor.ContextLookaside);
+        ExDeleteLookasideListEx(&g_ProcessMonitor.NotificationLookaside);
         return STATUS_DEVICE_NOT_READY;
     }
 
@@ -950,7 +952,7 @@ Routine Description:
     while (!IsListEmpty(&g_ProcessMonitor.NotificationQueue)) {
         Entry = RemoveHeadList(&g_ProcessMonitor.NotificationQueue);
         Notification = CONTAINING_RECORD(Entry, PN_NOTIFICATION_ENTRY, ListEntry);
-        ExFreeToNPagedLookasideList(&g_ProcessMonitor.NotificationLookaside, Notification);
+        ExFreeToLookasideListEx(&g_ProcessMonitor.NotificationLookaside, Notification);
     }
 
     KeReleaseSpinLock(&g_ProcessMonitor.NotificationLock, OldIrql);
@@ -965,8 +967,8 @@ Routine Description:
     // Delete lookaside lists - safe now that all contexts are freed
     //
     if (g_ProcessMonitor.LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&g_ProcessMonitor.ContextLookaside);
-        ExDeleteNPagedLookasideList(&g_ProcessMonitor.NotificationLookaside);
+        ExDeleteLookasideListEx(&g_ProcessMonitor.ContextLookaside);
+        ExDeleteLookasideListEx(&g_ProcessMonitor.NotificationLookaside);
         g_ProcessMonitor.LookasideInitialized = FALSE;
     }
 
@@ -2266,7 +2268,7 @@ PnpAllocateProcessContext(
         return NULL;
     }
 
-    Context = (PPN_PROCESS_CONTEXT)ExAllocateFromNPagedLookasideList(
+    Context = (PPN_PROCESS_CONTEXT)ExAllocateFromLookasideListEx(
         &g_ProcessMonitor.ContextLookaside
         );
 
@@ -2330,7 +2332,7 @@ PnpFreeProcessContext(
     }
 
     PnpTrackPoolFree(sizeof(PN_PROCESS_CONTEXT));
-    ExFreeToNPagedLookasideList(&g_ProcessMonitor.ContextLookaside, Context);
+    ExFreeToLookasideListEx(&g_ProcessMonitor.ContextLookaside, Context);
 }
 
 

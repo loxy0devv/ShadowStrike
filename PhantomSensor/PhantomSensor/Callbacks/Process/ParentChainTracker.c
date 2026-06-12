@@ -168,8 +168,8 @@ typedef struct _PCT_TRACKER_INTERNAL {
     //
     // Lookaside lists for efficient allocation
     //
-    NPAGED_LOOKASIDE_LIST ChainLookaside;
-    NPAGED_LOOKASIDE_LIST NodeLookaside;
+    LOOKASIDE_LIST_EX ChainLookaside;
+    LOOKASIDE_LIST_EX NodeLookaside;
     BOOLEAN LookasideInitialized;
 
     //
@@ -507,21 +507,23 @@ PctInitialize(
     //
     // Initialize lookaside lists for efficient allocation
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &internal->ChainLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(PCT_PROCESS_CHAIN),
         PCT_POOL_TAG,
         0
     );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &internal->NodeLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(PCT_CHAIN_NODE),
         PCT_POOL_TAG,
         0
@@ -639,8 +641,8 @@ PctShutdown(
     // Delete lookaside lists - safe now that all operations are complete
     //
     if (internal->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&internal->ChainLookaside);
-        ExDeleteNPagedLookasideList(&internal->NodeLookaside);
+        ExDeleteLookasideListEx(&internal->ChainLookaside);
+        ExDeleteLookasideListEx(&internal->NodeLookaside);
         internal->LookasideInitialized = FALSE;
     }
 
@@ -1243,7 +1245,7 @@ PctFreeChain(
     if (Chain->AllocSource == PctAllocSourceLookaside &&
         tracker != NULL &&
         tracker->LookasideInitialized) {
-        ExFreeToNPagedLookasideList(&tracker->ChainLookaside, Chain);
+        ExFreeToLookasideListEx(&tracker->ChainLookaside, Chain);
     } else {
         ShadowStrikeFreePoolWithTag(Chain, PCT_POOL_TAG);
     }
@@ -1374,7 +1376,7 @@ PctpAllocateNode(
     PPCT_CHAIN_NODE node;
 
     if (Tracker->LookasideInitialized && !Tracker->Public.ShuttingDown) {
-        node = (PPCT_CHAIN_NODE)ExAllocateFromNPagedLookasideList(
+        node = (PPCT_CHAIN_NODE)ExAllocateFromLookasideListEx(
             &Tracker->NodeLookaside
         );
         if (node != NULL) {
@@ -1433,7 +1435,7 @@ PctpFreeNode(
         Tracker != NULL &&
         Tracker->LookasideInitialized &&
         !Tracker->Public.ShuttingDown) {
-        ExFreeToNPagedLookasideList(&Tracker->NodeLookaside, Node);
+        ExFreeToLookasideListEx(&Tracker->NodeLookaside, Node);
     } else {
         ShadowStrikeFreePoolWithTag(Node, PCT_POOL_TAG);
     }
@@ -1447,7 +1449,7 @@ PctpAllocateChain(
     PPCT_PROCESS_CHAIN chain;
 
     if (Tracker->LookasideInitialized && !Tracker->Public.ShuttingDown) {
-        chain = (PPCT_PROCESS_CHAIN)ExAllocateFromNPagedLookasideList(
+        chain = (PPCT_PROCESS_CHAIN)ExAllocateFromLookasideListEx(
             &Tracker->ChainLookaside
         );
         if (chain != NULL) {
@@ -1512,7 +1514,7 @@ PctpFreeChainInternal(
         Tracker != NULL &&
         Tracker->LookasideInitialized &&
         !Tracker->Public.ShuttingDown) {
-        ExFreeToNPagedLookasideList(&Tracker->ChainLookaside, Chain);
+        ExFreeToLookasideListEx(&Tracker->ChainLookaside, Chain);
     } else {
         ShadowStrikeFreePoolWithTag(Chain, PCT_POOL_TAG);
     }

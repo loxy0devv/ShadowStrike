@@ -208,8 +208,8 @@ typedef struct _NI_MONITOR_INTERNAL {
     //
     // Lookaside lists for high-frequency allocations
     //
-    PAGED_LOOKASIDE_LIST ProcessLookaside;
-    PAGED_LOOKASIDE_LIST FunctionLookaside;
+    LOOKASIDE_LIST_EX ProcessLookaside;
+    LOOKASIDE_LIST_EX FunctionLookaside;
 
 } NI_MONITOR_INTERNAL, *PNI_MONITOR_INTERNAL;
 
@@ -405,7 +405,7 @@ Return Value:
 
     //
     // NonPagedPoolNx required: NI_MONITOR_INTERNAL embeds two
-    // PAGED_LOOKASIDE_LIST headers which must reside in nonpaged memory
+    // LOOKASIDE_LIST_EX headers which must reside in nonpaged memory
     // per MSDN, even though the entries they allocate come from paged
     // pool.  Driver Verifier flags this as 0xC4 subcode 0xE1.
     //
@@ -435,20 +435,22 @@ Return Value:
     //
     // Initialize lookaside lists (paged â€” all callers at PASSIVE_LEVEL)
     //
-    ExInitializePagedLookasideList(
+    ExInitializeLookasideListEx(
         &monitorInternal->ProcessLookaside,
         NULL,
         NULL,
+        PagedPool,
         0,
         sizeof(NI_PROCESS_NTDLL),
         NI_POOL_TAG_PROCESS,
         0
         );
 
-    ExInitializePagedLookasideList(
+    ExInitializeLookasideListEx(
         &monitorInternal->FunctionLookaside,
         NULL,
         NULL,
+        PagedPool,
         0,
         sizeof(NI_FUNCTION_STATE),
         NI_POOL_TAG_FUNCTION,
@@ -460,8 +462,8 @@ Return Value:
     //
     status = NipCaptureCleanNtdll(monitorInternal);
     if (!NT_SUCCESS(status)) {
-        ExDeletePagedLookasideList(&monitorInternal->ProcessLookaside);
-        ExDeletePagedLookasideList(&monitorInternal->FunctionLookaside);
+        ExDeleteLookasideListEx(&monitorInternal->ProcessLookaside);
+        ExDeleteLookasideListEx(&monitorInternal->FunctionLookaside);
         ShadowStrikeFreePoolWithTag(monitorInternal, NI_POOL_TAG_MONITOR);
         return status;
     }
@@ -568,8 +570,8 @@ Arguments:
     //
     // Delete lookaside lists
     //
-    ExDeletePagedLookasideList(&monitorInternal->ProcessLookaside);
-    ExDeletePagedLookasideList(&monitorInternal->FunctionLookaside);
+    ExDeleteLookasideListEx(&monitorInternal->ProcessLookaside);
+    ExDeleteLookasideListEx(&monitorInternal->FunctionLookaside);
 
     //
     // Clear signature and free monitor
@@ -659,7 +661,7 @@ Return Value:
         //
         // Create new process state
         //
-        processState = (PNI_PROCESS_NTDLL)ExAllocateFromPagedLookasideList(
+        processState = (PNI_PROCESS_NTDLL)ExAllocateFromLookasideListEx(
             &monitorInternal->ProcessLookaside
             );
 
@@ -748,7 +750,7 @@ Return Value:
         while (!IsListEmpty(&toFree)) {
             entry = RemoveHeadList(&toFree);
             functionState = CONTAINING_RECORD(entry, NI_FUNCTION_STATE, ListEntry);
-            ExFreeToPagedLookasideList(&monitorInternal->FunctionLookaside, functionState);
+            ExFreeToLookasideListEx(&monitorInternal->FunctionLookaside, functionState);
         }
     }
 
@@ -803,7 +805,7 @@ Return Value:
         //
         // Allocate function state
         //
-        functionState = (PNI_FUNCTION_STATE)ExAllocateFromPagedLookasideList(
+        functionState = (PNI_FUNCTION_STATE)ExAllocateFromLookasideListEx(
             &monitorInternal->FunctionLookaside
             );
 
@@ -967,7 +969,7 @@ Return Value:
     //
     // Allocate function state
     //
-    functionState = (PNI_FUNCTION_STATE)ExAllocateFromPagedLookasideList(
+    functionState = (PNI_FUNCTION_STATE)ExAllocateFromLookasideListEx(
         &monitorInternal->FunctionLookaside
         );
 
@@ -1097,7 +1099,7 @@ Return Value:
                     //
                     // Allocate a copy for the caller
                     //
-                    PNI_FUNCTION_STATE hookCopy = (PNI_FUNCTION_STATE)ExAllocateFromPagedLookasideList(
+                    PNI_FUNCTION_STATE hookCopy = (PNI_FUNCTION_STATE)ExAllocateFromLookasideListEx(
                         &monitorInternal->FunctionLookaside
                         );
 
@@ -1315,7 +1317,7 @@ Arguments:
     }
 
     RtlSecureZeroMemory(FunctionState, sizeof(NI_FUNCTION_STATE));
-    ExFreeToPagedLookasideList(&monitorInternal->FunctionLookaside, FunctionState);
+    ExFreeToLookasideListEx(&monitorInternal->FunctionLookaside, FunctionState);
 }
 
 
@@ -2569,13 +2571,13 @@ Routine Description:
     while (!IsListEmpty(&toFree)) {
         entry = RemoveHeadList(&toFree);
         functionState = CONTAINING_RECORD(entry, NI_FUNCTION_STATE, ListEntry);
-        ExFreeToPagedLookasideList(&MonitorInternal->FunctionLookaside, functionState);
+        ExFreeToLookasideListEx(&MonitorInternal->FunctionLookaside, functionState);
     }
 
     //
     // Free process state
     //
-    ExFreeToPagedLookasideList(&MonitorInternal->ProcessLookaside, State);
+    ExFreeToLookasideListEx(&MonitorInternal->ProcessLookaside, State);
 }
 
 

@@ -153,7 +153,7 @@ typedef struct _ABD_DETECTOR_STATE {
     //
     // Lookaside for process entries
     //
-    NPAGED_LOOKASIDE_LIST ProcessLookaside;
+    LOOKASIDE_LIST_EX ProcessLookaside;
     BOOLEAN LookasideInitialized;
 
     //
@@ -289,10 +289,11 @@ AbdInitialize(
     //
     // Initialize lookaside list
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_AbdState.ProcessLookaside,
         NULL, NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(ABD_PROCESS_ENTRY),
         ABD_POOL_TAG_PROC,
         0
@@ -374,7 +375,7 @@ AbdShutdown(
            freed < ABD_MAX_TRACKED_PROCESSES) {
         PLIST_ENTRY entry = RemoveHeadList(&g_AbdState.ProcessList);
         PABD_PROCESS_ENTRY proc = CONTAINING_RECORD(entry, ABD_PROCESS_ENTRY, ListEntry);
-        ExFreeToNPagedLookasideList(&g_AbdState.ProcessLookaside, proc);
+        ExFreeToLookasideListEx(&g_AbdState.ProcessLookaside, proc);
         freed++;
     }
     g_AbdState.ProcessCount = 0;
@@ -394,7 +395,7 @@ AbdShutdown(
     // Destroy lookaside
     //
     if (g_AbdState.LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&g_AbdState.ProcessLookaside);
+        ExDeleteLookasideListEx(&g_AbdState.ProcessLookaside);
         g_AbdState.LookasideInitialized = FALSE;
     }
 
@@ -1310,7 +1311,7 @@ AbdpTrackProcess(
     // Pre-allocate entry before taking lock to minimize lock hold time
     //
     if (ReadAcquire(&g_AbdState.ProcessCount) < ABD_MAX_TRACKED_PROCESSES) {
-        newEntry = (PABD_PROCESS_ENTRY)ExAllocateFromNPagedLookasideList(
+        newEntry = (PABD_PROCESS_ENTRY)ExAllocateFromLookasideListEx(
             &g_AbdState.ProcessLookaside
         );
     }
@@ -1366,7 +1367,7 @@ AbdpTrackProcess(
     // Free unused pre-allocation
     //
     if (newEntry != NULL) {
-        ExFreeToNPagedLookasideList(&g_AbdState.ProcessLookaside, newEntry);
+        ExFreeToLookasideListEx(&g_AbdState.ProcessLookaside, newEntry);
     }
 
     if (entry != NULL) {
@@ -1439,7 +1440,7 @@ AbdpReleaseProcess(
     )
 {
     if (InterlockedDecrement(&Entry->ReferenceCount) == 0) {
-        ExFreeToNPagedLookasideList(&g_AbdState.ProcessLookaside, Entry);
+        ExFreeToLookasideListEx(&g_AbdState.ProcessLookaside, Entry);
     }
 }
 

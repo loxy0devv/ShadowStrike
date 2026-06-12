@@ -328,31 +328,34 @@ HpInitialize(
     //
     // Initialize lookaside lists
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &engine->HandleEntryLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(HP_HANDLE_ENTRY),
         HP_POOL_TAG,
         0
     );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &engine->ProcessContextLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(HP_PROCESS_CONTEXT),
         HP_POOL_TAG,
         0
     );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &engine->EventLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(HP_HANDLE_EVENT),
         HP_POOL_TAG,
         0
@@ -500,7 +503,7 @@ HpShutdown(
     while (!IsListEmpty(&Engine->EventHistory)) {
         entry = RemoveHeadList(&Engine->EventHistory);
         event = CONTAINING_RECORD(entry, HP_HANDLE_EVENT, ListEntry);
-        ExFreeToNPagedLookasideList(&Engine->EventLookaside, event);
+        ExFreeToLookasideListEx(&Engine->EventLookaside, event);
     }
 
     KeReleaseSpinLock(&Engine->EventHistoryLock, oldIrql);
@@ -514,9 +517,9 @@ HpShutdown(
     // Delete lookaside lists
     //
     if (Engine->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&Engine->HandleEntryLookaside);
-        ExDeleteNPagedLookasideList(&Engine->ProcessContextLookaside);
-        ExDeleteNPagedLookasideList(&Engine->EventLookaside);
+        ExDeleteLookasideListEx(&Engine->HandleEntryLookaside);
+        ExDeleteLookasideListEx(&Engine->ProcessContextLookaside);
+        ExDeleteLookasideListEx(&Engine->EventLookaside);
     }
 
     //
@@ -1687,7 +1690,7 @@ HpFlushAllTracking(
     while (!IsListEmpty(&Engine->EventHistory)) {
         entry = RemoveHeadList(&Engine->EventHistory);
         event = CONTAINING_RECORD(entry, HP_HANDLE_EVENT, ListEntry);
-        ExFreeToNPagedLookasideList(&Engine->EventLookaside, event);
+        ExFreeToLookasideListEx(&Engine->EventLookaside, event);
     }
 
     Engine->EventCount = 0;
@@ -1894,7 +1897,7 @@ HppCreateProcessContext(
         return NULL;
     }
 
-    context = (PHP_PROCESS_CONTEXT)ExAllocateFromNPagedLookasideList(
+    context = (PHP_PROCESS_CONTEXT)ExAllocateFromLookasideListEx(
         &Engine->ProcessContextLookaside
     );
 
@@ -1946,7 +1949,7 @@ HppCreateProcessContext(
         if (context->Process != NULL) {
             ObDereferenceObject(context->Process);
         }
-        ExFreeToNPagedLookasideList(&Engine->ProcessContextLookaside, context);
+        ExFreeToLookasideListEx(&Engine->ProcessContextLookaside, context);
         return NULL;
     }
 
@@ -1973,7 +1976,7 @@ HppCreateProcessContext(
             if (context->Process != NULL) {
                 ObDereferenceObject(context->Process);
             }
-            ExFreeToNPagedLookasideList(&Engine->ProcessContextLookaside, context);
+            ExFreeToLookasideListEx(&Engine->ProcessContextLookaside, context);
 
             return existing;
         }
@@ -2033,7 +2036,7 @@ HppFreeProcessContext(
     while (!IsListEmpty(&Context->HandleList)) {
         entry = RemoveHeadList(&Context->HandleList);
         handleEntry = CONTAINING_RECORD(entry, HP_HANDLE_ENTRY, ListEntry);
-        ExFreeToNPagedLookasideList(&Engine->HandleEntryLookaside, handleEntry);
+        ExFreeToLookasideListEx(&Engine->HandleEntryLookaside, handleEntry);
     }
 
     KeReleaseSpinLock(&Context->HandleListLock, oldIrql);
@@ -2046,7 +2049,7 @@ HppFreeProcessContext(
         Context->Process = NULL;
     }
 
-    ExFreeToNPagedLookasideList(&Engine->ProcessContextLookaside, Context);
+    ExFreeToLookasideListEx(&Engine->ProcessContextLookaside, Context);
 }
 
 // ============================================================================
@@ -2060,7 +2063,7 @@ HppCreateHandleEntry(
 {
     PHP_HANDLE_ENTRY entry;
 
-    entry = (PHP_HANDLE_ENTRY)ExAllocateFromNPagedLookasideList(
+    entry = (PHP_HANDLE_ENTRY)ExAllocateFromLookasideListEx(
         &Engine->HandleEntryLookaside
     );
 
@@ -2077,7 +2080,7 @@ HppFreeHandleEntry(
     _Inout_ PHP_HANDLE_ENTRY Entry
     )
 {
-    ExFreeToNPagedLookasideList(&Engine->HandleEntryLookaside, Entry);
+    ExFreeToLookasideListEx(&Engine->HandleEntryLookaside, Entry);
 }
 
 // ============================================================================
@@ -2233,7 +2236,7 @@ HppRecordEvent(
     PHP_HANDLE_EVENT event;
     KIRQL oldIrql;
 
-    event = (PHP_HANDLE_EVENT)ExAllocateFromNPagedLookasideList(
+    event = (PHP_HANDLE_EVENT)ExAllocateFromLookasideListEx(
         &Engine->EventLookaside
     );
 
@@ -2260,7 +2263,7 @@ HppRecordEvent(
     if (Engine->EventCount >= HP_MAX_HANDLE_HISTORY) {
         PLIST_ENTRY oldest = RemoveHeadList(&Engine->EventHistory);
         PHP_HANDLE_EVENT oldEvent = CONTAINING_RECORD(oldest, HP_HANDLE_EVENT, ListEntry);
-        ExFreeToNPagedLookasideList(&Engine->EventLookaside, oldEvent);
+        ExFreeToLookasideListEx(&Engine->EventLookaside, oldEvent);
         Engine->EventCount--;
     }
 
@@ -2339,7 +2342,7 @@ HppCleanupStaleEntries(
         if (event->Timestamp.QuadPart < cutoffTime.QuadPart) {
             RemoveEntryList(&event->ListEntry);
             Engine->EventCount--;
-            ExFreeToNPagedLookasideList(&Engine->EventLookaside, event);
+            ExFreeToLookasideListEx(&Engine->EventLookaside, event);
         } else {
             break;
         }

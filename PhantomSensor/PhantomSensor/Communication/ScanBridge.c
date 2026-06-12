@@ -161,9 +161,9 @@ typedef struct _SB_CONTEXT {
     //
     // Lookaside lists for message buffers
     //
-    NPAGED_LOOKASIDE_LIST StandardBufferLookaside;
-    NPAGED_LOOKASIDE_LIST LargeBufferLookaside;
-    NPAGED_LOOKASIDE_LIST RequestLookaside;
+    LOOKASIDE_LIST_EX StandardBufferLookaside;
+    LOOKASIDE_LIST_EX LargeBufferLookaside;
+    LOOKASIDE_LIST_EX RequestLookaside;
     BOOLEAN LookasideInitialized;
 
     //
@@ -413,31 +413,34 @@ ShadowStrikeScanBridgeInitialize(
     // Initialize lookaside lists for message buffers
     // Note: Actual allocation size includes header for tracking
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_ScanBridge.StandardBufferLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(SB_BUFFER_HEADER) + SB_STANDARD_BUFFER_SIZE,
         SB_MESSAGE_TAG,
         SB_LOOKASIDE_DEPTH
     );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_ScanBridge.LargeBufferLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(SB_BUFFER_HEADER) + SB_LARGE_BUFFER_SIZE,
         SB_MESSAGE_TAG,
         32  // Smaller depth for large buffers
     );
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_ScanBridge.RequestLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(SB_PENDING_REQUEST),
         SB_REQUEST_TAG,
         SB_MAX_PENDING_REQUESTS
@@ -533,15 +536,15 @@ ShadowStrikeScanBridgeShutdown(
     // call (the buffer APIs are part of the public header and may be called
     // by sibling modules outside our rundown) observes the flag transition
     // before the lookaside structures are torn down. Reading lookaside as
-    // valid then dispatching ExFreeToNPagedLookasideList on a deleted list
+    // valid then dispatching ExFreeToLookasideListEx on a deleted list
     // is a non-recoverable BSOD.
     //
     if (g_ScanBridge.LookasideInitialized) {
         g_ScanBridge.LookasideInitialized = FALSE;
         KeMemoryBarrier();
-        ExDeleteNPagedLookasideList(&g_ScanBridge.StandardBufferLookaside);
-        ExDeleteNPagedLookasideList(&g_ScanBridge.LargeBufferLookaside);
-        ExDeleteNPagedLookasideList(&g_ScanBridge.RequestLookaside);
+        ExDeleteLookasideListEx(&g_ScanBridge.StandardBufferLookaside);
+        ExDeleteLookasideListEx(&g_ScanBridge.LargeBufferLookaside);
+        ExDeleteLookasideListEx(&g_ScanBridge.RequestLookaside);
     }
 
     //
@@ -2068,13 +2071,13 @@ SbAllocateMessageBuffer(
         // Choose appropriate lookaside based on size
         //
         if (Size <= SB_STANDARD_BUFFER_SIZE) {
-            bufferHeader = (PSB_BUFFER_HEADER)ExAllocateFromNPagedLookasideList(
+            bufferHeader = (PSB_BUFFER_HEADER)ExAllocateFromLookasideListEx(
                 &g_ScanBridge.StandardBufferLookaside
             );
             source = SB_BUFFER_SOURCE_STANDARD_LOOKASIDE;
             totalSize = sizeof(SB_BUFFER_HEADER) + SB_STANDARD_BUFFER_SIZE;
         } else {
-            bufferHeader = (PSB_BUFFER_HEADER)ExAllocateFromNPagedLookasideList(
+            bufferHeader = (PSB_BUFFER_HEADER)ExAllocateFromLookasideListEx(
                 &g_ScanBridge.LargeBufferLookaside
             );
             source = SB_BUFFER_SOURCE_LARGE_LOOKASIDE;
@@ -2185,11 +2188,11 @@ SbFreeMessageBuffer(
     } else {
         switch (bufferHeader->Source) {
             case SB_BUFFER_SOURCE_STANDARD_LOOKASIDE:
-                ExFreeToNPagedLookasideList(&g_ScanBridge.StandardBufferLookaside, bufferHeader);
+                ExFreeToLookasideListEx(&g_ScanBridge.StandardBufferLookaside, bufferHeader);
                 break;
 
             case SB_BUFFER_SOURCE_LARGE_LOOKASIDE:
-                ExFreeToNPagedLookasideList(&g_ScanBridge.LargeBufferLookaside, bufferHeader);
+                ExFreeToLookasideListEx(&g_ScanBridge.LargeBufferLookaside, bufferHeader);
                 break;
 
             case SB_BUFFER_SOURCE_POOL:
@@ -2537,7 +2540,7 @@ SbpAllocatePendingRequest(
             SB_REQUEST_TAG
         );
     } else {
-        request = (PSB_PENDING_REQUEST)ExAllocateFromNPagedLookasideList(
+        request = (PSB_PENDING_REQUEST)ExAllocateFromLookasideListEx(
             &g_ScanBridge.RequestLookaside
         );
     }
@@ -2564,7 +2567,7 @@ SbpFreePendingRequest(
     if (!g_ScanBridge.LookasideInitialized) {
         ShadowStrikeFreePoolWithTag(Request, SB_REQUEST_TAG);
     } else {
-        ExFreeToNPagedLookasideList(&g_ScanBridge.RequestLookaside, Request);
+        ExFreeToLookasideListEx(&g_ScanBridge.RequestLookaside, Request);
     }
 }
 

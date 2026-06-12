@@ -557,11 +557,12 @@ EsInitialize(
     //
     // Initialize lookaside list for event definitions
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &schema->EventLookaside,
         NULL,
         NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(ES_EVENT_DEFINITION),
         ES_EVENT_TAG,
         ES_LOOKASIDE_DEPTH
@@ -772,7 +773,7 @@ EsShutdown(
     // Delete lookaside list
     //
     if (Schema->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&Schema->EventLookaside);
+        ExDeleteLookasideListEx(&Schema->EventLookaside);
         Schema->LookasideInitialized = FALSE;
     }
 
@@ -3448,7 +3449,7 @@ EspAllocateEventDefinition(
     PES_EVENT_DEFINITION event = NULL;
 
     if (Schema->LookasideInitialized) {
-        event = (PES_EVENT_DEFINITION)ExAllocateFromNPagedLookasideList(
+        event = (PES_EVENT_DEFINITION)ExAllocateFromLookasideListEx(
             &Schema->EventLookaside
         );
     }
@@ -3485,7 +3486,7 @@ EspFreeEventDefinition(
     Event->Magic = 0;
 
     if (!Event->AllocatedFromPool && Schema->LookasideInitialized) {
-        ExFreeToNPagedLookasideList(&Schema->EventLookaside, Event);
+        ExFreeToLookasideListEx(&Schema->EventLookaside, Event);
     } else {
         ShadowStrikeFreePoolWithTag(Event, ES_EVENT_TAG);
     }

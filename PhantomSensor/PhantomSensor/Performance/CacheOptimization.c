@@ -571,11 +571,12 @@ CoCreateCache(
     ExInitializePushLock(&cache->GlobalListLock);
 
     if (localConfig.UseLookaside) {
-        ExInitializeNPagedLookasideList(
+        ExInitializeLookasideListEx(
             &cache->EntryLookaside,
             NULL,
             NULL,
-            POOL_NX_ALLOCATION,
+            NonPagedPoolNx,
+            0,
             sizeof(CO_CACHE_ENTRY),
             CO_ENTRY_POOL_TAG,
             0
@@ -668,7 +669,7 @@ CopDestroyCacheInternal(
                   ((SIZE_T)Cache->BucketCount * sizeof(CO_HASH_BUCKET));
 
     if (Cache->LookasideInitialized) {
-        ExDeleteNPagedLookasideList(&Cache->EntryLookaside);
+        ExDeleteLookasideListEx(&Cache->EntryLookaside);
         Cache->LookasideInitialized = FALSE;
     }
 
@@ -1646,7 +1647,7 @@ CopAllocateEntry(
     *Entry = NULL;
 
     if (Cache->LookasideInitialized) {
-        entry = (PCO_CACHE_ENTRY)ExAllocateFromNPagedLookasideList(
+        entry = (PCO_CACHE_ENTRY)ExAllocateFromLookasideListEx(
             &Cache->EntryLookaside
         );
     } else {
@@ -1686,7 +1687,7 @@ CopFreeEntry(
     }
 
     if (Cache->LookasideInitialized) {
-        ExFreeToNPagedLookasideList(&Cache->EntryLookaside, Entry);
+        ExFreeToLookasideListEx(&Cache->EntryLookaside, Entry);
     } else {
         ShadowStrikeFreePoolWithTag(Entry, CO_ENTRY_POOL_TAG);
     }

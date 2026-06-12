@@ -299,20 +299,22 @@ ScMonitorInitialize(VOID)
     //
     // Lookaside lists for hot-path allocations
     //
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_ScState.ContextLookaside,
         NULL, NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(SC_PROCESS_CONTEXT),
         SC_POOL_TAG_GENERAL,
         0
         );
     initFlags |= SC_INIT_LOOKASIDE_CONTEXT;
 
-    ExInitializeNPagedLookasideList(
+    ExInitializeLookasideListEx(
         &g_ScState.EventLookaside,
         NULL, NULL,
-        POOL_NX_ALLOCATION,
+        NonPagedPoolNx,
+        0,
         sizeof(SYSCALL_CALL_CONTEXT),
         SC_POOL_TAG_EVENT,
         0
@@ -512,7 +514,7 @@ ScMonitorShutdown(VOID)
                 ObDereferenceObject(ctx->ProcessObject);
                 ctx->ProcessObject = NULL;
             }
-            ExFreeToNPagedLookasideList(&g_ScState.ContextLookaside, ctx);
+            ExFreeToLookasideListEx(&g_ScState.ContextLookaside, ctx);
         }
     }
 
@@ -544,12 +546,12 @@ ScMonitorShutdown(VOID)
     //
     if (g_ScState.EventLookasideInitialized) {
         g_ScState.EventLookasideInitialized = FALSE;
-        ExDeleteNPagedLookasideList(&g_ScState.EventLookaside);
+        ExDeleteLookasideListEx(&g_ScState.EventLookaside);
     }
 
     if (g_ScState.ContextLookasideInitialized) {
         g_ScState.ContextLookasideInitialized = FALSE;
-        ExDeleteNPagedLookasideList(&g_ScState.ContextLookaside);
+        ExDeleteLookasideListEx(&g_ScState.ContextLookaside);
     }
 
     g_ScState.Magic = 0;
@@ -602,10 +604,10 @@ ScpCleanupByFlags(
         }
     }
     if (InitFlags & SC_INIT_LOOKASIDE_EVENT) {
-        ExDeleteNPagedLookasideList(&g_ScState.EventLookaside);
+        ExDeleteLookasideListEx(&g_ScState.EventLookaside);
     }
     if (InitFlags & SC_INIT_LOOKASIDE_CONTEXT) {
-        ExDeleteNPagedLookasideList(&g_ScState.ContextLookaside);
+        ExDeleteLookasideListEx(&g_ScState.ContextLookaside);
     }
 }
 
@@ -646,7 +648,7 @@ ScpAllocateProcessContext(
 
     *Context = NULL;
 
-    ctx = (PSC_PROCESS_CONTEXT)ExAllocateFromNPagedLookasideList(
+    ctx = (PSC_PROCESS_CONTEXT)ExAllocateFromLookasideListEx(
         &g_ScState.ContextLookaside);
     if (ctx == NULL) {
         return STATUS_INSUFFICIENT_RESOURCES;
@@ -681,7 +683,7 @@ ScpFreeProcessContext(
     // case where a context outlives the lookaside via outstanding references.
     //
     if (g_ScState.ContextLookasideInitialized) {
-        ExFreeToNPagedLookasideList(&g_ScState.ContextLookaside, Context);
+        ExFreeToLookasideListEx(&g_ScState.ContextLookaside, Context);
     } else {
         ShadowStrikeFreePoolWithTag(Context, SC_POOL_TAG_GENERAL);
     }
@@ -2675,7 +2677,7 @@ ScpEmitEvasionEvent(
     // SYSCALL_CALL_CONTEXT is ~800 bytes — too large for kernel stack.
     //
     PSYSCALL_CALL_CONTEXT eventData = (PSYSCALL_CALL_CONTEXT)
-        ExAllocateFromNPagedLookasideList(&g_ScState.EventLookaside);
+        ExAllocateFromLookasideListEx(&g_ScState.EventLookaside);
     if (eventData == NULL) {
         return;
     }
@@ -2715,7 +2717,7 @@ ScpEmitEvasionEvent(
         &response
         );
 
-    ExFreeToNPagedLookasideList(&g_ScState.EventLookaside, eventData);
+    ExFreeToLookasideListEx(&g_ScState.EventLookaside, eventData);
 
     if (response == BehaviorResponse_Terminate) {
         DbgPrintEx(DPFLTR_IHVDRIVER_ID, DPFLTR_WARNING_LEVEL,

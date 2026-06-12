@@ -46,6 +46,7 @@
 #define _UNICODE
 
 #include <windows.h>
+#include <shellapi.h>
 #include <commctrl.h>
 #include <shlwapi.h>
 #include <shlobj.h>
@@ -512,7 +513,7 @@ static void UninstallWorker()
 // ---------------------------------------------------------------------------
 
 static INT_PTR CALLBACK WelcomeDlgProc(HWND hDlg, UINT msg,
-                                        WPARAM wParam, LPARAM /*lParam*/)
+                                        WPARAM wParam, LPARAM lParam)
 {
     switch (msg) {
     case WM_INITDIALOG:

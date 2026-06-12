@@ -235,15 +235,13 @@
         user32.lib;advapi32.lib;shell32.lib;shlwapi.lib;version.lib;comctl32.lib;%(AdditionalDependencies)
       </AdditionalDependencies>
 
-      <!-- Embed the manifest (admin requireAdministrator) -->
-      <EmbedManagedResourceFile />
+      <!-- Suppress auto-generated /MANIFESTUAC: — the .manifest file owns UAC level -->
+      <EnableUAC>false</EnableUAC>
     </Link>
 
     <!-- Embed the UAC manifest as RT_MANIFEST resource ID 1 -->
     <Manifest>
       <EmbedManifest>true</EmbedManifest>
-      <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
-      <UACUIAccess>false</UACUIAccess>
     </Manifest>
   </ItemDefinitionGroup>
 
@@ -309,13 +307,15 @@
       <AdditionalDependencies>
         user32.lib;advapi32.lib;shell32.lib;shlwapi.lib;version.lib;comctl32.lib;%(AdditionalDependencies)
       </AdditionalDependencies>
+
+      <!-- Suppress the auto-generated /MANIFESTUAC: snippet; the .manifest file
+           already contains requestedExecutionLevel=requireAdministrator -->
+      <EnableUAC>false</EnableUAC>
     </Link>
 
     <!-- Embed the UAC manifest as RT_MANIFEST resource ID 1 -->
     <Manifest>
       <EmbedManifest>true</EmbedManifest>
-      <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
-      <UACUIAccess>false</UACUIAccess>
     </Manifest>
   </ItemDefinitionGroup>
 

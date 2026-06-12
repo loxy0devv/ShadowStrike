@@ -242,7 +242,8 @@
     <!-- Embed the UAC manifest as RT_MANIFEST resource ID 1 -->
     <Manifest>
       <EmbedManifest>true</EmbedManifest>
-      <AdditionalManifestFiles>ShadowStrikePhantomUninstaller.manifest</AdditionalManifestFiles>
+      <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
+      <UACUIAccess>false</UACUIAccess>
     </Manifest>
   </ItemDefinitionGroup>
 
@@ -313,7 +314,8 @@
     <!-- Embed the UAC manifest as RT_MANIFEST resource ID 1 -->
     <Manifest>
       <EmbedManifest>true</EmbedManifest>
-      <AdditionalManifestFiles>ShadowStrikePhantomUninstaller.manifest</AdditionalManifestFiles>
+      <UACExecutionLevel>RequireAdministrator</UACExecutionLevel>
+      <UACUIAccess>false</UACUIAccess>
     </Manifest>
   </ItemDefinitionGroup>
 

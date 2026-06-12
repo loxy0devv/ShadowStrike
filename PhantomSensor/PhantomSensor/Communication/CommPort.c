@@ -1490,7 +1490,8 @@ ShadowStrikeConnectNotify(
     // SelfProtect path checks allow it to write logs, quarantine files, etc.
     // Must be called AFTER releasing the lock (PASSIVE_LEVEL requirement).
     //
-    (VOID)ShadowStrikeProtectProcess(clientProcessId, ProtectionFlagFull, NULL);
+    // 0x0000000F = ProtectionFlagFull (Block Terminate|VMWrite|Inject|Suspend)
+    (VOID)ShadowStrikeProtectProcess(clientProcessId, 0x0000000FUL, NULL);
 
     //
     // Queue deferred kex delivery NOW that the lock is released and the slot
